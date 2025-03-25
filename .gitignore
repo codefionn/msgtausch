@@ -1,0 +1,51 @@
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# Go workspace files
+/out
+/msgtausch
+/throughput-test
+/simulation-test
+/cmd/proxy-test/proxy-test
+/vendor/
+/bin/
+/pkg/
+/main
+/src/vendor/
+/src/bin/
+/src/pkg/
+/release
+
+# Windsurf and IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.env
+*.log
+/.windsurfrules
+
+# Compiled Object files, Static and Dynamic libs
+*.o
+*.a
+
+# Debug files
+debug/
+debug.test
+
+# Output of the go coverage tool
+*.cover
+coverage.html
+
+# Dependency directories (remove the comment below if you want to check in your dependencies)
+# vendor/

@@ -1,0 +1,112 @@
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gofmt
+    - goimports
+    - revive
+    - gosec
+    - misspell
+    - gocritic
+    - gocyclo
+    - unparam
+    - unconvert
+    - copyloopvar
+    - whitespace
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    
+  revive:
+    rules:
+      - name: exported
+        arguments: ["checkPrivateReceivers", "sayRepetitiveInsteadOfStutters"]
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck  # Test files can ignore some error checks
+        - unparam   # Test files often have unused parameters
+        - gocritic  # Allow some style issues in tests
+    - path: testdata/
+      linters:
+        - all
+    - path: msgtausch-simulation/
+      linters:
+        - gosec  # Allow weak random in simulation
+        - gocyclo # Allow complex simulation functions
+        - gocritic # Allow some style issues in simulation
+    - text: "cyclomatic complexity.*is high"
+      linters:
+        - gocyclo
+      path: msgtausch-srv/config/
+    - text: "cyclomatic complexity.*is high"
+      linters:
+        - gocyclo
+      path: msgtausch-srv/proxy/
+    - text: "response body must be closed"
+      linters:
+        - bodyclose
+      path: _test\.go
+    - text: "Error return value.*is not checked"
+      linters:
+        - errcheck
+      path: _test\.go
+    - text: "Error return value.*proxy.*Stop.*is not checked"
+      linters:
+        - errcheck
+    - text: "should be preferred to the nil request body"
+      linters:
+        - gocritic
+    - text: "ineffectual assignment"
+      linters:
+        - ineffassign
+      path: _test\.go
+    - text: "result.*is always nil"
+      linters:
+        - unparam
+    - text: "exitAfterDefer.*will not run"
+      linters:
+        - gocritic
+      path: cmd/throughput-test/
+    - text: "TLS InsecureSkipVerify set true"
+      linters:
+        - gosec  # Proxy needs to handle untrusted certificates
+    - text: "Potential Slowloris Attack"
+      linters:
+        - gosec  # Proxy server timeout handling
+    - text: "TLS MinVersion too low"
+      linters:
+        - gosec  # QUIC/HTTP3 compatibility
+    - text: "integer overflow conversion"
+      linters:
+        - gosec  # Port number conversions are safe
+    - text: "Use of net/http serve function that has no support for setting timeouts"
+      linters:
+        - gosec  # Test code acceptable
+      path: cmd/throughput-test/
+  
+  max-issues-per-linter: 0
+  max-same-issues: 0

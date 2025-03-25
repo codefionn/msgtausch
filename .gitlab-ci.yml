@@ -1,0 +1,89 @@
+# GitLab CI/CD configuration for msgtausch
+
+stages:
+  - lint
+  - test
+  - build
+  - release
+
+default:
+  image: docker:24.0
+  services:
+    - docker:24.0-dind
+  before_script:
+    - docker version
+    - docker buildx version
+    - docker buildx use msgtausch-builder || docker buildx create --use --driver docker-container --name msgtausch-builder
+
+# Cache for Go modules and build cache
+variables:
+  DOCKER_BUILDKIT: 1
+  DOCKER_TLS_CERTDIR: "/certs"
+  BUILDX_NO_DEFAULT_LOAD: "true"
+
+# Format check stage
+format:
+  stage: lint
+  script:
+    - docker buildx bake format
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Lint and test stage
+test:
+  stage: test
+  script:
+    - docker buildx bake test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Build stage for development version
+build-dev:
+  stage: build
+  script:
+    - docker buildx bake build
+  artifacts:
+    paths:
+      - bin/
+    expire_in: 1 week
+
+# Nix flake build stage
+nix-build:
+  stage: build
+  script:
+    - docker buildx bake nix
+  artifacts:
+    paths:
+      - result/bin/
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Build stage for merge requests
+build-mr:
+  stage: build
+  script:
+    - docker buildx bake build
+  artifacts:
+    paths:
+      - bin/
+    expire_in: 1 day
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Release stage for tags
+release:
+  stage: release
+  variables:
+    BUILD_CONFIGURATION: "release"
+    VERSION: "${CI_COMMIT_TAG:-dev}"
+  script:
+    - docker buildx bake release
+  artifacts:
+    paths:
+      - release/
+  rules:
+    - if: $CI_COMMIT_TAG

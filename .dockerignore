@@ -1,0 +1,55 @@
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace files
+/vendor/
+/bin/
+/pkg/
+/main
+/src/vendor/
+/src/bin/
+/src/pkg/
+/release
+
+# Windsurf and IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.env
+*.log
+/.windsurfrules
+
+# Compiled Object files, Static and Dynamic libs
+*.o
+*.a
+
+# Debug files
+debug/
+debug.test
+
+# Output of the go coverage tool
+*.cover
+coverage.html
+
+# Dependency directories (remove the comment below if you want to check in your dependencies)
+# vendor/
+
+# Docker specific ignores
+.git/
+.gitignore
+.gitlab-ci.yml
+Dockerfile*
+docker-compose*
+docker-bake.hcl
+.dockerignore
+README.md
+LICENSE

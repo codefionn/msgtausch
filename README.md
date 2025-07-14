@@ -1,16 +1,15 @@
 # msgtausch
 
-> This project is activly in intial development. Use at your own risk!
+> This project is actively in intial development. Use at your own risk!
 
 A configurable forward proxy written in Go that can be configured using either JSON or environment variables.
 
 ## Features
 
 - HTTP/HTTPS forward proxy
-- Configuration via JSON file or environment variables
-- Configurable timeout and connection limits
-- Host allowlist support
-- Graceful shutdown
+- HTTP/HTTPS/QUIC interception support
+- Forward support (forward specific connections to socks5 proxy, upstream proxy
+  or default connection)
 
 ## Configuration
 

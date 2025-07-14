@@ -10,6 +10,10 @@ import (
 	"strings"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/gocty"
 )
 
 // ProxyType defines the type of proxy server
@@ -166,6 +170,8 @@ func LoadConfig(configPath string) (*Config, error) {
 		switch strings.ToLower(ext) {
 		case ".json":
 			err = loadJSONConfig(configPath, cfg)
+		case ".hcl":
+			err = loadHCLConfig(configPath, cfg)
 		default:
 			return nil, fmt.Errorf("unsupported config file format: %s", ext)
 		}
@@ -305,7 +311,111 @@ func loadJSONConfig(configPath string, cfg *Config) error {
 		return err
 	}
 
-	// Manually map the values from the map to the Config struct
+	// Use the same parsing logic as HCL by manually mapping values from the map to Config struct
+	return parseConfigData(data, cfg)
+}
+
+func loadHCLConfig(configPath string, cfg *Config) error {
+	cleanPath := filepath.Clean(configPath)
+	if !filepath.IsAbs(cleanPath) {
+		absPath, err := filepath.Abs(cleanPath)
+		if err != nil {
+			return fmt.Errorf("invalid config file path: %w", err)
+		}
+		cleanPath = absPath
+	}
+
+	// Parse HCL file
+	parser := hclparse.NewParser()
+	file, diags := parser.ParseHCLFile(cleanPath)
+	if diags.HasErrors() {
+		return fmt.Errorf("failed to parse HCL config: %s", diags.Error())
+	}
+
+	// Create evaluation context
+	evalCtx := &hcl.EvalContext{}
+
+	// Get all attributes (we'll accept any attributes dynamically)
+	attrs, diags := file.Body.JustAttributes()
+	if diags.HasErrors() {
+		return fmt.Errorf("failed to decode HCL config: %s", diags.Error())
+	}
+
+	// Convert HCL attributes to a map[string]any
+	data := make(map[string]any)
+	for name, attr := range attrs {
+		val, diags := attr.Expr.Value(evalCtx)
+		if diags.HasErrors() {
+			return fmt.Errorf("failed to evaluate HCL attribute %s: %s", name, diags.Error())
+		}
+
+		// Convert cty.Value to Go types
+		goVal, err := convertCtyValueToGo(val)
+		if err != nil {
+			return fmt.Errorf("failed to convert HCL value for %s: %w", name, err)
+		}
+		data[name] = goVal
+	}
+
+	// Validate config keys and provide helpful error messages for underscore usage
+	if err := validateConfigKeys(data); err != nil {
+		return err
+	}
+
+	// Use the same parsing logic as JSON by manually mapping values from the map to Config struct
+	return parseConfigData(data, cfg)
+}
+
+// convertCtyValueToGo converts a cty.Value to a Go value (map[string]any, []any, etc.)
+func convertCtyValueToGo(val cty.Value) (any, error) {
+	if val.IsNull() {
+		return nil, nil
+	}
+
+	switch {
+	case val.Type() == cty.String:
+		return val.AsString(), nil
+	case val.Type() == cty.Number:
+		f, _ := val.AsBigFloat().Float64()
+		// Try to convert to int if it's a whole number
+		if f == float64(int64(f)) {
+			return int64(f), nil
+		}
+		return f, nil
+	case val.Type() == cty.Bool:
+		return val.True(), nil
+	case val.Type().IsListType() || val.Type().IsTupleType():
+		var result []any
+		for it := val.ElementIterator(); it.Next(); {
+			_, elem := it.Element()
+			converted, err := convertCtyValueToGo(elem)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, converted)
+		}
+		return result, nil
+	case val.Type().IsMapType() || val.Type().IsObjectType():
+		result := make(map[string]any)
+		for it := val.ElementIterator(); it.Next(); {
+			key, elem := it.Element()
+			keyStr := key.AsString()
+			converted, err := convertCtyValueToGo(elem)
+			if err != nil {
+				return nil, err
+			}
+			result[keyStr] = converted
+		}
+		return result, nil
+	default:
+		// Fallback: try to convert using gocty
+		var result any
+		err := gocty.FromCtyValue(val, &result)
+		return result, err
+	}
+}
+
+func parseConfigData(data map[string]any, cfg *Config) error {
 	// Handle servers configuration
 	if val, exists := data["servers"]; exists {
 		serverList, ok := val.([]any)
@@ -590,6 +700,26 @@ func parseValue[T any](value any) (*T, error) {
 		default:
 			return nil, fmt.Errorf("expected %T, got JSON number", zero)
 		}
+	case int64:
+		// HCL number (integer)
+		switch elem.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			elem.SetInt(v)
+		case reflect.Float32, reflect.Float64:
+			elem.SetFloat(float64(v))
+		default:
+			return nil, fmt.Errorf("expected %T, got int64", zero)
+		}
+	case int:
+		// Go number
+		switch elem.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			elem.SetInt(int64(v))
+		case reflect.Float32, reflect.Float64:
+			elem.SetFloat(float64(v))
+		default:
+			return nil, fmt.Errorf("expected %T, got int", zero)
+		}
 	case string:
 		switch elem.Kind() {
 		case reflect.String:
@@ -705,8 +835,13 @@ func parseClassifier(classifierMap map[string]any) (Classifier, error) {
 		newClassifier = networkClassifier
 	case "port":
 		portClassifier := &ClassifierPort{}
-		if port, ok := classifierMap["port"].(float64); ok {
+		switch port := classifierMap["port"].(type) {
+		case float64:
 			portClassifier.Port = int(port)
+		case int64:
+			portClassifier.Port = int(port)
+		case int:
+			portClassifier.Port = port
 		}
 		newClassifier = portClassifier
 	case "ref":

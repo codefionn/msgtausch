@@ -30,7 +30,7 @@
           inherit version src;
           go = gopkgs;
           goVersion = goVersion;
-          vendorHash = "sha256-K1QkmS9Yfl6aeZCTdceUedlhwwa+wDOD+WwLqmY7X+4=";
+          vendorHash = "sha256-l9rR7251xMz0bKOTQ0ER9r+TWsTWKudaUgPjGimPCtw=";
           subPackages = [ "." ];
           CGO_ENABLED = 0;
           ldflags = [ "-X main.version=${version} -s -w" ];
@@ -86,7 +86,7 @@
           src = prev.lib.cleanSource ./.;
           go = prev.go_1_24;
           goVersion = "1.24";
-          vendorHash = "sha256-K1QkmS9Yfl6aeZCTdceUedlhwwa+wDOD+WwLqmY7X+4=";
+          vendorHash = "sha256-l9rR7251xMz0bKOTQ0ER9r+TWsTWKudaUgPjGimPCtw=";
           subPackages = [ "." ];
           CGO_ENABLED = 0;
           ldflags = [ "-X main.version=${let v = builtins.getEnv "VERSION"; in if v == "" then "dev" else v} -s -w" ];

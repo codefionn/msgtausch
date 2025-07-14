@@ -23,7 +23,7 @@ For comprehensive configuration documentation, see [docs/configuration.md](docs/
 ### Format
 
 - File extension determines format: `.json` for JSON, `.hcl` for HCL.
-- For HCL, use equivalent field names (`listen_address`, etc).
+- For HCL, use equivalent field names (`listen-address`, etc).
 
 ## Building with Docker
 

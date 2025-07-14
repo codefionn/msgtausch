@@ -1,0 +1,36 @@
+{
+  "servers": [
+    {
+      "type": "http",
+      "listen-address": "127.0.0.1:8080",
+      "enabled": true,
+      "max-connections": 1000,
+      "connections-per-client": 100
+    }
+  ],
+  "timeout-seconds": 30,
+  "max-concurrent-connections": 1000,
+  "portal": {
+    "username": "admin",
+    "password": "your-secure-password"
+  },
+  "statistics": {
+    "enabled": true,
+    "backend": "sqlite",
+    "sqlite-path": "msgtausch-stats.db",
+    "buffer-size": 1000,
+    "flush-interval": 5
+  },
+  "classifiers": {
+    "blocked-domains": {
+      "type": "domain",
+      "values": ["malicious.com", "blocked.com"]
+    }
+  },
+  "forwards": [
+    {
+      "type": "default-network",
+      "classifier": "default"
+    }
+  ]
+}

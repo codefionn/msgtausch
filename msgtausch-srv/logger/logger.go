@@ -109,6 +109,7 @@ func Error(format string, v ...any) {
 // Arguments are handled in the manner of [fmt.Printf].
 func Fatal(format string, v ...any) {
 	logMessage(FATAL, format, v...)
+	os.Exit(1)
 }
 
 // WithRequestID adds a request ID to the log message

@@ -1,0 +1,321 @@
+package templates
+
+templ DashboardScript() {
+	<script>
+		// Tab switching functionality
+		function showTab(tabName) {
+			// Hide all tab contents
+			document.querySelectorAll('.tab-content').forEach(tab => {
+				tab.classList.remove('active');
+			});
+			
+			// Remove active class from all nav links
+			document.querySelectorAll('.nav-link').forEach(link => {
+				link.classList.remove('active');
+			});
+			
+			// Show selected tab content
+			const targetTab = document.getElementById('tab-' + tabName);
+			if (targetTab) {
+				targetTab.classList.add('active');
+			}
+			
+			// Add active class to selected nav link
+			const targetLink = document.querySelector('.nav-link[data-tab="' + tabName + '"]');
+			if (targetLink) {
+				targetLink.classList.add('active');
+			}
+			
+			// Update announcer for accessibility
+			const announcer = document.getElementById('live-announcer');
+			if (announcer) {
+				announcer.textContent = 'Switched to ' + tabName + ' tab.';
+			}
+			
+			// Load tab-specific data
+			loadTabData(tabName);
+		}
+		
+		// Load tab-specific data
+		async function loadTabData(tabName) {
+			try {
+				const response = await fetch('/api/dashboard');
+				const data = await response.json();
+				
+				if (!data.overview) {
+					return;
+				}
+				
+				switch (tabName) {
+					case 'domains':
+						renderAllDomains(data.top_domains);
+						break;
+					case 'security':
+						renderAllSecurityEvents(data.security_events);
+						break;
+					case 'errors':
+						renderErrors(data.recent_errors);
+						break;
+					case 'bandwidth':
+						renderDetailedBandwidthChart(data.bandwidth_stats);
+						break;
+				}
+			} catch (error) {
+				console.error('Failed to load tab data:', error);
+			}
+		}
+		
+		// Render all domains
+		function renderAllDomains(domains) {
+			const tbody = document.getElementById('all-domains-tbody');
+			if (!tbody) return;
+			
+			tbody.innerHTML = '';
+			if (domains && domains.length > 0) {
+				domains.forEach(domain => {
+					const row = tbody.insertRow();
+					row.innerHTML = `
+						<th scope="row">${domain.domain}</th>
+						<td>${domain.request_count}</td>
+						<td>${formatBytes(domain.total_bytes)}</td>
+						<td>${new Date(domain.last_access).toLocaleString()}</td>
+					`;
+				});
+			} else {
+				tbody.innerHTML = '<tr><td colspan="4">No domains available</td></tr>';
+			}
+		}
+		
+		// Render all security events
+		function renderAllSecurityEvents(events) {
+			const tbody = document.getElementById('all-security-tbody');
+			if (!tbody) return;
+			
+			tbody.innerHTML = '';
+			if (events && events.length > 0) {
+				events.forEach(event => {
+					const row = tbody.insertRow();
+					row.innerHTML = `
+						<th scope="row">${event.client_ip}</th>
+						<td>${event.target_host}</td>
+						<td>${event.event_type}</td>
+						<td>${event.reason}</td>
+						<td>${new Date(event.timestamp).toLocaleString()}</td>
+					`;
+				});
+			} else {
+				tbody.innerHTML = '<tr><td colspan="5">No security events available</td></tr>';
+			}
+		}
+		
+		// Render errors
+		function renderErrors(errors) {
+			const tbody = document.getElementById('errors-tbody');
+			if (!tbody) return;
+			
+			tbody.innerHTML = '';
+			if (errors && errors.length > 0) {
+				errors.forEach(error => {
+					const row = tbody.insertRow();
+					row.innerHTML = `
+						<th scope="row">${error.error_type}</th>
+						<td>${error.count}</td>
+						<td>${error.last_message}</td>
+						<td>${new Date(error.last_occurred).toLocaleString()}</td>
+					`;
+				});
+			} else {
+				tbody.innerHTML = '<tr><td colspan="4">No errors available</td></tr>';
+			}
+		}
+		
+		// Render detailed bandwidth chart
+		function renderDetailedBandwidthChart(bandwidthStats) {
+			const container = document.getElementById('detailed-bandwidth-chart');
+			if (!container || !bandwidthStats) return;
+			
+			const dailyData = bandwidthStats.daily;
+			if (!dailyData || dailyData.length === 0) {
+				container.innerHTML = '<div class="no-data">No bandwidth data available</div>';
+				return;
+			}
+			
+			createSVGChart(container, dailyData, 600, 300, true);
+		}
+
+		// Load dashboard data
+		async function loadDashboardData() {
+			try {
+				const response = await fetch('/api/dashboard');
+				const data = await response.json();
+
+				if (!data.overview) {
+					document.getElementById('dashboard-content').innerHTML =
+						'<div class="loading card">Statistics not enabled or no data available</div>';
+					return;
+				}
+
+				// Update overview stats
+				document.getElementById('total-connections').textContent = data.overview.total_connections || 0;
+				document.getElementById('active-connections').textContent = data.overview.active_connections || 0;
+				document.getElementById('total-requests').textContent = data.overview.total_requests || 0;
+				document.getElementById('total-errors').textContent = data.overview.total_errors || 0;
+
+				// Update domains table
+				const domainsTbody = document.getElementById('domains-tbody');
+				domainsTbody.innerHTML = '';
+				if (data.top_domains && data.top_domains.length > 0) {
+					data.top_domains.slice(0, 10).forEach(domain => {
+						const row = domainsTbody.insertRow();
+						row.innerHTML = `
+							<th scope="row">${domain.domain}</th>
+							<td>${domain.request_count}</td>
+							<td>${formatBytes(domain.total_bytes)}</td>
+							<td>${new Date(domain.last_access).toLocaleString()}</td>
+						`;
+					});
+				}
+
+				// Update security events
+				const securityTbody = document.getElementById('security-tbody');
+				securityTbody.innerHTML = '';
+				if (data.security_events && data.security_events.length > 0) {
+					data.security_events.slice(0, 10).forEach(event => {
+						const row = securityTbody.insertRow();
+						row.innerHTML = `
+							<th scope="row">${event.client_ip}</th>
+							<td>${event.target_host}</td>
+							<td>${event.event_type}</td>
+							<td>${event.reason}</td>
+							<td>${new Date(event.timestamp).toLocaleString()}</td>
+						`;
+					});
+				}
+
+				// Update bandwidth chart
+				renderBandwidthChart(data.bandwidth_stats);
+
+                // Announce update for screen readers
+                const announcer = document.getElementById('live-announcer');
+                if (announcer) {
+                    announcer.textContent = 'Dashboard data has been updated.';
+                }
+
+			} catch (error) {
+				console.error('Failed to load dashboard data:', error);
+				document.getElementById('dashboard-content').innerHTML =
+					'<div class="loading card">Error loading dashboard data</div>';
+			}
+		}
+
+		// Render bandwidth chart
+		function renderBandwidthChart(bandwidthStats) {
+			const container = document.getElementById('bandwidth-chart');
+			if (!container || !bandwidthStats) return;
+
+			const dailyData = bandwidthStats.daily;
+			if (!dailyData || dailyData.length === 0) {
+				container.innerHTML = '<div class="no-data">No bandwidth data available</div>';
+				return;
+			}
+
+			createSVGChart(container, dailyData, 400, 200, false);
+		}
+
+		// Create SVG chart
+		function createSVGChart(container, data, width, height, detailed) {
+			const margin = { top: 20, right: 30, bottom: 60, left: 60 };
+			const chartWidth = width - margin.left - margin.right;
+			const chartHeight = height - margin.top - margin.bottom;
+			
+			const maxBytes = Math.max(...data.map(d => Math.max(d.bytes_in, d.bytes_out)));
+			const barWidth = chartWidth / data.length * 0.8;
+			const barSpacing = chartWidth / data.length * 0.2;
+			
+			let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+			
+			// Background
+			svg += `<rect width="${width}" height="${height}" fill="#f8f9fa"/>`;
+			
+			// Chart area background
+			svg += `<rect x="${margin.left}" y="${margin.top}" width="${chartWidth}" height="${chartHeight}" fill="white" stroke="#e9ecef"/>`;
+			
+			// Y-axis grid lines and labels
+			for (let i = 0; i <= 5; i++) {
+				const y = margin.top + (chartHeight / 5) * i;
+				const value = maxBytes * (1 - i / 5);
+				
+				svg += `<line x1="${margin.left}" y1="${y}" x2="${margin.left + chartWidth}" y2="${y}" stroke="#e9ecef" stroke-width="1"/>`;
+				svg += `<text x="${margin.left - 5}" y="${y + 4}" text-anchor="end" font-size="10" fill="#666">${formatBytes(value)}</text>`;
+			}
+			
+			// Bars
+			data.forEach((day, index) => {
+				const x = margin.left + index * (barWidth + barSpacing) + barSpacing / 2;
+				const inHeight = maxBytes > 0 ? (day.bytes_in / maxBytes) * chartHeight : 0;
+				const outHeight = maxBytes > 0 ? (day.bytes_out / maxBytes) * chartHeight : 0;
+				const inY = margin.top + chartHeight - inHeight;
+				const outY = margin.top + chartHeight - outHeight;
+				
+				// Incoming bar
+				svg += `<rect x="${x}" y="${inY}" width="${barWidth / 2}" height="${inHeight}" fill="#3b82f6" rx="2">`;
+				svg += `<title>Incoming: ${formatBytes(day.bytes_in)}</title>`;
+				svg += `</rect>`;
+				
+				// Outgoing bar
+				svg += `<rect x="${x + barWidth / 2}" y="${outY}" width="${barWidth / 2}" height="${outHeight}" fill="#ef4444" rx="2">`;
+				svg += `<title>Outgoing: ${formatBytes(day.bytes_out)}</title>`;
+				svg += `</rect>`;
+				
+				// Date label
+				svg += `<text x="${x + barWidth / 2}" y="${margin.top + chartHeight + 15}" text-anchor="middle" font-size="10" fill="#666">${day.date}</text>`;
+				
+				if (detailed) {
+					// Additional info for detailed view
+					svg += `<text x="${x + barWidth / 2}" y="${margin.top + chartHeight + 30}" text-anchor="middle" font-size="9" fill="#999">In: ${formatBytes(day.bytes_in)}</text>`;
+					svg += `<text x="${x + barWidth / 2}" y="${margin.top + chartHeight + 45}" text-anchor="middle" font-size="9" fill="#999">Out: ${formatBytes(day.bytes_out)}</text>`;
+				}
+			});
+			
+			// X-axis
+			svg += `<line x1="${margin.left}" y1="${margin.top + chartHeight}" x2="${margin.left + chartWidth}" y2="${margin.top + chartHeight}" stroke="#333" stroke-width="1"/>`;
+			
+			// Y-axis
+			svg += `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + chartHeight}" stroke="#333" stroke-width="1"/>`;
+			
+			// Y-axis title
+			svg += `<text x="20" y="${margin.top + chartHeight / 2}" text-anchor="middle" font-size="12" fill="#333" transform="rotate(-90 20 ${margin.top + chartHeight / 2})">Bandwidth</text>`;
+			
+			svg += `</svg>`;
+			
+			// Legend
+			const legend = `
+				<div class="chart-legend" style="margin-top: 15px;">
+					<span class="legend-item">
+						<span class="legend-color" style="background: #3b82f6; width: 12px; height: 12px; display: inline-block; border-radius: 2px;"></span> Incoming
+					</span>
+					<span class="legend-item">
+						<span class="legend-color" style="background: #ef4444; width: 12px; height: 12px; display: inline-block; border-radius: 2px;"></span> Outgoing
+					</span>
+				</div>
+			`;
+			
+			container.innerHTML = svg + legend;
+		}
+
+		// Format bytes function
+		function formatBytes(bytes) {
+			if (bytes === 0) return '0 B';
+			const k = 1024;
+			const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+			const i = Math.floor(Math.log(bytes) / Math.log(k));
+			return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+		}
+
+		// Load data on page load
+		loadDashboardData();
+
+		// Refresh data every 30 seconds
+		setInterval(loadDashboardData, 30000);
+	</script>
+}

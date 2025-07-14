@@ -1,0 +1,156 @@
+package templates
+
+templ Dashboard(title string, configured bool) {
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>{title}</title>
+    @SharedStyles()
+    @DashboardStyles()
+</head>
+<body>
+    <div class="container">
+        <header class="header card">
+            <h1>msgtausch Dashboard</h1>
+            <div>
+                <a href="/logout" class="btn btn-danger" role="button">Logout</a>
+            </div>
+        </header>
+
+        <nav class="nav" aria-label="Main navigation">
+            <a href="#" onclick="showTab('overview')" class="nav-link active" data-tab="overview">Overview</a>
+            <a href="#" onclick="showTab('domains')" class="nav-link" data-tab="domains">Domains</a>
+            <a href="#" onclick="showTab('security')" class="nav-link" data-tab="security">Security</a>
+            <a href="#" onclick="showTab('errors')" class="nav-link" data-tab="errors">Errors</a>
+            <a href="#" onclick="showTab('bandwidth')" class="nav-link" data-tab="bandwidth">Bandwidth</a>
+        </nav>
+
+        <main id="dashboard-content">
+            <div id="live-announcer" class="visually-hidden" aria-live="polite"></div>
+            
+            <div id="tab-overview" class="tab-content active">
+                <div class="stats-grid" id="overview-stats">
+                    <div class="stat-card card">
+                        <div class="stat-value" id="total-connections">-</div>
+                        <div class="stat-label">Total Connections</div>
+                    </div>
+                    <div class="stat-card card">
+                        <div class="stat-value" id="active-connections">-</div>
+                        <div class="stat-label">Active Connections</div>
+                    </div>
+                    <div class="stat-card card">
+                        <div class="stat-value" id="total-requests">-</div>
+                        <div class="stat-label">Total Requests</div>
+                    </div>
+                    <div class="stat-card card">
+                        <div class="stat-value" id="total-errors">-</div>
+                        <div class="stat-label">Total Errors</div>
+                    </div>
+                </div>
+
+                <div class="chart-container card">
+                    <h3>Bandwidth Usage</h3>
+                    <div id="bandwidth-chart" role="img" aria-label="Bandwidth usage chart."></div>
+                </div>
+
+                <div class="table-container card">
+                    <h3>Top Domains</h3>
+                    <table id="domains-table" aria-describedby="domains-table-caption">
+                        <caption id="domains-table-caption" class="visually-hidden">Top 10 most frequently accessed domains</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Domain</th>
+                                <th scope="col">Requests</th>
+                                <th scope="col">Total Bytes</th>
+                                <th scope="col">Last Access</th>
+                            </tr>
+                        </thead>
+                        <tbody id="domains-tbody"></tbody>
+                    </table>
+                </div>
+
+                <div class="table-container card">
+                    <h3>Recent Security Events</h3>
+                    <table id="security-table" aria-describedby="security-table-caption">
+                        <caption id="security-table-caption" class="visually-hidden">Recent security events</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Client IP</th>
+                                <th scope="col">Target Host</th>
+                                <th scope="col">Event Type</th>
+                                <th scope="col">Reason</th>
+                                <th scope="col">Timestamp</th>
+                            </tr>
+                        </thead>
+                        <tbody id="security-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-domains" class="tab-content">
+                <div class="table-container card">
+                    <h3>All Domains</h3>
+                    <table id="all-domains-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Domain</th>
+                                <th scope="col">Requests</th>
+                                <th scope="col">Total Bytes</th>
+                                <th scope="col">Last Access</th>
+                            </tr>
+                        </thead>
+                        <tbody id="all-domains-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-security" class="tab-content">
+                <div class="table-container card">
+                    <h3>All Security Events</h3>
+                    <table id="all-security-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Client IP</th>
+                                <th scope="col">Target Host</th>
+                                <th scope="col">Event Type</th>
+                                <th scope="col">Reason</th>
+                                <th scope="col">Timestamp</th>
+                            </tr>
+                        </thead>
+                        <tbody id="all-security-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-errors" class="tab-content">
+                <div class="table-container card">
+                    <h3>Error Statistics</h3>
+                    <table id="errors-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">Error Type</th>
+                                <th scope="col">Count</th>
+                                <th scope="col">Last Message</th>
+                                <th scope="col">Last Occurred</th>
+                            </tr>
+                        </thead>
+                        <tbody id="errors-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-bandwidth" class="tab-content">
+                <div class="chart-container card">
+                    <h3>Detailed Bandwidth Usage</h3>
+                    <div id="detailed-bandwidth-chart" role="img" aria-label="Detailed bandwidth usage chart."></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    @DashboardScript()
+</body>
+</html>
+}

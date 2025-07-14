@@ -10,13 +10,17 @@
     ],
     "timeout-seconds": 60,
     "max-concurrent-connections": 200,
+    "portal": {
+        "username": "admin",
+        "password": "secure-admin-password"
+    },
     "classifiers": {
-        "ipv4_only_sites": {
+        "ipv4-only-sites": {
             "type": "domain",
             "op": "contains",
             "domain": ".legacy-site.com"
         },
-        "corporate_network": {
+        "corporate-network": {
             "type": "network",
             "cidr": "10.0.0.0/8"
         }
@@ -24,13 +28,13 @@
     "forwards": [
         {
             "comment": "Force IPv4 for legacy sites that don't support IPv6",
-            "classifier": { "type": "ref", "id": "ipv4_only_sites" },
+            "classifier": { "type": "ref", "id": "ipv4-only-sites" },
             "type": "default-network",
             "force-ipv4": true
         },
         {
             "comment": "Corporate proxy with IPv4 forcing",
-            "classifier": { "type": "ref", "id": "corporate_network" },
+            "classifier": { "type": "ref", "id": "corporate-network" },
             "type": "proxy",
             "address": "corporate-proxy.local:8080",
             "force-ipv4": true

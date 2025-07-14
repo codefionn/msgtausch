@@ -12,6 +12,51 @@
       nixpkgs,
       flake-utils,
     }:
+    let
+      # Custom templ package with exact version
+      buildTemplPkg = { pkgs }: pkgs.buildGo124Module {
+        pname = "templ";
+        version = "0.3.906";
+        src = pkgs.fetchFromGitHub {
+          owner = "a-h";
+          repo = "templ";
+          rev = "v0.3.906";
+          hash = "sha256-Og1FPCEkBnyt1nz45imDiDNZ4CuWSJJPxGYcPzRgBE8=";
+        };
+        vendorHash = "sha256-oObzlisjvS9LeMYh3DzP+l7rgqBo9bQcbNjKCUJ8rcY=";
+        subPackages = [ "cmd/templ" ];
+        go = pkgs.go_1_24;
+      };
+
+      # Shared msgtausch package definition
+      buildMsgtauschPkg = { pkgs, version ? "dev", src ? pkgs.lib.cleanSource ./. }: 
+        let
+          customTempl = buildTemplPkg { inherit pkgs; };
+        in
+        pkgs.buildGo124Module {
+        pname = "msgtausch";
+        inherit version src;
+        go = pkgs.go_1_24;
+        goVersion = "1.24";
+        vendorHash = "sha256-GHAYslWU8Dm62o100fMmYqk4IU5Ltey8gwKgUD5grPs=";
+        subPackages = [ "." ];
+        env.CGO_ENABLED = 1;
+        nativeBuildInputs = [ pkgs.installShellFiles pkgs.git customTempl ];
+        ldflags = [
+          "-X main.version=${version} -s -w"
+        ];
+        doCheck = false;
+        outputs = [ "out" ];
+        preBuild = ''
+          # Generate templates using the nixpkgs templ package
+          templ generate
+        '';
+        postInstall = ''
+          mkdir -p $out/bin
+          mv $GOPATH/bin/msgtausch $out/bin/
+        '';
+      };
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -24,26 +69,11 @@
           in
           if v == "" then "dev" else v;
         src = pkgs.lib.cleanSource ./.;
-
-        buildMsgtauschPkg = prev: prev.buildGo124Module {
-          pname = "msgtausch";
-          inherit version src;
-          go = gopkgs;
-          goVersion = goVersion;
-          vendorHash = "sha256-l9rR7251xMz0bKOTQ0ER9r+TWsTWKudaUgPjGimPCtw=";
-          subPackages = [ "." ];
-          CGO_ENABLED = 0;
-          ldflags = [ "-X main.version=${version} -s -w" ];
-          doCheck = false;
-          outputs = [ "out" ];
-          postInstall = ''
-            mkdir -p $out/bin
-            mv $GOPATH/bin/msgtausch $out/bin/
-          '';
-        };
       in
       {
-        packages.msgtausch = buildMsgtauschPkg pkgs;
+        packages.default = buildMsgtauschPkg { inherit pkgs version src; };
+        packages.msgtausch = buildMsgtauschPkg { inherit pkgs version src; };
+        packages.templ = buildTemplPkg { inherit pkgs; };
 
         devShells.default = pkgs.mkShell {
           buildInputs = [
@@ -54,7 +84,7 @@
             pkgs.gotools
           ];
           shellHook = ''
-            export CGO_ENABLED=0
+            export CGO_ENABLED=1
             export VERSION=${version}
             echo "msgtausch devShell: Go ${gopkgs.version} | VERSION=${version}"
           '';
@@ -80,22 +110,10 @@
     ) // {
       # Define the overlay at the top level
       overlays.default = final: prev: {
-        msgtausch = prev.buildGo124Module {
-          pname = "msgtausch";
+        msgtausch = buildMsgtauschPkg {
+          pkgs = prev;
           version = let v = builtins.getEnv "VERSION"; in if v == "" then "dev" else v;
           src = prev.lib.cleanSource ./.;
-          go = prev.go_1_24;
-          goVersion = "1.24";
-          vendorHash = "sha256-l9rR7251xMz0bKOTQ0ER9r+TWsTWKudaUgPjGimPCtw=";
-          subPackages = [ "." ];
-          CGO_ENABLED = 0;
-          ldflags = [ "-X main.version=${let v = builtins.getEnv "VERSION"; in if v == "" then "dev" else v} -s -w" ];
-          doCheck = false;
-          outputs = [ "out" ];
-          postInstall = ''
-            mkdir -p $out/bin
-            mv $GOPATH/bin/msgtausch $out/bin/
-          '';
         };
       };
     };

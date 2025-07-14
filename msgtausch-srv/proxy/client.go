@@ -25,10 +25,36 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	if err != nil {
 		return nil, fmt.Errorf("invalid address format: %w", err)
 	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port format: %w", err)
+	}
+
+	clientIP := ""
+	if ip, ok := ClientIPFromContext(ctx); ok {
+		clientIP = ip
+	}
+
+	// Start tracking the connection
+	connectionID, startErr := p.StartConnection(ctx, clientIP, host, port, "tcp")
+	if startErr != nil {
+		// We can still proceed, but stats might be incomplete.
+		logger.Error("Failed to start connection tracking: %v", startErr)
+	}
+
+	// Defer a function to handle connection closure for error cases.
+	// A successful connection will be wrapped, and this defer will be disarmed.
+	var connErr error
+	defer func() {
+		if connErr != nil {
+			_ = p.RecordError(ctx, connectionID, "connection", connErr.Error())
+			_ = p.EndConnection(ctx, connectionID, 0, 0, 0, connErr.Error())
+		}
+	}()
 
 	var remotePort uint16
-	if port, err := strconv.ParseUint(portStr, 10, 16); err == nil {
-		remotePort = uint16(port)
+	if parsedPort, err := strconv.ParseUint(portStr, 10, 16); err == nil {
+		remotePort = uint16(parsedPort)
 	}
 
 	var targetConn net.Conn
@@ -132,6 +158,7 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 
 	// Handle connection errors
 	if err != nil {
+		connErr = err // Arm the defer to call EndConnection
 		// The error from Dial, dialSocks5, or dialHttpProxy is already a *Error or a wrapped standard error.
 		// Logging it here will include the specific error code if it's a Error.
 		logger.Error("Failed to establish connection to target %s (via %T): %v", addr, selectedForward, err)
@@ -140,7 +167,8 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 
 	// 3. Connection established, proceed with TCP tunnel
 	logger.Debug("Successfully established connection to %s (via %T)", addr, selectedForward)
-	return targetConn, nil
+	connErr = nil // Disarm the defer
+	return newTrackedConn(ctx, targetConn, p, connectionID), nil
 }
 
 // dialSocks5 establishes a connection to the target via a SOCKS5 proxy

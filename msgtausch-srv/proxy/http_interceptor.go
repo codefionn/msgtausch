@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
 )
@@ -148,6 +149,11 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return h.proxy.createForwardTCPClient(ctx, addr)
 			},
+			DisableKeepAlives:     false,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
 		},
 		// Don't automatically follow redirects
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {

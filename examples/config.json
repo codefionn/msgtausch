@@ -2,32 +2,36 @@
     "servers": [
         {
             "type": "standard",
-            "listen_address": "127.0.0.1:8080",
+            "listen-address": "127.0.0.1:8080",
             "enabled": true,
-            "max_connections": 100,
-            "connections_per_client": 10
+            "max-connections": 100,
+            "connections-per-client": 10
         }
     ],
-    "timeout_seconds": 60,
-    "max_concurrent_connections": 200,
+    "timeout-seconds": 60,
+    "max-concurrent-connections": 200,
     "interception": {
         "enabled": true,
         "http": false,
         "https": true,
-        "ca_file": "/path/to/ca-cert.pem",
-        "ca_key_file": "/path/to/ca-key.pem"
+        "ca-file": "/path/to/ca-cert.pem",
+        "ca-key-file": "/path/to/ca-key.pem"
+    },
+    "portal": {
+        "username": "admin",
+        "password": "your-secure-password"
     },
     "classifiers": {
-        "internal_network": {
+        "internal-network": {
             "type": "network",
             "cidr": "192.168.1.0/24"
         },
-        "google_services": {
+        "google-services": {
             "type": "domain",
             "op": "contains",
             "domain": ".google.com"
         },
-        "secure_ports": {
+        "secure-ports": {
             "type": "or",
             "classifiers": [
                 { "type": "port", "port": 443 },
@@ -38,8 +42,8 @@
     "allowlist": { 
         "type": "or",
         "classifiers": [
-            { "type": "ref", "id": "internal_network" },
-            { "type": "ref", "id": "google_services" }
+            { "type": "ref", "id": "internal-network" },
+            { "type": "ref", "id": "google-services" }
         ]
     },
     "blocklist": {
@@ -49,20 +53,20 @@
     },
     "forwards": [
         {
-            "classifier": { "type": "ref", "id": "internal_network" },
+            "classifier": { "type": "ref", "id": "internal-network" },
             "type": "socks5",
             "address": "10.0.0.1:1080",
             "username": "sockuser", 
             "password": "sockpass"
         },
         {
-            "classifier": { "type": "ref", "id": "secure_ports" },
+            "classifier": { "type": "ref", "id": "secure-ports" },
             "type": "proxy",
             "address": "secure-proxy.local:3128"
         },
         { 
             "classifier": { "type": "true" }, 
-            "type": "default_network"
+            "type": "default-network"
         }
     ]
 }

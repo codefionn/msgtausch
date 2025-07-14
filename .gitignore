@@ -49,3 +49,12 @@ coverage.html
 
 # Dependency directories (remove the comment below if you want to check in your dependencies)
 # vendor/
+
+/msgtausch-srv/stats/msgtausch_stats.db
+/msgtausch_stats.*
+
+**/templates/*_templ.go
+
+/GEMINI.md
+
+/result

@@ -10,6 +10,11 @@ A configurable forward proxy written in Go that can be configured using either J
 - HTTP/HTTPS/QUIC interception support
 - Forward support (forward specific connections to socks5 proxy, upstream proxy
   or default connection)
+- A single binary
+
+## Non-goals
+
+- HTML-Filtering
 
 ## Configuration
 

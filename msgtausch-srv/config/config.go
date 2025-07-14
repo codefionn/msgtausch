@@ -36,6 +36,12 @@ type InterceptionConfig struct {
 	CAKeyFile string // Path to CA private key file (for HTTPS/QUIC interceptor)
 }
 
+// PortalConfig defines settings for the admin portal
+type PortalConfig struct {
+	Username string `json:"username"` // Optional username for portal authentication
+	Password string `json:"password"` // Optional password for portal authentication
+}
+
 // ServerConfig defines configuration for a single proxy server instance
 type ServerConfig struct {
 	Type                 ProxyType // Type of proxy server (standard, http, https)
@@ -56,6 +62,8 @@ type Config struct {
 	Allowlist                Classifier         // Optional host allowlist using classifier
 	Blocklist                Classifier         // Optional host blocklist using classifier
 	Interception             InterceptionConfig // Global settings for traffic interception
+	Statistics               StatisticsConfig   // Statistics collection configuration
+	Portal                   PortalConfig       // Portal authentication configuration
 }
 
 // ForwardType defines the type of forwarding rule.
@@ -159,10 +167,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		MaxConcurrentConnections: 100,
 	}
 
-	// Apply environment variables
-	loadConfigFromEnv(cfg)
-
-	// If config file exists, load it
+	// If config file exists, load it first
 	if configPath != "" {
 		var err error
 
@@ -181,7 +186,20 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 	}
 
+	// Apply environment variables (these override config file values)
+	loadConfigFromEnv(cfg)
+
 	return cfg, nil
+}
+
+// StatisticsConfig holds configuration for statistics collection
+type StatisticsConfig struct {
+	Enabled       bool   `json:"enabled" hcl:"enabled"`
+	Backend       string `json:"backend" hcl:"backend"`               // "sqlite", "postgres", or "dummy"
+	SQLitePath    string `json:"sqlite_path" hcl:"sqlite_path"`       // Path to SQLite database file
+	PostgresDSN   string `json:"postgres_dsn" hcl:"postgres_dsn"`     // PostgreSQL connection string
+	BufferSize    int    `json:"buffer_size" hcl:"buffer_size"`       // Buffer size for batch operations
+	FlushInterval int    `json:"flush_interval" hcl:"flush_interval"` // Flush interval in seconds
 }
 
 // validateConfigKeys checks for common key mistakes like using underscores instead of hyphens
@@ -669,6 +687,94 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 		}
 	}
 
+	// Handle portal configuration
+	if val, exists := data["portal"]; exists {
+		portalMap, ok := val.(map[string]any)
+		if !ok {
+			return fmt.Errorf("portal configuration must be an object")
+		}
+
+		// Parse username
+		if usernameVal, exists := portalMap["username"]; exists {
+			if username, err := parseValue[string](usernameVal); err == nil {
+				cfg.Portal.Username = *username
+			} else {
+				return fmt.Errorf("portal username must be a string: %w", err)
+			}
+		}
+
+		// Parse password
+		if passwordVal, exists := portalMap["password"]; exists {
+			if password, err := parseValue[string](passwordVal); err == nil {
+				cfg.Portal.Password = *password
+			} else {
+				return fmt.Errorf("portal password must be a string: %w", err)
+			}
+		}
+	}
+
+	// Handle statistics configuration
+	if val, exists := data["statistics"]; exists {
+		statsMap, ok := val.(map[string]any)
+		if !ok {
+			return fmt.Errorf("statistics configuration must be an object")
+		}
+
+		// Parse enabled
+		if enabledVal, exists := statsMap["enabled"]; exists {
+			if enabled, err := parseValue[bool](enabledVal); err == nil {
+				cfg.Statistics.Enabled = *enabled
+			} else {
+				return fmt.Errorf("statistics enabled must be a boolean: %w", err)
+			}
+		}
+
+		// Parse backend
+		if backendVal, exists := statsMap["backend"]; exists {
+			if backend, err := parseValue[string](backendVal); err == nil {
+				cfg.Statistics.Backend = *backend
+			} else {
+				return fmt.Errorf("statistics backend must be a string: %w", err)
+			}
+		}
+
+		// Parse sqlite_path
+		if sqlitePathVal, exists := statsMap["sqlite_path"]; exists {
+			if sqlitePath, err := parseValue[string](sqlitePathVal); err == nil {
+				cfg.Statistics.SQLitePath = *sqlitePath
+			} else {
+				return fmt.Errorf("statistics sqlite_path must be a string: %w", err)
+			}
+		}
+
+		// Parse postgres_dsn
+		if postgresDsnVal, exists := statsMap["postgres_dsn"]; exists {
+			if postgresDsn, err := parseValue[string](postgresDsnVal); err == nil {
+				cfg.Statistics.PostgresDSN = *postgresDsn
+			} else {
+				return fmt.Errorf("statistics postgres_dsn must be a string: %w", err)
+			}
+		}
+
+		// Parse buffer_size
+		if bufferSizeVal, exists := statsMap["buffer_size"]; exists {
+			if bufferSize, err := parseValue[int](bufferSizeVal); err == nil {
+				cfg.Statistics.BufferSize = *bufferSize
+			} else {
+				return fmt.Errorf("statistics buffer_size must be an integer: %w", err)
+			}
+		}
+
+		// Parse flush_interval
+		if flushIntervalVal, exists := statsMap["flush_interval"]; exists {
+			if flushInterval, err := parseValue[int](flushIntervalVal); err == nil {
+				cfg.Statistics.FlushInterval = *flushInterval
+			} else {
+				return fmt.Errorf("statistics flush_interval must be an integer: %w", err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -931,6 +1037,15 @@ func loadConfigFromEnv(cfg *Config) {
 	// Handle global CA key file setting
 	if caKeyFile := os.Getenv("MSGTAUSCH_CAKEYFILE"); caKeyFile != "" {
 		cfg.Interception.CAKeyFile = caKeyFile
+	}
+
+	// Handle portal configuration from environment variables
+	if portalUsername := os.Getenv("MSGTAUSCH_PORTAL_USERNAME"); portalUsername != "" {
+		cfg.Portal.Username = portalUsername
+	}
+
+	if portalPassword := os.Getenv("MSGTAUSCH_PORTAL_PASSWORD"); portalPassword != "" {
+		cfg.Portal.Password = portalPassword
 	}
 
 	// For backward compatibility: if MSGTAUSCH_LISTENADDRESS is specified but no servers,

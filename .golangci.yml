@@ -66,6 +66,14 @@ issues:
       linters:
         - gocyclo
       path: msgtausch-srv/proxy/
+    - text: "cyclomatic complexity.*is high"
+      linters:
+        - gocyclo
+      path: msgtausch-srv/stats/
+    - text: "cyclomatic complexity.*is high"
+      linters:
+        - gocyclo
+      path: msgtausch-srv/dashboard/
     - text: "response body must be closed"
       linters:
         - bodyclose

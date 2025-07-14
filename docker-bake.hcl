@@ -28,6 +28,13 @@ target "builder-base" {
   dockerfile = "Dockerfile"
 }
 
+// Target for generating templ files
+target "templ" {
+  target = "templ-generate"
+  dockerfile = "Dockerfile"
+  output = ["type=cacheonly"]
+}
+
 // Target for verifying code formatting with gofmt
 target "format" {
   target = "format-check"
@@ -37,7 +44,7 @@ target "format" {
 
 // Target for running tests
 target "test" {
-  target = "test"
+  target = "unit-test"
   dockerfile = "Dockerfile"
   output = ["type=cacheonly"]
 }
@@ -77,10 +84,10 @@ target "release" {
 
 // Default group including tests and build
 group "default" {
-  targets = ["format", "test", "build"]
+  targets = ["templ", "format", "test", "build"]
 }
 
 // CI group for continuous integration
 group "ci" {
-  targets = ["format", "test", "release"]
+  targets = ["templ", "format", "test", "release"]
 }

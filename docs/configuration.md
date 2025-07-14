@@ -25,6 +25,20 @@ The root configuration object contains the following fields:
 | `blocklist` | `Classifier` | `null` | Block hosts matching this classifier |
 | `forwards` | `[]Forward` | `[]` | Forwarding rules for different destinations |
 | `interception` | `InterceptionConfig` | `{...}` | Global interception settings |
+| `statistics` | `StatisticsConfig` | `{...}` | Statistics collection configuration |
+
+### Statistics Configuration
+
+The `statistics` object controls statistics collection and monitoring:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable statistics collection |
+| `backend` | `string` | `"sqlite"` | Storage backend: `"sqlite"`, `"postgres"`, or `"dummy"` |
+| `sqlite-path` | `string` | `"msgtausch_stats.db"` | Path to SQLite database file |
+| `postgres-dsn` | `string` | `""` | PostgreSQL connection string |
+| `buffer-size` | `int` | `1000` | Buffer size for batch operations |
+| `flush-interval` | `int` | `300` | Flush interval in seconds (5 minutes) |
 
 ### Server Configuration
 
@@ -167,6 +181,12 @@ Configuration can be overridden using environment variables with the `MSGTAUSCH_
 | `MSGTAUSCH_INTERCEPTHTTPS` | Enable HTTPS traffic interception | bool |
 | `MSGTAUSCH_CAFILE` | Path to CA certificate file | string |
 | `MSGTAUSCH_CAKEYFILE` | Path to CA private key file | string |
+| `MSGTAUSCH_STATISTICS_ENABLED` | Enable statistics collection | bool |
+| `MSGTAUSCH_STATISTICS_BACKEND` | Statistics backend type | string |
+| `MSGTAUSCH_STATISTICS_SQLITE_PATH` | Path to SQLite stats database | string |
+| `MSGTAUSCH_STATISTICS_POSTGRES_DSN` | PostgreSQL connection string | string |
+| `MSGTAUSCH_STATISTICS_BUFFER_SIZE` | Buffer size for batch operations | int |
+| `MSGTAUSCH_STATISTICS_FLUSH_INTERVAL` | Flush interval in seconds | int |
 | `MSGTAUSCH_LISTENADDRESS` | Address for single server (backward compatibility) | string |
 
 ### Server-Specific Variables
@@ -182,6 +202,17 @@ For multiple servers, use indexed environment variables where `N` is the server 
 | `MSGTAUSCH_SERVER_N_CONNECTIONSPCLIENT` | Max connections per client for server N | int |
 | `MSGTAUSCH_SERVER_N_CAFILE` | CA file for server N | string |
 | `MSGTAUSCH_SERVER_N_CAKEYFILE` | CA key file for server N | string |
+
+### Statistics Environment Variables
+
+| Environment Variable Pattern | Description | Type |
+|------------------------------|-------------|------|
+| `MSGTAUSCH_STATISTICS_ENABLED` | Enable statistics collection | bool |
+| `MSGTAUSCH_STATISTICS_BACKEND` | Statistics backend type | string |
+| `MSGTAUSCH_STATISTICS_SQLITE_PATH` | Path to SQLite database | string |
+| `MSGTAUSCH_STATISTICS_POSTGRES_DSN` | PostgreSQL connection string | string |
+| `MSGTAUSCH_STATISTICS_BUFFER_SIZE` | Buffer size for batch operations | int |
+| `MSGTAUSCH_STATISTICS_FLUSH_INTERVAL` | Flush interval in seconds | int |
 
 ### Examples
 
@@ -217,6 +248,28 @@ export MSGTAUSCH_SERVER_1_ENABLED=true
   ],
   "timeout-seconds": 30,
   "max-concurrent-connections": 100
+},
+  "statistics": {
+    "enabled": true,
+    "backend": "sqlite",
+    "sqlite-path": "proxy_stats.db",
+    "flush-interval": 300
+  }
+},
+  "allowlist": {
+    "type": "ref",
+    "id": "internal-network"
+  }
+},
+  "allowlist": {
+    "type": "ref",
+    "id": "internal-network"
+  }
+},
+  "allowlist": {
+    "type": "ref",
+    "id": "internal-network"
+  }
 }
 ```
 
@@ -309,6 +362,45 @@ allowlist = {
 }
 ```
 
+### Statistics Configuration Example
+
+#### Basic Statistics
+```json
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "127.0.0.1:8080"
+    }
+  ],
+  "statistics": {
+    "enabled": true,
+    "backend": "sqlite",
+    "sqlite-path": "./proxy_stats.db"
+  }
+}
+```
+
+#### PostgreSQL Statistics
+```json
+{
+  "statistics": {
+    "enabled": true,
+    "backend": "postgres",
+    "postgres-dsn": "postgres://user:pass@localhost/msgtausch?sslmode=disable",
+    "buffer-size": 2000,
+    "flush-interval": 600
+  }
+}
+```
+
+#### Statistics via Environment Variables
+```bash
+export MSGTAUSCH_STATISTICS_ENABLED=true
+export MSGTAUSCH_STATISTICS_BACKEND=sqlite
+export MSGTAUSCH_STATISTICS_SQLITE_PATH=./proxy_stats.db
+```
+
 ## Configuration Validation
 
 The configuration is validated on startup with the following rules:
@@ -321,7 +413,11 @@ The configuration is validated on startup with the following rules:
 
 ## Best Practices
 
-1. **Use named classifiers** for complex rules that are reused
+- **Use named classifiers** for complex rules that are reused
+- **Monitor statistics database** growth and implement retention policies
+- **Test statistics configuration** in non-production environments
+- **Use appropriate buffer sizes** based on expected traffic volume
+- **Consider PostgreSQL** for high-traffic deployments
 2. **Order forwarding rules** from most specific to least specific
 3. **Set appropriate connection limits** based on expected load
 4. **Use environment variables** for deployment-specific settings

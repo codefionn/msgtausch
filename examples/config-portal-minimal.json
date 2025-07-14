@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "127.0.0.1:8080",
+      "enabled": true
+    }
+  ],
+  "timeout-seconds": 30,
+  "max-concurrent-connections": 100,
+  "portal": {
+    "username": "admin",
+    "password": "your-secure-password"
+  },
+  "forwards": [
+    {
+      "classifier": { "type": "true" },
+      "type": "default-network"
+    }
+  ]
+}

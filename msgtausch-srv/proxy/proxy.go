@@ -15,23 +15,24 @@ import (
 	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
+	"github.com/codefionn/msgtausch/msgtausch-srv/dashboard"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
+	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 )
 
-// contextKey is a type used for context keys to prevent collisions
 type contextKey struct {
 	name string
 }
 
-// clientKey is the unexported key used to store HTTP clients in request context
 var clientKey = &contextKey{name: "http-client"}
+var clientIPKey = &contextKey{name: "client-ip"}
 
-// WithClient returns a new context with the client value set
 func WithClient(ctx context.Context, client *http.Client) context.Context {
 	return context.WithValue(ctx, clientKey, client)
 }
 
-// ClientFromContext extracts the HTTP client from the context, if any
 func ClientFromContext(ctx context.Context) (*http.Client, bool) {
 	clientVal := ctx.Value(clientKey)
 	if clientVal == nil {
@@ -41,27 +42,40 @@ func ClientFromContext(ctx context.Context) (*http.Client, bool) {
 	return client, ok
 }
 
-// Server represents a single proxy server instance (standard, HTTP, or HTTPS)
-type Server struct {
-	config              *config.Config        // Global configuration
-	serverConfig        config.ServerConfig   // Server-specific configuration
-	server              *http.Server          // HTTP server instance
-	httpsInterceptor    *HTTPSInterceptor     // Only used for HTTPS interception
-	httpInterceptor     *HTTPInterceptor      // Only used for HTTP interception
-	quicInterceptor     *QUICHTTP3Interceptor // Only used for QUIC/HTTP3 interception
-	compiledForwards    []compiledForward     // Forwarding rules
-	blocklistClassifier Classifier            // Host blocklist
-	allowlistClassifier Classifier            // Host allowlist
-	proxy               *Proxy                // Reference to parent proxy for connection handling
+func WithClientIP(ctx context.Context, clientIP string) context.Context {
+	return context.WithValue(ctx, clientIPKey, clientIP)
 }
 
-// Proxy manages multiple proxy server instances
+func ClientIPFromContext(ctx context.Context) (string, bool) {
+	clientIPVal := ctx.Value(clientIPKey)
+	if clientIPVal == nil {
+		return "", false
+	}
+	clientIP, ok := clientIPVal.(string)
+	return clientIP, ok
+}
+
+type Server struct {
+	config              *config.Config
+	serverConfig        config.ServerConfig
+	server              *http.Server
+	httpsInterceptor    *HTTPSInterceptor
+	httpInterceptor     *HTTPInterceptor
+	quicInterceptor     *QUICHTTP3Interceptor
+	compiledForwards    []compiledForward
+	blocklistClassifier Classifier
+	allowlistClassifier Classifier
+	proxy               *Proxy
+}
+
 type Proxy struct {
-	config              *config.Config    // Global configuration
-	servers             []*Server         // List of server instances
-	compiledForwards    []compiledForward // Shared forwarding rules
-	blocklistClassifier Classifier        // Shared host blocklist
-	allowlistClassifier Classifier        // Shared host allowlist
+	config              *config.Config
+	servers             []*Server
+	compiledForwards    []compiledForward
+	blocklistClassifier Classifier
+	allowlistClassifier Classifier
+	portal              *dashboard.Portal
+	stats.Collector
 }
 
 type compiledForward struct {
@@ -69,11 +83,9 @@ type compiledForward struct {
 	classifier Classifier
 }
 
-// getForwardDebugInfo returns a debug string containing information about a forward configuration
 func (p *Proxy) getForwardDebugInfo(fwd config.Forward) string {
 	var info strings.Builder
 
-	// Forward type information
 	switch f := fwd.(type) {
 	case *config.ForwardDefaultNetwork:
 		info.WriteString("type=default-network")
@@ -97,7 +109,6 @@ func (p *Proxy) getForwardDebugInfo(fwd config.Forward) string {
 		info.WriteString(fmt.Sprintf("type=unknown(%T)", fwd))
 	}
 
-	// Classifier information
 	classifierInfo := p.getClassifierDebugInfo(fwd.Classifier())
 	if classifierInfo != "" {
 		info.WriteString(fmt.Sprintf(", classifier=%s", classifierInfo))
@@ -108,7 +119,24 @@ func (p *Proxy) getForwardDebugInfo(fwd config.Forward) string {
 	return info.String()
 }
 
-// getClassifierDebugInfo returns a debug string containing information about a classifier
+func (p *Proxy) GetConfig() *config.Config {
+	return p.config
+}
+
+func (p *Proxy) GetServerInfo() []dashboard.ServerInfo {
+	info := make([]dashboard.ServerInfo, 0, len(p.servers))
+	for _, server := range p.servers {
+		info = append(info, dashboard.ServerInfo{
+			Type:                 string(server.serverConfig.Type),
+			ListenAddress:        server.serverConfig.ListenAddress,
+			Enabled:              server.serverConfig.Enabled,
+			MaxConnections:       server.serverConfig.MaxConnections,
+			ConnectionsPerClient: server.serverConfig.ConnectionsPerClient,
+		})
+	}
+	return info
+}
+
 func (p *Proxy) getClassifierDebugInfo(classifier config.Classifier) string {
 	if classifier == nil {
 		return "nil"
@@ -150,13 +178,10 @@ func (p *Proxy) getClassifierDebugInfo(classifier config.Classifier) string {
 	}
 }
 
-// CompileClassifiers pre-compiles classifiers for all forwarding rules.
 func (p *Proxy) CompileClassifiers() {
-	// Pre-compile classifiers for all forwarding rules (shared across all servers)
 	if p.config.Forwards != nil {
 		logger.Info("Compiling %d forward configurations", len(p.config.Forwards))
 		for i, fwd := range p.config.Forwards {
-			// Debug information about the forward configuration
 			forwardInfo := p.getForwardDebugInfo(fwd)
 			logger.Info("Forward[%d]: %s", i, forwardInfo)
 
@@ -176,7 +201,6 @@ func (p *Proxy) CompileClassifiers() {
 		logger.Info("No forward configurations found")
 	}
 
-	// Compile blocklist classifier once (shared across all servers)
 	if p.config.Blocklist != nil {
 		blf, err := CompileClassifier(p.config.Blocklist)
 		if err != nil {
@@ -186,7 +210,6 @@ func (p *Proxy) CompileClassifiers() {
 		}
 	}
 
-	// Compile allowlist classifier once (shared across all servers)
 	if p.config.Allowlist != nil {
 		alf, err := CompileClassifier(p.config.Allowlist)
 		if err != nil {
@@ -197,7 +220,6 @@ func (p *Proxy) CompileClassifiers() {
 	}
 }
 
-// NewProxy creates a new Proxy instance with the given configuration.
 func NewProxy(cfg *config.Config) *Proxy {
 	p := &Proxy{
 		config:  cfg,
@@ -206,15 +228,25 @@ func NewProxy(cfg *config.Config) *Proxy {
 
 	p.CompileClassifiers()
 
-	// Create server instances for each configured server
+	if cfg.Statistics.Enabled {
+		var err error
+		factory := stats.NewCollectorFactory()
+		p.Collector, err = factory.CreateCollector(cfg.Statistics)
+		if err != nil {
+			logger.Error("Failed to initialize statistics collector: %v", err)
+		}
+	} else {
+		p.Collector = stats.NewDummyCollector()
+	}
+
+	p.portal = dashboard.NewPortal(cfg, p, p)
+
 	for _, serverCfg := range cfg.Servers {
-		// Skip disabled servers
 		if !serverCfg.Enabled {
 			logger.Info("Skipping disabled server on %s", serverCfg.ListenAddress)
 			continue
 		}
 
-		// Create the server instance
 		server := &Server{
 			config:              cfg,
 			serverConfig:        serverCfg,
@@ -225,11 +257,8 @@ func NewProxy(cfg *config.Config) *Proxy {
 			proxy:               p,
 		}
 
-		// Initialize interceptors based on server type
 		switch serverCfg.Type {
 		case config.ProxyTypeHTTPS:
-			// Initialize HTTPS interceptor
-			// Use global CA file settings from InterceptionConfig
 			caFile := cfg.Interception.CAFile
 			caKeyFile := cfg.Interception.CAKeyFile
 
@@ -238,7 +267,6 @@ func NewProxy(cfg *config.Config) *Proxy {
 				continue
 			}
 
-			// Validate and load CA certificate and private key
 			cleanCACertPath := filepath.Clean(caFile)
 			if !filepath.IsAbs(cleanCACertPath) {
 				absPath, err := filepath.Abs(cleanCACertPath)
@@ -269,7 +297,6 @@ func NewProxy(cfg *config.Config) *Proxy {
 				continue
 			}
 
-			// Create HTTPS interceptor
 			httpsInterceptor, err := NewHTTPSInterceptor(caCert, caKey, p, nil, nil)
 			if err != nil {
 				logger.Error("Failed to create HTTPS interceptor: %v", err)
@@ -278,18 +305,15 @@ func NewProxy(cfg *config.Config) *Proxy {
 			server.httpsInterceptor = httpsInterceptor
 
 		case config.ProxyTypeHTTP:
-			// Initialize HTTP interceptor
 			server.httpInterceptor = NewHTTPInterceptor(p)
 
 		case config.ProxyTypeStandard:
-			// Standard proxy doesn't need additional interceptors
 
 		default:
 			logger.Error("Unknown proxy type: %s", serverCfg.Type)
 			continue
 		}
 
-		// Add the server to the list
 		p.servers = append(p.servers, server)
 	}
 
@@ -300,8 +324,6 @@ func NewProxy(cfg *config.Config) *Proxy {
 	return p
 }
 
-// Start launches all configured proxy servers.
-// This also waits for all proxy servers.
 func (p *Proxy) Start() error {
 	if len(p.servers) == 0 {
 		return fmt.Errorf("no enabled proxy servers configured")
@@ -310,7 +332,6 @@ func (p *Proxy) Start() error {
 	var wg sync.WaitGroup
 	var startErrors []error
 
-	// Start all enabled server instances
 	for _, server := range p.servers {
 		wg.Add(1)
 		go func(s *Server) {
@@ -325,30 +346,22 @@ func (p *Proxy) Start() error {
 	wg.Wait()
 
 	if len(startErrors) > 0 {
-		// Return the first error for now
 		return startErrors[0]
 	}
-
 	return nil
 }
 
-// StartWithListener starts the proxy server using an existing listener.
-// This is useful for testing with dynamically assigned ports.
 func (p *Proxy) StartWithListener(listener net.Listener) error {
-	// For now, use this with the first server only
 	if len(p.servers) == 0 {
 		return fmt.Errorf("no enabled proxy servers configured")
 	}
 
-	// Use the first server for backward compatibility
 	return p.servers[0].StartWithListener(listener)
 }
 
-// StartWithListener starts the proxy server with the given listener.
 func (p *Server) StartWithListener(listener net.Listener) error {
 	handler := http.HandlerFunc(p.handleRequest)
 
-	// Create a new http server with the listener
 	p.server = &http.Server{
 		Handler:      handler,
 		ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
@@ -359,13 +372,20 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 					logger.Debug("DialContext: network=%s addr=%s", network, addr)
 					return p.createForwardTCPClient(ctx, addr)
 				},
-				// We don't add a custom DialTLSContext for WebSocket connections as that would require wrapping
+				DisableKeepAlives:     false,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+				IdleConnTimeout:       90 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
 			}
 			client := &http.Client{
 				Timeout:   time.Duration(p.config.TimeoutSeconds) * time.Second,
 				Transport: transport,
 			}
-			return WithClient(ctx, client)
+			clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+			ctx = WithClient(ctx, client)
+			ctx = WithClientIP(ctx, clientIP)
+			return ctx
 		},
 	}
 
@@ -373,12 +393,9 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 	return p.server.Serve(listener)
 }
 
-// Start launches a single proxy server instance
 func (p *Server) Start() error {
-	// Handle server type-specific initialization
 	switch p.serverConfig.Type {
 	case config.ProxyTypeStandard:
-		// Standard HTTP proxy server
 		handler := http.HandlerFunc(p.handleRequest)
 		p.server = &http.Server{
 			Addr:         p.serverConfig.ListenAddress,
@@ -391,12 +408,20 @@ func (p *Server) Start() error {
 						logger.Debug("DialContext: network=%s addr=%s", network, addr)
 						return p.createForwardTCPClient(ctx, addr)
 					},
+					DisableKeepAlives:     false,
+					MaxIdleConns:          100,
+					MaxIdleConnsPerHost:   10,
+					IdleConnTimeout:       90 * time.Second,
+					ExpectContinueTimeout: 1 * time.Second,
 				}
 				client := &http.Client{
 					Timeout:   time.Duration(p.config.TimeoutSeconds) * time.Second,
 					Transport: transport,
 				}
-				return WithClient(ctx, client)
+				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+				ctx = WithClient(ctx, client)
+				ctx = WithClientIP(ctx, clientIP)
+				return ctx
 			},
 		}
 
@@ -404,8 +429,6 @@ func (p *Server) Start() error {
 		return p.server.ListenAndServe()
 
 	case config.ProxyTypeHTTPS:
-		// HTTPS intercepting proxy
-		// Use global CA file settings from InterceptionConfig
 		caFile := p.config.Interception.CAFile
 		caKeyFile := p.config.Interception.CAKeyFile
 
@@ -413,7 +436,6 @@ func (p *Server) Start() error {
 			return fmt.Errorf("HTTPS interceptor requires CA certificate and key files")
 		}
 
-		// Read CA certificate and key files
 		cleanCACertPath := filepath.Clean(caFile)
 		if !filepath.IsAbs(cleanCACertPath) {
 			absPath, err := filepath.Abs(cleanCACertPath)
@@ -433,7 +455,6 @@ func (p *Server) Start() error {
 			return fmt.Errorf("failed to read CA key file '%s': %w", caKeyFile, err)
 		}
 
-		// Initialize HTTPS interceptor
 		p.httpsInterceptor, err = NewHTTPSInterceptor(caCert, caKey, p.proxy, nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to initialize HTTPS interceptor: %w", err)
@@ -442,11 +463,8 @@ func (p *Server) Start() error {
 		return p.startHTTPSInterceptor()
 
 	case config.ProxyTypeHTTP:
-		// HTTP intercepting proxy
-		// Initialize HTTP interceptor
 		p.httpInterceptor = NewHTTPInterceptor(p.proxy)
 
-		// Set up the HTTP server for the interceptor
 		handler := http.HandlerFunc(p.handleRequest)
 		p.server = &http.Server{
 			Addr:         p.serverConfig.ListenAddress,
@@ -459,12 +477,20 @@ func (p *Server) Start() error {
 						logger.Debug("DialContext: network=%s addr=%s", network, addr)
 						return p.createForwardTCPClient(ctx, addr)
 					},
+					DisableKeepAlives:     false,
+					MaxIdleConns:          100,
+					MaxIdleConnsPerHost:   10,
+					IdleConnTimeout:       90 * time.Second,
+					ExpectContinueTimeout: 1 * time.Second,
 				}
 				client := &http.Client{
 					Timeout:   time.Duration(p.config.TimeoutSeconds) * time.Second,
 					Transport: transport,
 				}
-				return WithClient(ctx, client)
+				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+				ctx = WithClient(ctx, client)
+				ctx = WithClientIP(ctx, clientIP)
+				return ctx
 			},
 		}
 
@@ -472,13 +498,11 @@ func (p *Server) Start() error {
 		return p.server.ListenAndServe()
 
 	case config.ProxyTypeQUIC:
-		// QUIC/HTTP3 intercepting proxy
 		caFile := p.config.Interception.CAFile
 		caKeyFile := p.config.Interception.CAKeyFile
 		if caFile == "" || caKeyFile == "" {
 			return fmt.Errorf("QUIC/HTTP3 interceptor requires CA certificate and key files")
 		}
-		// Read CA certificate and key files
 		cleanCACertPath := filepath.Clean(caFile)
 		if !filepath.IsAbs(cleanCACertPath) {
 			absPath, err := filepath.Abs(cleanCACertPath)
@@ -512,7 +536,6 @@ func (p *Server) Start() error {
 				return fmt.Errorf("failed to initialize QUIC/HTTP3 interceptor: %w", err)
 			}
 		}
-		// Listen on UDP for QUIC/HTTP3 traffic
 		udpAddr, err := net.ResolveUDPAddr("udp", p.serverConfig.ListenAddress)
 		if err != nil {
 			return fmt.Errorf("failed to resolve UDP address '%s': %w", p.serverConfig.ListenAddress, err)
@@ -522,22 +545,18 @@ func (p *Server) Start() error {
 			return fmt.Errorf("failed to listen on UDP address '%s': %w", p.serverConfig.ListenAddress, err)
 		}
 		logger.Info("Starting QUIC/HTTP3 intercepting proxy server on %s", p.serverConfig.ListenAddress)
-		// Start the QUIC/HTTP3 interception loop
 		go p.quicInterceptor.HandleUDPConnection(udpConn, udpAddr, p.serverConfig.ListenAddress)
-		// Block forever (or until shutdown logic is added)
 		select {}
 	default:
 		return fmt.Errorf("unknown proxy type: %s", p.serverConfig.Type)
 	}
 }
 
-// startHTTPSInterceptor starts an HTTPS interceptor server using raw TCP
 func (p *Server) startHTTPSInterceptor() error {
 	if p.httpsInterceptor == nil {
 		return fmt.Errorf("HTTPS interceptor not initialized")
 	}
 
-	// Create a TCP listener
 	listener, err := net.Listen("tcp", p.serverConfig.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("failed to create listener for HTTPS interceptor: %w", err)
@@ -545,7 +564,6 @@ func (p *Server) startHTTPSInterceptor() error {
 
 	logger.Info("Starting HTTPS interceptor on %s", p.serverConfig.ListenAddress)
 
-	// Accept connections and handle them
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -556,7 +574,6 @@ func (p *Server) startHTTPSInterceptor() error {
 			continue
 		}
 
-		// Handle the connection in a new goroutine
 		go func() {
 			defer func() {
 				if closeErr := conn.Close(); closeErr != nil {
@@ -564,7 +581,6 @@ func (p *Server) startHTTPSInterceptor() error {
 				}
 			}()
 
-			// Initial buffer to read the first few bytes to determine if it's an HTTP CONNECT or direct TLS
 			buf := make([]byte, 1)
 			_, err := conn.Read(buf)
 			if err != nil {
@@ -572,13 +588,11 @@ func (p *Server) startHTTPSInterceptor() error {
 				return
 			}
 
-			// Create a new connection that includes the first byte we read
 			bufConn := &bufferConn{
 				Conn: conn,
 				buf:  buf,
 			}
 
-			// Handle the TCP connection directly
 			p.httpsInterceptor.HandleTCPConnection(bufConn, "")
 		}()
 	}
@@ -586,7 +600,6 @@ func (p *Server) startHTTPSInterceptor() error {
 	return nil
 }
 
-// bufferConn wraps a net.Conn and prepends a buffer to the read stream
 type bufferConn struct {
 	net.Conn
 	buf []byte
@@ -601,25 +614,28 @@ func (bc *bufferConn) Read(b []byte) (int, error) {
 	return bc.Conn.Read(b)
 }
 
-// isClosedConnError checks if the error is a standard "use of closed network connection" error
-// This often happens during graceful shutdowns and might not need alarming logs.
 func isClosedConnError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for the specific error string used by net package
 	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
-// handleRequest handles HTTP requests, including CONNECT method for tunneling
 func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
-	// For CONNECT requests, the Host field is not used; instead, the target is in r.URL.Host
+	ctx := r.Context()
+	targetAddr := r.Host
+	logger.Debug("CONNECT request for %s", targetAddr)
+
+	if p.proxy.portal.IsPortalRequest(r) {
+		p.proxy.portal.ServeHTTP(w, r)
+		return
+	}
+
 	host := r.Host
 	if r.Method == http.MethodConnect {
 		host = r.URL.Host
 	}
 
-	// Check for WebSocket upgrade request
 	isWebSocketUpgrade := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 
@@ -628,42 +644,80 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var remotePort uint16
-	if colon := strings.LastIndex(host, ":"); colon != -1 {
-		remotePortUint64, _ := strconv.ParseUint(host[colon+1:], 10, 16)
-		remotePort = uint16(remotePortUint64)
-	}
-	if remotePort == 0 && r.URL != nil && r.URL.Port() != "" {
-		remotePortUint64, _ := strconv.ParseUint(r.URL.Port(), 10, 16)
-		remotePort = uint16(remotePortUint64)
+	hostname, portStr, err := net.SplitHostPort(host)
+	if err != nil {
+		// If parsing fails, use the original host as hostname (it might not have a port)
+		hostname = host
+		logger.Debug("No port found in host, using default: %s", host)
+	} else {
+		port, err := strconv.ParseUint(portStr, 10, 16)
+		if err != nil {
+			logger.Error("Error parsing port: %v", err)
+		} else {
+			remotePort = uint16(port)
+		}
 	}
 	if remotePort == 0 {
-		if colon := strings.LastIndex(r.RemoteAddr, ":"); colon != -1 {
-			remotePortUint64, _ := strconv.ParseUint(r.RemoteAddr[colon+1:], 10, 16)
+		if colon := strings.LastIndex(host, ":"); colon != -1 {
+			remotePortUint64, _ := strconv.ParseUint(host[colon+1:], 10, 16)
 			remotePort = uint16(remotePortUint64)
+			// If we found a port this way and hostname is still the full host, extract just the hostname
+			if hostname == host {
+				hostname = host[:colon]
+			}
+		}
+		if remotePort == 0 && r.URL != nil && r.URL.Port() != "" {
+			remotePortUint64, _ := strconv.ParseUint(r.URL.Port(), 10, 16)
+			remotePort = uint16(remotePortUint64)
+		}
+		if remotePort == 0 {
+			if colon := strings.LastIndex(r.RemoteAddr, ":"); colon != -1 {
+				remotePortUint64, _ := strconv.ParseUint(r.RemoteAddr[colon+1:], 10, 16)
+				remotePort = uint16(remotePortUint64)
+			}
 		}
 	}
 
-	hostname := strings.Split(host, ":")[0]
-
-	// Extract client IP from request
-	remoteIP := r.RemoteAddr
-	if colon := strings.LastIndex(remoteIP, ":"); colon != -1 {
-		remoteIP = remoteIP[:colon]
+	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		clientIP = r.RemoteAddr
 	}
 
-	if !p.isHostAllowed(hostname, remoteIP, remotePort) {
+	var connectionID int64
+	var startErr error
+
+	if p.proxy.Collector != nil {
+		connectionID, startErr = p.proxy.Collector.StartConnection(ctx, clientIP, hostname, int(remotePort), "http")
+		if startErr != nil {
+			logger.Error("Failed to record connection start: %v", err)
+		}
+	}
+
+	if !p.isHostAllowed(hostname, clientIP, remotePort) {
 		logger.Warn("Host not allowed: %s", host)
+		if p.proxy.Collector != nil {
+			if err := p.proxy.Collector.RecordBlockedRequest(ctx, clientIP, hostname, "host_not_allowed"); err != nil {
+				logger.Error("Failed to record blocked request: %v", err)
+			}
+		}
 		http.Error(w, "Host not allowed", http.StatusForbidden)
+		if p.proxy.Collector != nil && connectionID > 0 {
+			_ = p.proxy.Collector.EndConnection(ctx, connectionID, 0, 0, 0, "blocked")
+		}
 		return
 	}
 
-	// Handle CONNECT method for HTTPS tunneling
+	if p.proxy.Collector != nil {
+		if err := p.proxy.Collector.RecordAllowedRequest(ctx, clientIP, hostname); err != nil {
+			logger.Error("Failed to record allowed request: %v", err)
+		}
+	}
+
 	if r.Method == http.MethodConnect {
-		p.handleConnect(w, r)
+		p.handleConnect(w, r, connectionID, clientIP, hostname, int(remotePort))
 		return
 	}
 
-	// Retrieve the per-connection client from the context
 	client, ok := ClientFromContext(r.Context())
 	if !ok || client == nil {
 		logger.Error("No http.Client found in request context")
@@ -671,12 +725,12 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.forwardRequest(w, r, client, host)
+	p.forwardRequest(w, r, client, host, connectionID)
 }
 
-// forwardRequest forwards an HTTP request to the target server
-func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *http.Client, host string) {
-	// Create new request for upstream: use absolute URL
+func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *http.Client, targetHost string, connectionID int64) {
+	ctx := r.Context()
+
 	var targetURL string
 	if r.URL.IsAbs() {
 		targetURL = r.URL.String()
@@ -685,15 +739,17 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		if r.TLS != nil {
 			scheme = "https"
 		}
-		targetURL = fmt.Sprintf("%s://%s%s", scheme, host, r.URL.RequestURI())
+		targetURL = fmt.Sprintf("%s://%s%s", scheme, targetHost, r.URL.RequestURI())
 	}
 	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
+		if p.proxy.Collector != nil && connectionID > 0 {
+			_ = p.proxy.Collector.RecordError(r.Context(), connectionID, "request_creation_error", err.Error())
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Check for WebSocket upgrade
 	isWebSocketRequest := false
 	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
@@ -701,16 +757,12 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		logger.Debug("Detected WebSocket upgrade request to %s", targetURL)
 	}
 
-	// Check for WebSocket headers that indicate it's a proper WebSocket connection
 	isProxiedWebSocket := false
 	if r.Header.Get("Sec-WebSocket-Key") != "" && r.Header.Get("Sec-WebSocket-Version") != "" {
 		isProxiedWebSocket = true
 		logger.Debug("Detected proxied WebSocket request to %s", targetURL)
 	}
 
-	// Copy headers but handle WebSocket headers specially
-	// For WebSockets through multiple proxies, we need to preserve certain headers
-	// that would normally be considered hop-by-hop
 	skip := map[string]struct{}{
 		"Proxy-Connection":    {},
 		"Keep-Alive":          {},
@@ -721,47 +773,36 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		"Transfer-Encoding":   {},
 	}
 
-	// Special WebSocket header handling
 	isWebSocketConnection := isWebSocketRequest || isProxiedWebSocket
 
-	// Never skip Upgrade or Connection headers for WebSocket requests
 	if !isWebSocketConnection {
 		skip["Upgrade"] = struct{}{}
 		skip["Connection"] = struct{}{}
 	}
 
-	// Copy all headers except those in skip list
 	for name, values := range r.Header {
 		if _, hop := skip[name]; hop {
-			// For WebSockets, ensure critical headers are preserved despite being hop-by-hop
 			if isWebSocketConnection {
 				if name == "Connection" {
-					// Always preserve Connection: Upgrade for WebSockets
 					req.Header.Set("Connection", "Upgrade")
 					continue
 				} else if name == "Upgrade" {
-					// Always preserve Upgrade: websocket header
 					req.Header.Set("Upgrade", "websocket")
 					continue
 				}
 			}
-			// Skip other hop-by-hop headers
 			continue
 		} else {
-			// Copy all non-hop-by-hop headers
 			for _, value := range values {
 				req.Header.Add(name, value)
 			}
 		}
 	}
 
-	// For WebSockets, ensure all required headers are present
 	if isWebSocketConnection {
-		// These headers must be preserved for WebSocket connections to work
 		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", "websocket")
 
-		// Ensure WebSocket protocol headers are preserved
 		if wsKey := r.Header.Get("Sec-WebSocket-Key"); wsKey != "" {
 			req.Header.Set("Sec-WebSocket-Key", wsKey)
 		}
@@ -770,13 +811,10 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 	}
 
-	// For WebSockets, ensure we have the necessary headers
 	if isWebSocketRequest || isProxiedWebSocket {
-		// These headers are critical for WebSocket connections to work properly through proxy chains
 		req.Header.Set("Upgrade", "websocket")
 		req.Header.Set("Connection", "Upgrade")
 
-		// Preserve important WebSocket protocol headers if they exist
 		if wsKey := r.Header.Get("Sec-WebSocket-Key"); wsKey != "" {
 			req.Header.Set("Sec-WebSocket-Key", wsKey)
 		}
@@ -791,9 +829,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 	}
 
-	// Apply HTTP interception if enabled
 	if p.isHTTPInterceptionEnabled() && p.httpInterceptor != nil {
-		// Apply request hooks
 		err := p.httpInterceptor.applyRequestHooks(req)
 		if err != nil {
 			logger.Error("Failed to apply HTTP request hooks: %v", err)
@@ -802,18 +838,15 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 	}
 
-	// Forward the request
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Error("Failed to forward request to %s: %v", host, err)
+		logger.Error("Failed to forward request to %s: %v", targetHost, err)
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			// For timeouts, StatusGatewayTimeout is generally more appropriate.
-			// We could create a custom timeout response similar to NewBadGatewayResponse if needed.
-			// For now, sticking to http.Error for timeout as it's not a "Bad Gateway" from upstream.
 			http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 		} else {
-			// Use our custom Bad Gateway response.
-			// If err is a *Error, its code will be used. Otherwise, ErrCodeHTTPForwardFailed.
+			if p.proxy.Collector != nil && connectionID > 0 {
+				_ = p.proxy.Collector.RecordError(r.Context(), connectionID, "http_forward_error", err.Error())
+			}
 			writeProxyErrorResponse(w, err, ErrCodeHTTPForwardFailed)
 		}
 		return
@@ -824,11 +857,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 	}()
 
-	// WebSocket responses are now handled below
-
-	// Apply HTTP response interception if enabled
 	if p.isHTTPInterceptionEnabled() && p.httpInterceptor != nil {
-		// Apply response hooks
 		err := p.httpInterceptor.applyResponseHooks(resp)
 		if err != nil {
 			logger.Error("Failed to apply HTTP response hooks: %v", err)
@@ -837,20 +866,36 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 	}
 
-	// Check if this is a WebSocket upgrade response
 	isWebSocketResponse := resp.StatusCode == http.StatusSwitchingProtocols &&
 		strings.ToLower(resp.Header.Get("Upgrade")) == "websocket"
 
 	if isWebSocketRequest && isWebSocketResponse {
-		logger.Debug("Handling WebSocket upgrade response from %s", host)
-		p.handleWebSocketTunnel(w, r, resp, client)
+		logger.Debug("Handling WebSocket upgrade response from %s", targetHost)
+		p.handleWebSocketTunnel(w, r, resp, client, connectionID)
 		return
 	}
 
-	// For normal HTTP responses, copy headers as usual
-	for name, values := range resp.Header {
+	if p.proxy.Collector != nil && connectionID > 0 {
+		responseHeaderSize := estimateHTTPResponseHeaderSize(resp)
+		if err := p.proxy.Collector.RecordHTTPResponseWithHeaders(r.Context(), connectionID, resp.StatusCode, resp.ContentLength, responseHeaderSize); err != nil {
+			logger.Error("Failed to record HTTP response: %v", err)
+		}
+	}
+
+	if p.proxy.Collector != nil && connectionID > 0 {
+		contentLength := r.ContentLength
+		if contentLength < 0 {
+			contentLength = 0
+		}
+		requestHeaderSize := estimateHTTPRequestHeaderSize(r)
+		if err := p.proxy.Collector.RecordHTTPRequestWithHeaders(ctx, connectionID, r.Method, r.URL.RequestURI(), targetHost, r.UserAgent(), contentLength, requestHeaderSize); err != nil {
+			logger.Error("Failed to record HTTP request: %v", err)
+		}
+	}
+
+	for key, values := range resp.Header {
 		for _, value := range values {
-			w.Header().Add(name, value)
+			w.Header().Add(key, value)
 		}
 	}
 
@@ -860,13 +905,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	}
 }
 
-// handleWebSocketTunnel handles a successful WebSocket upgrade by creating a bidirectional tunnel
-// between the client and the upstream server. This is called when a WebSocket upgrade
-// request received a 101 Switching Protocols response.
-func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
-	resp *http.Response, client *http.Client) {
-	// We need to hijack the client connection to obtain direct TCP access
-	// required for WebSocket communication
+func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, resp *http.Response, client *http.Client, connectionID int64) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		logger.Error("HTTP server does not support hijacking for WebSocket")
@@ -881,7 +920,6 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// We need to establish a TCP connection to the target server
 	targetURL, err := url.Parse(r.URL.String())
 	if err != nil {
 		if closeErr := clientConn.Close(); closeErr != nil {
@@ -896,7 +934,6 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 		targetHost = targetURL.Host
 	}
 
-	// Extract transport from client to use its DialContext
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok || transport == nil || transport.DialContext == nil {
 		if closeErr := clientConn.Close(); closeErr != nil {
@@ -906,7 +943,6 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Check if we're going through another proxy
 	goingThroughProxy := false
 	if transport.Proxy != nil {
 		proxyURL, err := transport.Proxy(&http.Request{URL: targetURL})
@@ -916,17 +952,11 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	// Establish a connection to the target server or next proxy
-	// For WebSockets, we need to make sure the CONNECT tunnel is established properly
 	var targetConn net.Conn
 	if goingThroughProxy {
-		// When going through another proxy, we need to create a CONNECT tunnel
-		// to make sure WebSocket upgrade works properly through the chain
 		logger.Debug("Establishing CONNECT tunnel to %s for WebSocket via proxy", targetHost)
-		// Use the transport's configured proxy and dial settings
 		targetConn, err = transport.DialContext(r.Context(), "tcp", targetHost)
 	} else {
-		// Direct connection to the final target
 		targetConn, err = transport.DialContext(r.Context(), "tcp", targetHost)
 	}
 
@@ -937,20 +967,16 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 		logger.Error("Failed to connect to WebSocket server or proxy: %v", err)
 		return
 	}
+	targetConn = newTrackedConn(r.Context(), targetConn, p.proxy, connectionID)
 
 	logger.Debug("WebSocket tunnel established for %s", targetHost)
 
-	// Special handling for WebSockets in proxy chains
 	if goingThroughProxy {
 		logger.Debug("WebSocket going through proxy chain")
-		// For proxied connections, ensure the tunnel is fully established and
-		// the WebSocket protocol will be properly maintained through all proxies
 	} else {
 		logger.Debug("Direct WebSocket connection to target")
 	}
 
-	// Send the protocol upgrade response to the client
-	// We mirror the headers from the upstream server's response
 	responseHeaders := []byte("HTTP/1.1 101 Switching Protocols\r\n")
 	for name, values := range resp.Header {
 		for _, value := range values {
@@ -970,11 +996,9 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Set up bidirectional data transfer between client and target
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Handle client -> target data flow
 	go func() {
 		defer wg.Done()
 		defer func() {
@@ -983,7 +1007,6 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 			}
 		}()
 
-		// First, copy any data already buffered in the hijacked connection
 		if clientBuf != nil && clientBuf.Reader.Buffered() > 0 {
 			buf := make([]byte, clientBuf.Reader.Buffered())
 			if _, err := clientBuf.Reader.Read(buf); err != nil {
@@ -996,13 +1019,12 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 			}
 		}
 
-		// Then continue copying all subsequent data
-		if _, err := io.Copy(targetConn, clientConn); err != nil {
+		_, err := io.Copy(targetConn, clientConn)
+		if err != nil && !isClosedConnError(err) {
 			logger.Error("Failed to copy client to target: %v", err)
 		}
 	}()
 
-	// Handle target -> client data flow
 	go func() {
 		defer wg.Done()
 		defer func() {
@@ -1010,52 +1032,28 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request,
 				logger.Error("Error closing client connection: %v", closeErr)
 			}
 		}()
-		if _, err := io.Copy(clientConn, targetConn); err != nil {
+		_, err := io.Copy(clientConn, targetConn)
+		if err != nil && !isClosedConnError(err) {
 			logger.Error("Failed to copy target to client: %v", err)
 		}
 	}()
 
-	// Wait for either side to close with appropriate timeout handling
-	// This is critical for WebSocket connections through multiple proxies
-	timeout := time.NewTimer(30 * time.Second)
-	done := make(chan struct{})
-
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Normal completion
-		if !timeout.Stop() {
-			<-timeout.C
-		}
-	case <-timeout.C:
-		// Timeout - log warning but allow the connection to continue
-		logger.Warn("WebSocket tunnel timeout waiting for data")
-	}
+	wg.Wait()
 	logger.Debug("WebSocket tunnel closed for %s", targetHost)
 }
 
-// handleConnect handles HTTPS tunneling via the CONNECT method
-
-func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-	targetAddr := r.Host // Use the full host:port from the CONNECT request
+func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectionID int64, _, _ string, _ int) {
+	targetAddr := r.Host
 
 	logger.Debug("CONNECT request for %s", targetAddr)
 
-	// Check if we should intercept the connection
 	if p.shouldInterceptTunnel(r) {
 		logger.Debug("Intercepting CONNECT request for %s", targetAddr)
 
-		// Determine the protocol (HTTP or HTTPS) and use the appropriate interceptor
-		// For HTTPS interception, we check for the standard port 443 or assume HTTPS for testing
-		// Also consider non-standard ports for test servers
 		isHTTPS := strings.HasSuffix(targetAddr, ":443") ||
 			strings.Contains(r.URL.String(), "https://") ||
 			r.URL.Scheme == "https" ||
-			strings.Contains(targetAddr, "127.0.0.1") // For test servers
+			strings.Contains(targetAddr, "127.0.0.1")
 
 		logger.Debug("Protocol detection: isHTTPS=%v, targetAddr=%s, URL=%s, Scheme=%s",
 			isHTTPS, targetAddr, r.URL.String(), r.URL.Scheme)
@@ -1073,7 +1071,6 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				logger.Error("HTTPS interception requested but interceptor not initialized")
 			}
 		} else if p.isHTTPInterceptionEnabled() {
-			// For HTTP CONNECT tunneling or non-standard HTTPS ports
 			hj, ok := w.(http.Hijacker)
 			if !ok {
 				logger.Error("HTTP server does not support hijacking")
@@ -1088,24 +1085,25 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Check if this is a WebSocket connection
 			isWebSocketConnection := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
 				strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 
 			if isWebSocketConnection {
 				logger.Debug("CONNECT request for WebSocket via tunnel: %s", targetAddr)
 
-				// For WebSockets, we need to handle any buffered data specially
 				if clientBuf != nil && clientBuf.Reader.Buffered() > 0 {
-					// There might be buffered WebSocket handshake data we need to preserve
 					logger.Debug("Found %d bytes of buffered data for WebSocket handshake", clientBuf.Reader.Buffered())
 				}
 			}
 
-			// Send 200 Connection Established
 			_, err = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 			if err != nil {
 				logger.Error("Failed to send 200 response: %v", err)
+				if p.proxy.Collector != nil && connectionID > 0 {
+					if err := p.proxy.Collector.EndConnection(r.Context(), connectionID, 0, 0, 0, "error"); err != nil {
+						logger.Error("Failed to end connection: %v", err)
+					}
+				}
 				if closeErr := clientConn.Close(); closeErr != nil {
 					logger.Error("Error closing client connection: %v", closeErr)
 				}
@@ -1125,9 +1123,6 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If not intercepting or interception failed, proceed with standard tunneling
-
-	// Retrieve the per-connection client from the context
 	client, ok := ClientFromContext(r.Context())
 	if !ok || client == nil {
 		logger.Error("No http.Client found in request context (CONNECT)")
@@ -1135,7 +1130,6 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract the transport and use its DialContext
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok || transport == nil || transport.DialContext == nil {
 		logger.Error("No http.Transport/DialContext found in client (CONNECT)")
@@ -1143,38 +1137,14 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use the transport's DialContext to establish the tunnel
-	// This is especially important for WebSocket connections through multiple proxies
-	ctx := r.Context()
-	var targetConn net.Conn
-	var err error
-
-	// Check if this could be a WebSocket connection
-	isWebSocketRequest := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
-		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
-
-	if isWebSocketRequest {
-		logger.Debug("CONNECT request for WebSocket: %s", targetAddr)
-		// For WebSockets, we need special handling to ensure they work through proxy chains
-		// Use a longer timeout for WebSocket connections
-		ctxWithTimeout, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-		targetConn, err = transport.DialContext(ctxWithTimeout, "tcp", targetAddr)
-	} else {
-		// For regular CONNECT tunnels
-		targetConn, err = transport.DialContext(ctx, "tcp", targetAddr)
-	}
+	targetConn, err := p.proxy.createForwardTCPClient(r.Context(), targetAddr)
 
 	if err != nil {
-		// Log the specific target address that failed
 		logger.Error("Failed to establish connection to target %s (via %s): %v", targetAddr, r.RemoteAddr, err)
-		// Use our custom Bad Gateway response.
-		// If err is a *Error, its code will be used. Otherwise, ErrCodeUpstreamConnectFailed.
 		writeProxyErrorResponse(w, err, ErrCodeUpstreamConnectFailed)
 		return
 	}
 
-	// Tell the client that the connection is established
 	w.WriteHeader(http.StatusOK)
 
 	hj, ok := w.(http.Hijacker)
@@ -1184,11 +1154,6 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is a WebSocket connection
-	isWebSocketConnection := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
-		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
-
-	// Get the client connection and buffer
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
 		logger.Error("Failed to hijack connection: %v", err)
@@ -1196,87 +1161,55 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isWebSocketConnection := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 	if isWebSocketConnection {
 		logger.Debug("Detected WebSocket CONNECT tunnel request for %s", targetAddr)
 	}
 
 	logger.Debug("Hijacked connection for TCP tunnel")
 
-	// Close connections when function returns
-	defer func() {
-		if closeErr := clientConn.Close(); closeErr != nil {
-			logger.Error("Error closing client connection: %v", closeErr)
-		}
-	}()
-	defer func() {
-		if closeErr := targetConn.Close(); closeErr != nil {
-			logger.Error("Error closing target connection: %v", closeErr)
-		}
-	}()
+	defer clientConn.Close()
+	defer targetConn.Close()
 
-	// Copy data bidirectionally - critical for WebSocket proxy chains
-	errChan := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	// For WebSocket connections through proxies, we need more robust data handling
-	// Check if this is a WebSocket connection based on request headers
-	wsConnection := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
-		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
-
-	if wsConnection {
-		logger.Debug("Setting up WebSocket optimized tunnel for %s", targetAddr)
-	}
-
-	// Handle client -> target data flow
 	go func() {
-		// Forward any buffered data if present
+		defer wg.Done()
 		if clientBuf != nil && clientBuf.Reader != nil && clientBuf.Reader.Buffered() > 0 {
-			bufSize := clientBuf.Reader.Buffered()
-			logger.Debug("Found %d bytes of buffered data for tunnel", bufSize)
-
-			// Create a buffer to hold the data
-			data := make([]byte, bufSize)
-			n, err := clientBuf.Reader.Read(data)
-			if err == nil && n > 0 {
-				// Copy buffered data to target
-				logger.Debug("Forwarding %d bytes of buffered data to target", n)
-				_, err := targetConn.Write(data[:n])
-				if err != nil {
-					logger.Warn("Failed to forward buffered data: %v", err)
+			if _, err := clientBuf.WriteTo(targetConn); err != nil {
+				if !isClosedConnError(err) {
+					logger.Error("Failed to write buffered data to target: %v", err)
 				}
+				return
 			}
 		}
-
-		// Then continue with normal copying
-		_, err := io.Copy(targetConn, clientConn)
-		errChan <- err
+		if _, err := io.Copy(targetConn, clientConn); err != nil {
+			if !isClosedConnError(err) {
+				logger.Warn("TCP tunnel copy error (client to target): %v", err)
+			}
+		}
 	}()
 
-	// Handle target -> client data flow
 	go func() {
-		_, err := io.Copy(clientConn, targetConn)
-		errChan <- err
-	}()
-
-	// Wait for copying to finish or error
-	for i := 0; i < 2; i++ {
-		if err := <-errChan; err != nil {
-			// Log non-standard close errors
-			if !isClosedConnError(err) && err != io.EOF {
-				logger.Warn("TCP tunnel copy error: %v", err)
+		defer wg.Done()
+		if _, err := io.Copy(clientConn, targetConn); err != nil {
+			if !isClosedConnError(err) {
+				logger.Warn("TCP tunnel copy error (target to client): %v", err)
 			}
 		}
-	}
+	}()
+
+	wg.Wait()
 	logger.Debug("TCP tunnel closed")
 }
 
-// Reference back to the proxy for TCP client connection
 func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.Conn, error) {
-	// If parent proxy is set, delegate to it
 	if p.proxy != nil {
 		return p.proxy.createForwardTCPClient(ctx, addr)
 	}
 
-	// Otherwise use compiled forwards directly
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid address format: %w", err)
@@ -1289,7 +1222,6 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 
 	portUint16 := uint16(portUint)
 
-	// Apply forwarding rules if any
 	for _, cf := range p.compiledForwards {
 		match, err := cf.classifier.Classify(ClassifierInput{
 			host:       host,
@@ -1305,7 +1237,6 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 		if match {
 			switch cf.fwd.Type() {
 			case config.ForwardTypeDefaultNetwork:
-				// Use default network connection with IPv4 forcing if configured
 				fwd := cf.fwd.(*config.ForwardDefaultNetwork)
 				network := "tcp"
 				if fwd.ForceIPv4 {
@@ -1316,15 +1247,12 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 					Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 				}
 				if fwd.ForceIPv4 {
-					dialer.FallbackDelay = -1 // Disable IPv6 fallback
+					dialer.FallbackDelay = -1
 				}
 				return dialer.DialContext(ctx, network, addr)
 
 			case config.ForwardTypeSocks5:
-				// Forward through SOCKS5 proxy
 				proxy := cf.fwd.(*config.ForwardSocks5)
-				// We'll use the net/proxy package for SOCKS5 proxying
-				// This is a placeholder - implement actual SOCKS5 proxying
 				logger.Info("SOCKS5 proxy forwarding to %s via %s", addr, proxy.Address)
 				network := "tcp"
 				if proxy.ForceIPv4 {
@@ -1333,7 +1261,7 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 				}
 				dialer := &net.Dialer{Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second}
 				if proxy.ForceIPv4 {
-					dialer.FallbackDelay = -1 // Disable IPv6 fallback
+					dialer.FallbackDelay = -1
 				}
 				conn, err := dialer.DialContext(ctx, network, proxy.Address)
 				if err != nil {
@@ -1343,9 +1271,7 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 				return conn, nil
 
 			case config.ForwardTypeProxy:
-				// Forward through another HTTP proxy
 				proxy := cf.fwd.(*config.ForwardProxy)
-				// This is a placeholder - implement actual HTTP proxying
 				logger.Info("HTTP proxy forwarding to %s via %s", addr, proxy.Address)
 				network := "tcp"
 				if proxy.ForceIPv4 {
@@ -1354,7 +1280,7 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 				}
 				dialer := &net.Dialer{Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second}
 				if proxy.ForceIPv4 {
-					dialer.FallbackDelay = -1 // Disable IPv6 fallback
+					dialer.FallbackDelay = -1
 				}
 				conn, err := dialer.DialContext(ctx, network, proxy.Address)
 				if err != nil {
@@ -1369,72 +1295,57 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 		}
 	}
 
-	// Default connection
 	dialer := &net.Dialer{Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second}
 	return dialer.DialContext(ctx, "tcp", addr)
 }
 
-// shouldInterceptTunnel determines if the tunnel established by a CONNECT request should be intercepted
 func (p *Server) shouldInterceptTunnel(r *http.Request) bool {
-	// Only intercept if we have at least one interceptor configured
 	if p.httpsInterceptor == nil && p.httpInterceptor == nil {
 		logger.Debug("No interceptors configured")
 		return false
 	}
 
-	// Check global config to see if interception is enabled
 	isEnabled := p.config.Interception.Enabled && (p.config.Interception.HTTP || p.config.Interception.HTTPS)
 	logger.Debug("Should intercept tunnel for %s: %v (enabled in config: %v)",
 		r.Host, isEnabled, p.config.Interception.Enabled)
 	return isEnabled
 }
 
-// isHTTPSInterceptionEnabled checks if HTTPS interception is enabled for this proxy server
 func (p *Server) isHTTPSInterceptionEnabled() bool {
 	return p.config.Interception.Enabled && p.config.Interception.HTTPS && p.httpsInterceptor != nil
 }
 
-// isHTTPInterceptionEnabled checks if HTTP interception is enabled for this proxy server
 func (p *Server) isHTTPInterceptionEnabled() bool {
 	return p.config.Interception.Enabled && p.config.Interception.HTTP && p.httpInterceptor != nil
 }
 
-// isHostAllowed checks if access to the given host is allowed based on the blocklist and allowlist
 func (p *Proxy) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
-	// Create classifier input for host and remote IP
 	classifierInput := ClassifierInput{
 		host:       host,
 		remoteIP:   remoteIP,
 		remotePort: remotePort,
 	}
 
-	// If we have both blocklist and allowlist, check both
 	if p.blocklistClassifier != nil && p.allowlistClassifier != nil {
-		// Check blocklist first
 		blocked, err := p.blocklistClassifier.Classify(classifierInput)
 		if err != nil {
 			logger.Error("Blocklist classification error: %v", err)
 			return false
 		}
 
-		// Check allowlist
 		allowed, err := p.allowlistClassifier.Classify(classifierInput)
 		if err != nil {
 			logger.Error("Allowlist classification error: %v", err)
 			return false
 		}
 
-		// If in blocklist, always block, regardless of allowlist status
-		// This follows the precedence rule: blocklist > allowlist
 		if blocked {
 			return false
 		}
 
-		// Not in blocklist, must be in allowlist to be allowed
 		return allowed
 	}
 
-	// If we only have blocklist, deny only hosts in the blocklist
 	if p.blocklistClassifier != nil {
 		blocked, err := p.blocklistClassifier.Classify(classifierInput)
 		if err != nil {
@@ -1444,7 +1355,6 @@ func (p *Proxy) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
 		return !blocked
 	}
 
-	// If we only have allowlist, allow only hosts in the allowlist
 	if p.allowlistClassifier != nil {
 		allowed, err := p.allowlistClassifier.Classify(classifierInput)
 		if err != nil {
@@ -1454,55 +1364,46 @@ func (p *Proxy) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
 		return allowed
 	}
 
-	// No blocklist or allowlist, allow all
 	return true
 }
 
-// writeProxyErrorResponse constructs and sends an HTTP 502 Bad Gateway response.
-// It uses the code from originalErr if it's a *Error, otherwise it uses defaultErrorCode.
 func writeProxyErrorResponse(w http.ResponseWriter, originalErr error, defaultErrorCode string) {
 	errorCode := defaultErrorCode
 	if proxyErr, ok := originalErr.(*Error); ok {
 		errorCode = proxyErr.Code
 	}
 
-	// Log a warning if the chosen error code (either from originalErr or defaultErrorCode)
-	// isn't in our predefined descriptions. NewBadGatewayResponse will handle it gracefully
-	// by using "Unknown error code" as the description, but this log helps identify gaps.
 	if _, exists := ErrorDescriptions[errorCode]; !exists {
 		logger.Warn("Error code '%s' not found in ErrorDescriptions for BadGatewayResponse. Original error: %v. Default code used: '%s'", errorCode, originalErr, defaultErrorCode)
 	}
 
 	badGatewayResp := NewBadGatewayResponse(errorCode)
+	defer func() {
+		if badGatewayResp.Body != nil {
+			badGatewayResp.Body.Close()
+		}
+	}()
 
-	// Copy headers from the generated badGatewayResp to the actual ResponseWriter
 	for key, values := range badGatewayResp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
-	// Set the status code
 	w.WriteHeader(badGatewayResp.StatusCode)
-	// Copy the response body
 	if badGatewayResp.Body != nil {
 		if _, err := io.Copy(w, badGatewayResp.Body); err != nil {
 			logger.Error("Failed to copy bad gateway response body: %v", err)
 		}
-		if closeErr := badGatewayResp.Body.Close(); closeErr != nil {
-			logger.Error("Error closing response body: %v", closeErr)
-		} // Ensure the NopCloser's underlying reader is "closed" (though for bytes.Reader it's a no-op)
 	}
 }
 
 func (p *Server) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
-	// Create classifier input for host and remote IP
 	classifierInput := ClassifierInput{
 		host:       host,
 		remoteIP:   remoteIP,
 		remotePort: remotePort,
 	}
 
-	// Lazy compile blocklist and allowlist classifiers if not already
 	if p.blocklistClassifier == nil && p.config.Blocklist != nil {
 		blf, err := CompileClassifier(p.config.Blocklist)
 		if err != nil {
@@ -1520,19 +1421,16 @@ func (p *Server) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
 		}
 	}
 
-	// Check blocklist first - deny if host is in blocklist
 	if p.blocklistClassifier != nil {
 		isBlocked, err := p.blocklistClassifier.Classify(classifierInput)
 		if err != nil {
 			logger.Error("Blocklist classifier error: %v", err)
 		} else if isBlocked {
-			// Host is explicitly blocked
 			logger.Debug("Host %s is blocked by blocklist", host)
 			return false
 		}
 	}
 
-	// Check allowlist if configured - only allow hosts in allowlist
 	if p.allowlistClassifier != nil {
 		isAllowed, err := p.allowlistClassifier.Classify(classifierInput)
 		if err != nil {
@@ -1550,11 +1448,9 @@ func (p *Server) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
 	return true
 }
 
-// Stop gracefully stops the proxy server.
 func (p *Proxy) Stop() error {
 	var lastErr error
 
-	// Stop all server instances
 	for _, server := range p.servers {
 		err := server.Stop()
 		if err != nil {
@@ -1566,7 +1462,6 @@ func (p *Proxy) Stop() error {
 	return lastErr
 }
 
-// Stop gracefully stops the server instance.
 func (p *Server) Stop() error {
 	if p.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1574,4 +1469,55 @@ func (p *Server) Stop() error {
 		return p.server.Shutdown(ctx)
 	}
 	return nil
+}
+
+// estimateHTTPRequestHeaderSize calculates the approximate size of HTTP request headers
+func estimateHTTPRequestHeaderSize(r *http.Request) int64 {
+	if r == nil {
+		return 0
+	}
+
+	// Start with request line: "METHOD /path HTTP/1.1\r\n"
+	requestLine := r.Method + " " + r.URL.RequestURI() + " HTTP/1.1\r\n"
+	size := len(requestLine)
+
+	// Add Host header if present
+	if r.Host != "" {
+		size += len("Host: " + r.Host + "\r\n")
+	}
+
+	// Add all other headers
+	for name, values := range r.Header {
+		for _, value := range values {
+			size += len(name + ": " + value + "\r\n")
+		}
+	}
+
+	// Add final CRLF to end headers
+	size += 2 // "\r\n"
+
+	return int64(size)
+}
+
+// estimateHTTPResponseHeaderSize calculates the approximate size of HTTP response headers
+func estimateHTTPResponseHeaderSize(resp *http.Response) int64 {
+	if resp == nil {
+		return 0
+	}
+
+	// Start with status line: "HTTP/1.1 200 OK\r\n"
+	statusLine := resp.Proto + " " + resp.Status + "\r\n"
+	size := len(statusLine)
+
+	// Add all headers
+	for name, values := range resp.Header {
+		for _, value := range values {
+			size += len(name + ": " + value + "\r\n")
+		}
+	}
+
+	// Add final CRLF to end headers
+	size += 2 // "\r\n"
+
+	return int64(size)
 }

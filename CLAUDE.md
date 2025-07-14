@@ -13,6 +13,7 @@ msgtausch is a configurable forward proxy written in Go that supports HTTP/HTTPS
 - **Main Entry Point**: `main.go` - CLI parsing, configuration loading, signal handling
 - **Configuration System**: `msgtausch-srv/config/` - JSON/HCL config parsing, environment variable support
 - **Proxy Engine**: `msgtausch-srv/proxy/` - Core proxy logic, request handling, tunneling
+- **Dashboard**: `msgtausch-srv/dashboard/` - Web dashboard with templ-generated HTML templates
 - **Logging**: `msgtausch-srv/logger/` - Structured logging system
 - **Simulation**: `msgtausch-simulation/` - Performance testing and simulation tools
 
@@ -38,6 +39,9 @@ msgtausch is a configurable forward proxy written in Go that supports HTTP/HTTPS
 # Run tests and build (default)
 docker buildx bake
 
+# Generate templ files
+docker buildx bake templ
+
 # Run only tests
 docker buildx bake test
 
@@ -57,6 +61,9 @@ docker buildx bake simulation
 ### Standard Go Commands
 
 ```bash
+# Generate templ files
+templ generate
+
 # Run tests
 go test ./...
 
@@ -82,6 +89,24 @@ golangci-lint run
 - Individual package tests: `go test ./msgtausch-srv/proxy/`
 - Simulation tests: `docker buildx bake simulation`
 - Configuration tests: `go test ./msgtausch-srv/config/`
+
+## Template Generation (templ)
+
+The dashboard uses [templ](https://templ.guide/) for type-safe HTML template generation. Template files (*.templ) are located in `msgtausch-srv/dashboard/templates/` and must be compiled to Go code before building.
+
+### Working with Templates
+
+- Template files: `msgtausch-srv/dashboard/templates/*.templ`
+- Generated Go files: `msgtausch-srv/dashboard/templates/*_templ.go`
+- Install templ: `go install github.com/a-h/templ/cmd/templ@latest`
+- Generate code: `templ generate` or `docker buildx bake templ`
+
+### Important Notes
+
+- Generated files are committed to the repository for build compatibility
+- CI/CD checks that generated files are up to date
+- Always run `templ generate` after modifying .templ files
+- The Docker build process automatically generates templates during builds
 
 ## Configuration
 

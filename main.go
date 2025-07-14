@@ -15,21 +15,37 @@ import (
 	"github.com/codefionn/msgtausch/msgtausch-srv/proxy"
 )
 
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 var version string
 
 func main() {
-	cfg, configPath := parseFlagsAndConfig()
-	runProxy(cfg, configPath)
+	cfg, configPaths := parseFlagsAndConfig()
+	runProxy(cfg, configPaths)
 }
 
 // parseFlagsAndConfig handles CLI flags, environment, logging, and config loading.
-func parseFlagsAndConfig() (cfg *config.Config, configPath string) {
+func parseFlagsAndConfig() (cfg *config.Config, configPaths []string) {
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	versionShortFlag := flag.Bool("v", false, "Print version and exit (shorthand)")
-	configPathPtr := flag.String("config", "config.json", "Path to configuration file (supports .json and .hcl formats)")
+	configs := stringSliceFlag{}
+	flag.Var(&configs, "config", "Path to configuration file (supports .json and .hcl formats). Can be specified multiple times, later configs take precedence")
 	envfile := flag.String("envfile", "", "Path to env file to load environment variables")
 	debugMode := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
+
+	if len(configs) == 0 {
+		configs = append(configs, "config.json")
+	}
 
 	if *versionFlag || *versionShortFlag {
 		if version == "" {
@@ -52,15 +68,11 @@ func parseFlagsAndConfig() (cfg *config.Config, configPath string) {
 	}
 
 	logger.Info("Starting msgtausch proxy server")
-	logger.Debug("Using configuration file: %s", *configPathPtr)
+	logger.Debug("Using configuration files: %s", strings.Join(configs, ", "))
 
-	cfg, err := config.LoadConfig(*configPathPtr)
+	cfg, err := loadConfigsWithFallback(configs)
 	if err != nil {
-		logger.Warn("Could not load config file: %v. Using environment variables.", err)
-		cfg, err = config.LoadConfig("")
-		if err != nil {
-			logger.Fatal("Failed to load configuration: %v", err)
-		}
+		logger.Fatal("Failed to load any configuration: %v", err)
 	}
 
 	logger.Debug("Configuration loaded successfully")
@@ -74,11 +86,11 @@ func parseFlagsAndConfig() (cfg *config.Config, configPath string) {
 	logger.Debug("Timeout: %d seconds", cfg.TimeoutSeconds)
 	logger.Debug("Max connections: %d", cfg.MaxConcurrentConnections)
 
-	return cfg, *configPathPtr
+	return cfg, configs
 }
 
 // runProxy starts and manages the proxy server, including signal handling and reloads.
-func runProxy(cfg *config.Config, configPath string) {
+func runProxy(cfg *config.Config, configPaths []string) {
 	proxyInstance := proxy.NewProxy(cfg)
 
 	sigChan := make(chan os.Signal, 1)
@@ -105,7 +117,7 @@ func runProxy(cfg *config.Config, configPath string) {
 		switch sig {
 		case syscall.SIGHUP:
 			logger.Info("Received SIGHUP: reloading configuration...")
-			newCfg, err := config.LoadConfig(configPath)
+			newCfg, err := loadConfigsWithFallback(configPaths)
 			if err != nil {
 				logger.Error("Failed to reload config: %v (keeping current config)", err)
 				continue
@@ -133,6 +145,42 @@ func runProxy(cfg *config.Config, configPath string) {
 			return
 		}
 	}
+}
+
+// loadConfigsWithFallback tries to load configs in order, with later configs taking precedence.
+// If a config fails to parse, it falls back to the previous working config.
+// If no config works, it returns an error.
+func loadConfigsWithFallback(configPaths []string) (*config.Config, error) {
+	var finalConfig *config.Config
+	successCount := 0
+
+	for i, configPath := range configPaths {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			logger.Warn("Failed to load config file %s: %v", configPath, err)
+			if i == 0 {
+				logger.Debug("Trying environment variables for first config")
+				cfg, err = config.LoadConfig("")
+				if err != nil {
+					logger.Warn("Failed to load config from environment variables: %v", err)
+					continue
+				}
+			} else {
+				continue
+			}
+		}
+
+		logger.Debug("Successfully loaded config from: %s", configPath)
+		finalConfig = cfg
+		successCount++
+	}
+
+	if finalConfig == nil {
+		return nil, fmt.Errorf("no configuration could be loaded from any of the provided paths: %s", strings.Join(configPaths, ", "))
+	}
+
+	logger.Info("Configuration loaded, %d of %d config files successful (later configs take precedence)", successCount, len(configPaths))
+	return finalConfig, nil
 }
 
 // loadEnvFile reads a .env-style file and sets environment variables

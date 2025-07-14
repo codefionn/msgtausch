@@ -1305,8 +1305,20 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 		if match {
 			switch cf.fwd.Type() {
 			case config.ForwardTypeDefaultNetwork:
-				// Just continue with the default network connection
-				break
+				// Use default network connection with IPv4 forcing if configured
+				fwd := cf.fwd.(*config.ForwardDefaultNetwork)
+				network := "tcp"
+				if fwd.ForceIPv4 {
+					network = "tcp4"
+					logger.Debug("Forcing IPv4 for default network forward to %s", addr)
+				}
+				dialer := &net.Dialer{
+					Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
+				}
+				if fwd.ForceIPv4 {
+					dialer.FallbackDelay = -1 // Disable IPv6 fallback
+				}
+				return dialer.DialContext(ctx, network, addr)
 
 			case config.ForwardTypeSocks5:
 				// Forward through SOCKS5 proxy
@@ -1314,8 +1326,16 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 				// We'll use the net/proxy package for SOCKS5 proxying
 				// This is a placeholder - implement actual SOCKS5 proxying
 				logger.Info("SOCKS5 proxy forwarding to %s via %s", addr, proxy.Address)
+				network := "tcp"
+				if proxy.ForceIPv4 {
+					network = "tcp4"
+					logger.Debug("Forcing IPv4 for SOCKS5 forward to %s", addr)
+				}
 				dialer := &net.Dialer{Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second}
-				conn, err := dialer.DialContext(ctx, "tcp", proxy.Address)
+				if proxy.ForceIPv4 {
+					dialer.FallbackDelay = -1 // Disable IPv6 fallback
+				}
+				conn, err := dialer.DialContext(ctx, network, proxy.Address)
 				if err != nil {
 					logger.Error("Error connecting to SOCKS5 proxy: %v", err)
 					break
@@ -1327,8 +1347,16 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 				proxy := cf.fwd.(*config.ForwardProxy)
 				// This is a placeholder - implement actual HTTP proxying
 				logger.Info("HTTP proxy forwarding to %s via %s", addr, proxy.Address)
+				network := "tcp"
+				if proxy.ForceIPv4 {
+					network = "tcp4"
+					logger.Debug("Forcing IPv4 for HTTP proxy forward to %s", addr)
+				}
 				dialer := &net.Dialer{Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second}
-				conn, err := dialer.DialContext(ctx, "tcp", proxy.Address)
+				if proxy.ForceIPv4 {
+					dialer.FallbackDelay = -1 // Disable IPv6 fallback
+				}
+				conn, err := dialer.DialContext(ctx, network, proxy.Address)
 				if err != nil {
 					logger.Error("Error connecting to HTTP proxy: %v", err)
 					break

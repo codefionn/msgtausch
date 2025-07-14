@@ -74,11 +74,36 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 		Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 	}
 
+	// Check if we need to force IPv4 for the selected forward
+	var forceIPv4 bool
+	if selectedForward != nil {
+		switch fwd := selectedForward.(type) {
+		case *config.ForwardDefaultNetwork:
+			forceIPv4 = fwd.ForceIPv4
+		case *config.ForwardSocks5:
+			forceIPv4 = fwd.ForceIPv4
+		case *config.ForwardProxy:
+			forceIPv4 = fwd.ForceIPv4
+		}
+	}
+
+	if forceIPv4 {
+		logger.Debug("Forcing IPv4 for forward to %s", addr)
+		dialerCtx = &net.Dialer{
+			Timeout:       time.Duration(p.config.TimeoutSeconds) * time.Second,
+			FallbackDelay: -1, // Disable IPv6 fallback
+		}
+	}
+
 	if selectedForward != nil {
 		switch fwd := selectedForward.(type) {
 		case *config.ForwardDefaultNetwork:
 			logger.Debug("Using default network forward for %s", addr)
-			targetConn, err = dialerCtx.DialContext(ctx, "tcp", addr)
+			network := "tcp"
+			if fwd.ForceIPv4 {
+				network = "tcp4"
+			}
+			targetConn, err = dialerCtx.DialContext(ctx, network, addr)
 			if err != nil {
 				err = NewConnectionError(ErrCodeDialFailed, GetErrorDescription(ErrCodeDialFailed), fmt.Errorf("default network dial to %s: %w", addr, err))
 			}
@@ -95,7 +120,11 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	} else {
 		// Default: Direct connection if no forward rule matched
 		logger.Debug("No matching forward rule, using direct connection for %s", addr)
-		targetConn, err = dialerCtx.DialContext(ctx, "tcp", addr)
+		network := "tcp"
+		if forceIPv4 {
+			network = "tcp4"
+		}
+		targetConn, err = dialerCtx.DialContext(ctx, network, addr)
 		if err != nil {
 			err = NewConnectionError(ErrCodeDialFailed, GetErrorDescription(ErrCodeDialFailed), fmt.Errorf("direct dial to %s: %w", addr, err))
 		}
@@ -133,7 +162,16 @@ func (p *Proxy) dialSocks5(ctx context.Context, dialerCtx *net.Dialer, fwd *conf
 		KeepAlive: dialerCtx.KeepAlive,
 	}
 
-	socksDialer, err := proxy.SOCKS5("tcp", fwd.Address, auth, contextDialer)
+	// Force IPv4 if configured
+	if fwd.ForceIPv4 {
+		contextDialer.FallbackDelay = -1 // Disable IPv6 fallback
+	}
+
+	network := "tcp"
+	if fwd.ForceIPv4 {
+		network = "tcp4"
+	}
+	socksDialer, err := proxy.SOCKS5(network, fwd.Address, auth, contextDialer)
 	if err != nil {
 		return nil, NewProxyChainError(ErrCodeSOCKS5DialerFailed, GetErrorDescription(ErrCodeSOCKS5DialerFailed), fmt.Errorf("proxy %s: %w", fwd.Address, err))
 	}
@@ -156,10 +194,10 @@ func (p *Proxy) dialSocks5(ctx context.Context, dialerCtx *net.Dialer, fwd *conf
 		var err error
 
 		if ctxDialer, ok := socksDialer.(contextDialer); ok {
-			conn, err = ctxDialer.DialContext(ctx, "tcp", targetHostPort)
+			conn, err = ctxDialer.DialContext(ctx, network, targetHostPort)
 		} else {
 			// Fallback to regular Dial
-			conn, err = socksDialer.Dial("tcp", targetHostPort)
+			conn, err = socksDialer.Dial(network, targetHostPort)
 		}
 
 		resultChan <- result{conn: conn, err: err}
@@ -183,7 +221,11 @@ func (p *Proxy) dialHttpProxy(ctx context.Context, dialerCtx *net.Dialer, fwd *c
 	logger.Debug("Dialing HTTP proxy %s to reach %s", fwd.Address, targetHostPort)
 
 	// 1. Dial the proxy server itself
-	proxyConn, err := dialerCtx.DialContext(ctx, "tcp", fwd.Address)
+	network := "tcp"
+	if fwd.ForceIPv4 {
+		network = "tcp4"
+	}
+	proxyConn, err := dialerCtx.DialContext(ctx, network, fwd.Address)
 	if err != nil {
 		return nil, NewProxyChainError(ErrCodeHTTPProxyDialFailed, GetErrorDescription(ErrCodeHTTPProxyDialFailed), fmt.Errorf("proxy server %s: %w", fwd.Address, err))
 	}

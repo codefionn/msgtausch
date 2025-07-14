@@ -1,0 +1,57 @@
+{
+    "servers": [
+        {
+            "type": "standard",
+            "listen-address": "127.0.0.1:8080",
+            "enabled": true,
+            "max-connections": 100,
+            "connections-per-client": 10
+        }
+    ],
+    "timeout-seconds": 60,
+    "max-concurrent-connections": 200,
+    "classifiers": {
+        "ipv4_only_sites": {
+            "type": "domain",
+            "op": "contains",
+            "domain": ".legacy-site.com"
+        },
+        "corporate_network": {
+            "type": "network",
+            "cidr": "10.0.0.0/8"
+        }
+    },
+    "forwards": [
+        {
+            "comment": "Force IPv4 for legacy sites that don't support IPv6",
+            "classifier": { "type": "ref", "id": "ipv4_only_sites" },
+            "type": "default-network",
+            "force-ipv4": true
+        },
+        {
+            "comment": "Corporate proxy with IPv4 forcing",
+            "classifier": { "type": "ref", "id": "corporate_network" },
+            "type": "proxy",
+            "address": "corporate-proxy.local:8080",
+            "force-ipv4": true
+        },
+        {
+            "comment": "SOCKS5 proxy with IPv4 only for certain destinations",
+            "classifier": { 
+                "type": "domain",
+                "op": "contains", 
+                "domain": ".ipv4-only.net"
+            },
+            "type": "socks5",
+            "address": "socks-proxy.local:1080",
+            "username": "user",
+            "password": "pass",
+            "force-ipv4": true
+        },
+        { 
+            "comment": "Default rule for all other traffic",
+            "classifier": { "type": "true" }, 
+            "type": "default-network"
+        }
+    ]
+}

@@ -1067,3 +1067,160 @@ func TestParseClassifier_NestedClassifiers(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateConfigKeys_UnderscoreDetection(t *testing.T) {
+	testDir := t.TempDir()
+
+	testCases := []struct {
+		name          string
+		jsonContent   string
+		expectedError string
+		shouldError   bool
+	}{
+		{
+			name: "Top-level underscore keys",
+			jsonContent: `{
+				"listen_address": "localhost:8080",
+				"timeout_seconds": 30,
+				"max_concurrent_connections": 100
+			}`,
+			expectedError: "invalid config key 'listen_address': use 'listen-address' instead (hyphens, not underscores)",
+			shouldError:   true,
+		},
+		{
+			name: "Server config underscore keys",
+			jsonContent: `{
+				"servers": [
+					{
+						"type": "standard",
+						"listen_address": "localhost:8080",
+						"max_connections": 50,
+						"connections_per_client": 5
+					}
+				]
+			}`,
+			expectedError: "invalid server config key 'listen_address' at index 0: use 'listen-address' instead (hyphens, not underscores)",
+			shouldError:   true,
+		},
+		{
+			name: "Forward config underscore keys",
+			jsonContent: `{
+				"forwards": [
+					{
+						"type": "socks5",
+						"address": "proxy.example.com:1080",
+						"force_ipv4": true
+					}
+				]
+			}`,
+			expectedError: "invalid forward config key 'force_ipv4' at index 0: use 'force-ipv4' instead (hyphens, not underscores)",
+			shouldError:   true,
+		},
+		{
+			name: "Classifier config underscore keys",
+			jsonContent: `{
+				"classifiers": {
+					"test": {
+						"type": "domains-file",
+						"file": "/tmp/domains.txt"
+					}
+				}
+			}`,
+			expectedError: "invalid classifier 'test' key 'domains_file': use 'domains-file' instead (hyphens, not underscores)",
+			shouldError:   false, // This should work since domains-file is correct
+		},
+		{
+			name: "Classifier with underscore type name",
+			jsonContent: `{
+				"classifiers": {
+					"test": {
+						"type": "domains_file",
+						"file": "/tmp/domains.txt"
+					}
+				}
+			}`,
+			expectedError: "invalid classifier type 'domains_file': use 'domains-file' instead (hyphens, not underscores)",
+			shouldError:   true,
+		},
+		{
+			name: "Nested domain classifier with underscore operation value",
+			jsonContent: `{
+				"classifiers": {
+					"test": {
+						"type": "domain",
+						"domain": "example.com",
+						"op": "not-equal"
+					}
+				}
+			}`,
+			expectedError: "",
+			shouldError:   false, // This should work since it's using correct key names and hyphenated values
+		},
+		{
+			name: "NOT classifier with underscore type in nested classifier",
+			jsonContent: `{
+				"classifiers": {
+					"negated": {
+						"type": "not",
+						"classifier": {
+							"type": "domains_file",
+							"file": "/tmp/test.txt"
+						}
+					}
+				}
+			}`,
+			expectedError: "invalid classifier type 'domains_file': use 'domains-file' instead (hyphens, not underscores)",
+			shouldError:   true,
+		},
+		{
+			name: "Valid config with correct hyphenated keys",
+			jsonContent: `{
+				"listen-address": "localhost:8080",
+				"timeout-seconds": 30,
+				"max-concurrent-connections": 100,
+				"servers": [
+					{
+						"type": "standard",
+						"listen-address": "localhost:8080",
+						"max-connections": 50,
+						"connections-per-client": 5
+					}
+				],
+				"forwards": [
+					{
+						"type": "default-network",
+						"force-ipv4": true
+					}
+				],
+				"classifiers": {
+					"test": {
+						"type": "domains-file",
+						"file": "/tmp/domains.txt"
+					}
+				}
+			}`,
+			shouldError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := createTempConfigFile(t, testDir, tc.name+".json", tc.jsonContent)
+
+			_, err := LoadConfig(configPath)
+
+			if tc.shouldError {
+				if err == nil {
+					t.Fatalf("Expected error but got none")
+				}
+				if !strings.Contains(err.Error(), tc.expectedError) {
+					t.Errorf("Expected error to contain '%s', but got '%s'", tc.expectedError, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Expected no error but got: %v", err)
+				}
+			}
+		})
+	}
+}

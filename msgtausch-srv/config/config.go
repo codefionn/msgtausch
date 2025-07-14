@@ -178,6 +178,102 @@ func LoadConfig(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
+// validateConfigKeys checks for common key mistakes like using underscores instead of hyphens
+func validateConfigKeys(data map[string]any) error {
+	// Define mapping of incorrect underscore keys to correct hyphenated keys
+	keyMappings := map[string]string{
+		"listen_address":             "listen-address",
+		"timeout_seconds":            "timeout-seconds",
+		"max_concurrent_connections": "max-concurrent-connections",
+		"max_connections":            "max-connections",
+		"connections_per_client":     "connections-per-client",
+		"interceptor_name":           "interceptor-name",
+		"force_ipv4":                 "force-ipv4",
+		"default_network":            "default-network",
+		"domains_file":               "domains-file",
+	}
+
+	// Check top-level keys
+	for key := range data {
+		if correctKey, exists := keyMappings[key]; exists {
+			return fmt.Errorf("invalid config key '%s': use '%s' instead (hyphens, not underscores)", key, correctKey)
+		}
+	}
+
+	// Check server configuration keys
+	if servers, ok := data["servers"].([]any); ok {
+		for i, serverData := range servers {
+			if serverMap, ok := serverData.(map[string]any); ok {
+				for key := range serverMap {
+					if correctKey, exists := keyMappings[key]; exists {
+						return fmt.Errorf("invalid server config key '%s' at index %d: use '%s' instead (hyphens, not underscores)", key, i, correctKey)
+					}
+				}
+			}
+		}
+	}
+
+	// Check forwards configuration keys
+	if forwards, ok := data["forwards"].([]any); ok {
+		for i, forwardData := range forwards {
+			if forwardMap, ok := forwardData.(map[string]any); ok {
+				for key := range forwardMap {
+					if correctKey, exists := keyMappings[key]; exists {
+						return fmt.Errorf("invalid forward config key '%s' at index %d: use '%s' instead (hyphens, not underscores)", key, i, correctKey)
+					}
+				}
+			}
+		}
+	}
+
+	// Check classifier keys recursively
+	if classifiers, ok := data["classifiers"].(map[string]any); ok {
+		for name, classifierData := range classifiers {
+			if classifierMap, ok := classifierData.(map[string]any); ok {
+				if err := validateClassifierKeys(classifierMap, fmt.Sprintf("classifier '%s'", name)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateClassifierKeys recursively validates classifier configuration keys
+func validateClassifierKeys(classifierMap map[string]any, context string) error {
+	keyMappings := map[string]string{
+		"domains_file": "domains-file",
+		"not_equal":    "not-equal",
+		"not_contains": "not-contains",
+	}
+
+	for key := range classifierMap {
+		if correctKey, exists := keyMappings[key]; exists {
+			return fmt.Errorf("invalid %s key '%s': use '%s' instead (hyphens, not underscores)", context, key, correctKey)
+		}
+	}
+
+	// Recursively check nested classifiers
+	if classifiers, ok := classifierMap["classifiers"].([]any); ok {
+		for i, nestedClassifier := range classifiers {
+			if nestedMap, ok := nestedClassifier.(map[string]any); ok {
+				if err := validateClassifierKeys(nestedMap, fmt.Sprintf("%s nested classifier at index %d", context, i)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if classifier, ok := classifierMap["classifier"].(map[string]any); ok {
+		if err := validateClassifierKeys(classifier, fmt.Sprintf("%s nested classifier", context)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func loadJSONConfig(configPath string, cfg *Config) error {
 	cleanPath := filepath.Clean(configPath)
 	if !filepath.IsAbs(cleanPath) {
@@ -202,6 +298,11 @@ func loadJSONConfig(configPath string, cfg *Config) error {
 	err = json.NewDecoder(file).Decode(&data)
 	if err != nil {
 		return fmt.Errorf("failed to decode JSON config: %w", err)
+	}
+
+	// Validate config keys and provide helpful error messages for underscore usage
+	if err := validateConfigKeys(data); err != nil {
+		return err
 	}
 
 	// Manually map the values from the map to the Config struct
@@ -625,6 +726,8 @@ func parseClassifier(classifierMap map[string]any) (Classifier, error) {
 		}
 		clf := &ClassifierDomainsFile{FilePath: filePath}
 		newClassifier = clf
+	case "domains_file":
+		return nil, fmt.Errorf("invalid classifier type 'domains_file': use 'domains-file' instead (hyphens, not underscores)")
 	default:
 		return nil, fmt.Errorf("unsupported classifier type: %s", classifierType)
 	}

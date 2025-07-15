@@ -1,5 +1,7 @@
 # msgtausch
 
+![msgtausch logo](./logo.png)
+
 > This project is actively in intial development. Use at your own risk!
 
 A configurable forward proxy written in Go that can be configured using either JSON or environment variables.

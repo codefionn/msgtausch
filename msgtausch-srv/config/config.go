@@ -196,10 +196,10 @@ func LoadConfig(configPath string) (*Config, error) {
 type StatisticsConfig struct {
 	Enabled       bool   `json:"enabled" hcl:"enabled"`
 	Backend       string `json:"backend" hcl:"backend"`               // "sqlite", "postgres", or "dummy"
-	SQLitePath    string `json:"sqlite_path" hcl:"sqlite_path"`       // Path to SQLite database file
-	PostgresDSN   string `json:"postgres_dsn" hcl:"postgres_dsn"`     // PostgreSQL connection string
-	BufferSize    int    `json:"buffer_size" hcl:"buffer_size"`       // Buffer size for batch operations
-	FlushInterval int    `json:"flush_interval" hcl:"flush_interval"` // Flush interval in seconds
+	SQLitePath    string `json:"sqlite-path" hcl:"sqlite-path"`       // Path to SQLite database file
+	PostgresDSN   string `json:"postgres-dsn" hcl:"postgres-dsn"`     // PostgreSQL connection string
+	BufferSize    int    `json:"buffer-size" hcl:"buffer-size"`       // Buffer size for batch operations
+	FlushInterval int    `json:"flush-interval" hcl:"flush-interval"` // Flush interval in seconds
 }
 
 // validateConfigKeys checks for common key mistakes like using underscores instead of hyphens
@@ -738,39 +738,39 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 			}
 		}
 
-		// Parse sqlite_path
-		if sqlitePathVal, exists := statsMap["sqlite_path"]; exists {
+		// Parse sqlite-path
+		if sqlitePathVal, exists := statsMap["sqlite-path"]; exists {
 			if sqlitePath, err := parseValue[string](sqlitePathVal); err == nil {
 				cfg.Statistics.SQLitePath = *sqlitePath
 			} else {
-				return fmt.Errorf("statistics sqlite_path must be a string: %w", err)
+				return fmt.Errorf("statistics sqlite-path must be a string: %w", err)
 			}
 		}
 
-		// Parse postgres_dsn
-		if postgresDsnVal, exists := statsMap["postgres_dsn"]; exists {
+		// Parse postgres-dsn
+		if postgresDsnVal, exists := statsMap["postgres-dsn"]; exists {
 			if postgresDsn, err := parseValue[string](postgresDsnVal); err == nil {
 				cfg.Statistics.PostgresDSN = *postgresDsn
 			} else {
-				return fmt.Errorf("statistics postgres_dsn must be a string: %w", err)
+				return fmt.Errorf("statistics postgres-dsn must be a string: %w", err)
 			}
 		}
 
-		// Parse buffer_size
-		if bufferSizeVal, exists := statsMap["buffer_size"]; exists {
+		// Parse buffer-size
+		if bufferSizeVal, exists := statsMap["buffer-size"]; exists {
 			if bufferSize, err := parseValue[int](bufferSizeVal); err == nil {
 				cfg.Statistics.BufferSize = *bufferSize
 			} else {
-				return fmt.Errorf("statistics buffer_size must be an integer: %w", err)
+				return fmt.Errorf("statistics buffer-size must be an integer: %w", err)
 			}
 		}
 
-		// Parse flush_interval
-		if flushIntervalVal, exists := statsMap["flush_interval"]; exists {
+		// Parse flush-interval
+		if flushIntervalVal, exists := statsMap["flush-interval"]; exists {
 			if flushInterval, err := parseValue[int](flushIntervalVal); err == nil {
 				cfg.Statistics.FlushInterval = *flushInterval
 			} else {
-				return fmt.Errorf("statistics flush_interval must be an integer: %w", err)
+				return fmt.Errorf("statistics flush-interval must be an integer: %w", err)
 			}
 		}
 	}

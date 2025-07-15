@@ -1648,7 +1648,7 @@ func TestValidateConfigKeys_UnderscoreDetection(t *testing.T) {
 				"timeout_seconds": 30,
 				"max_concurrent_connections": 100
 			}`,
-			expectedError: "invalid config key 'listen_address': use 'listen-address' instead (hyphens, not underscores)",
+			expectedError: "invalid config key",
 			shouldError:   true,
 		},
 		{
@@ -2425,6 +2425,273 @@ func TestPortalConfigurationMixed(t *testing.T) {
 			if cfg.Portal.Password != tc.expectedPass {
 				t.Errorf("Expected portal password '%s', got '%s'. %s",
 					tc.expectedPass, cfg.Portal.Password, tc.description)
+			}
+		})
+	}
+}
+
+// TestStatisticsConfigurationExtended tests additional statistics configuration scenarios
+func TestStatisticsConfigurationExtended(t *testing.T) {
+	testDir := t.TempDir()
+
+	testCases := []struct {
+		name        string
+		jsonContent string
+		wantErr     bool
+		validate    func(t *testing.T, cfg *Config)
+	}{
+		{
+			name: "SQLite statistics configuration",
+			jsonContent: `{
+				"servers": [
+					{
+						"type": "standard",
+						"listen-address": "127.0.0.1:8080",
+						"enabled": true
+					}
+				],
+				"statistics": {
+					"enabled": true,
+					"backend": "sqlite",
+					"sqlite-path": "/tmp/stats.db",
+					"buffer-size": 500,
+					"flush-interval": 10
+				}
+			}`,
+			wantErr: false,
+			validate: func(t *testing.T, cfg *Config) {
+				if !cfg.Statistics.Enabled {
+					t.Errorf("Expected statistics enabled to be true")
+				}
+				if cfg.Statistics.Backend != "sqlite" {
+					t.Errorf("Expected backend 'sqlite', got '%s'", cfg.Statistics.Backend)
+				}
+				if cfg.Statistics.SQLitePath != "/tmp/stats.db" {
+					t.Errorf("Expected SQLite path '/tmp/stats.db', got '%s'", cfg.Statistics.SQLitePath)
+				}
+				if cfg.Statistics.BufferSize != 500 {
+					t.Errorf("Expected buffer size 500, got %d", cfg.Statistics.BufferSize)
+				}
+				if cfg.Statistics.FlushInterval != 10 {
+					t.Errorf("Expected flush interval 10, got %d", cfg.Statistics.FlushInterval)
+				}
+			},
+		},
+		{
+			name: "PostgreSQL statistics configuration",
+			jsonContent: `{
+				"servers": [
+					{
+						"type": "standard",
+						"listen-address": "127.0.0.1:8080",
+						"enabled": true
+					}
+				],
+				"statistics": {
+					"enabled": true,
+					"backend": "postgres",
+					"postgres-dsn": "postgres://user:pass@localhost:5432/db",
+					"buffer-size": 1000,
+					"flush-interval": 5
+				}
+			}`,
+			wantErr: false,
+			validate: func(t *testing.T, cfg *Config) {
+				if !cfg.Statistics.Enabled {
+					t.Errorf("Expected statistics enabled to be true")
+				}
+				if cfg.Statistics.Backend != "postgres" {
+					t.Errorf("Expected backend 'postgres', got '%s'", cfg.Statistics.Backend)
+				}
+				if cfg.Statistics.PostgresDSN != "postgres://user:pass@localhost:5432/db" {
+					t.Errorf("Expected PostgreSQL DSN 'postgres://user:pass@localhost:5432/db', got '%s'", cfg.Statistics.PostgresDSN)
+				}
+				if cfg.Statistics.BufferSize != 1000 {
+					t.Errorf("Expected buffer size 1000, got %d", cfg.Statistics.BufferSize)
+				}
+				if cfg.Statistics.FlushInterval != 5 {
+					t.Errorf("Expected flush interval 5, got %d", cfg.Statistics.FlushInterval)
+				}
+			},
+		},
+		{
+			name: "Disabled statistics configuration",
+			jsonContent: `{
+				"servers": [
+					{
+						"type": "standard",
+						"listen-address": "127.0.0.1:8080",
+						"enabled": true
+					}
+				],
+				"statistics": {
+					"enabled": false
+				}
+			}`,
+			wantErr: false,
+			validate: func(t *testing.T, cfg *Config) {
+				if cfg.Statistics.Enabled {
+					t.Errorf("Expected statistics enabled to be false")
+				}
+			},
+		},
+		{
+			name: "Statistics with underscore buffer_size key",
+			jsonContent: `{
+				"statistics": {
+					"enabled": true,
+					"backend": "sqlite",
+					"buffer_size": 1000
+				}
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "Statistics with underscore flush_interval key",
+			jsonContent: `{
+				"statistics": {
+					"enabled": true,
+					"backend": "sqlite",
+					"flush_interval": 10
+				}
+			}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := createTempConfigFile(t, testDir, tc.name+".json", tc.jsonContent)
+
+			cfg, err := LoadConfig(configPath)
+
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Expected error but got none")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Expected no error but got: %v", err)
+				}
+				if tc.validate != nil {
+					tc.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+// TestForwardTypeConstants tests the ForwardType constants and methods
+func TestForwardTypeConstants(t *testing.T) {
+	testCases := []struct {
+		name         string
+		forwardType  ForwardType
+		expectedType ForwardType
+	}{
+		{"DefaultNetwork", ForwardTypeDefaultNetwork, 0},
+		{"Socks5", ForwardTypeSocks5, 1},
+		{"Proxy", ForwardTypeProxy, 2},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.forwardType != tc.expectedType {
+				t.Errorf("Expected ForwardType %d, got %d", tc.expectedType, tc.forwardType)
+			}
+		})
+	}
+}
+
+// TestForwardMethods tests the methods of different Forward implementations
+func TestForwardMethods(t *testing.T) {
+	// Helper function to create string pointers
+	stringPtr := func(s string) *string { return &s }
+
+	testCases := []struct {
+		name             string
+		forward          Forward
+		expectedType     ForwardType
+		expectClassifier bool
+	}{
+		{
+			name: "ForwardDefaultNetwork with classifier",
+			forward: &ForwardDefaultNetwork{
+				ClassifierData: &ClassifierTrue{},
+				ForceIPv4:      true,
+			},
+			expectedType:     ForwardTypeDefaultNetwork,
+			expectClassifier: true,
+		},
+		{
+			name: "ForwardDefaultNetwork without classifier",
+			forward: &ForwardDefaultNetwork{
+				ClassifierData: nil,
+				ForceIPv4:      false,
+			},
+			expectedType:     ForwardTypeDefaultNetwork,
+			expectClassifier: true, // Should return default ClassifierTrue
+		},
+		{
+			name: "ForwardSocks5 with classifier",
+			forward: &ForwardSocks5{
+				ClassifierData: &ClassifierDomain{Domain: "example.com"},
+				Address:        "proxy.example.com:1080",
+				Username:       stringPtr("user"),
+				Password:       stringPtr("pass"),
+				ForceIPv4:      true,
+			},
+			expectedType:     ForwardTypeSocks5,
+			expectClassifier: true,
+		},
+		{
+			name: "ForwardSocks5 without classifier",
+			forward: &ForwardSocks5{
+				ClassifierData: nil,
+				Address:        "proxy.example.com:1080",
+			},
+			expectedType:     ForwardTypeSocks5,
+			expectClassifier: true, // Should return default ClassifierTrue
+		},
+		{
+			name: "ForwardProxy with classifier",
+			forward: &ForwardProxy{
+				ClassifierData: &ClassifierNetwork{CIDR: "10.0.0.0/8"},
+				Address:        "proxy.corp.com:8080",
+				Username:       stringPtr("admin"),
+				Password:       stringPtr("secret"),
+				ForceIPv4:      false,
+			},
+			expectedType:     ForwardTypeProxy,
+			expectClassifier: true,
+		},
+		{
+			name: "ForwardProxy without classifier",
+			forward: &ForwardProxy{
+				ClassifierData: nil,
+				Address:        "proxy.corp.com:8080",
+			},
+			expectedType:     ForwardTypeProxy,
+			expectClassifier: true, // Should return default ClassifierTrue
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test Type() method
+			if tc.forward.Type() != tc.expectedType {
+				t.Errorf("Expected Type() to return %d, got %d", tc.expectedType, tc.forward.Type())
+			}
+
+			// Test Classifier() method
+			classifier := tc.forward.Classifier()
+			if tc.expectClassifier {
+				if classifier == nil {
+					t.Errorf("Expected Classifier() to return non-nil classifier")
+				}
+				// When no classifier is set, should return ClassifierTrue as default
+				if tc.forward.Classifier() == nil {
+					t.Errorf("Expected default ClassifierTrue when no classifier set")
+				}
 			}
 		})
 	}

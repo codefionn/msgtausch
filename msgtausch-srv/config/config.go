@@ -215,6 +215,10 @@ func validateConfigKeys(data map[string]any) error {
 		"force_ipv4":                 "force-ipv4",
 		"default_network":            "default-network",
 		"domains_file":               "domains-file",
+		"buffer_size":                "buffer-size",
+		"flush_interval":             "flush-interval",
+		"sqlite_path":                "sqlite-path",
+		"postgres_dsn":               "postgres-dsn",
 	}
 
 	// Check top-level keys
@@ -246,6 +250,15 @@ func validateConfigKeys(data map[string]any) error {
 						return fmt.Errorf("invalid forward config key '%s' at index %d: use '%s' instead (hyphens, not underscores)", key, i, correctKey)
 					}
 				}
+			}
+		}
+	}
+
+	// Check statistics configuration keys
+	if statistics, ok := data["statistics"].(map[string]any); ok {
+		for key := range statistics {
+			if correctKey, exists := keyMappings[key]; exists {
+				return fmt.Errorf("invalid statistics config key '%s': use '%s' instead (hyphens, not underscores)", key, correctKey)
 			}
 		}
 	}

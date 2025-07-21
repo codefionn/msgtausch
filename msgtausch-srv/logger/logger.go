@@ -12,7 +12,8 @@ type LogLevel int
 
 const (
 	// DEBUG level for detailed troubleshooting information
-	DEBUG LogLevel = iota
+	TRACE LogLevel = iota
+	DEBUG
 	// INFO level for general operational information
 	INFO
 	// WARN level for non-critical issues
@@ -38,6 +39,8 @@ func SetLevel(level LogLevel) {
 // GetLevelFromString converts a string level to LogLevel
 func GetLevelFromString(level string) LogLevel {
 	switch strings.ToUpper(level) {
+	case "TRACE":
+		return TRACE
 	case "DEBUG":
 		return DEBUG
 	case "INFO":
@@ -56,6 +59,8 @@ func GetLevelFromString(level string) LogLevel {
 // levelToString converts a LogLevel to its string representation
 func levelToString(level LogLevel) string {
 	switch level {
+	case TRACE:
+		return "TRACE"
 	case DEBUG:
 		return "DEBUG"
 	case INFO:
@@ -79,6 +84,12 @@ func logMessage(level LogLevel, format string, v ...any) {
 
 	msg := fmt.Sprintf(format, v...)
 	stdLogger.Printf("[%s] %s", levelToString(level), msg)
+}
+
+// Debug logs a debug message
+// Arguments are handled in the manner of [fmt.Printf].
+func Trace(format string, v ...any) {
+	logMessage(TRACE, format, v...)
 }
 
 // Debug logs a debug message

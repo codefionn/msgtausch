@@ -1175,8 +1175,13 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Create a context to coordinate tunnel shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
 		defer wg.Done()
+		defer cancel() // Cancel context when this goroutine exits
 		if clientBuf != nil && clientBuf.Reader != nil && clientBuf.Reader.Buffered() > 0 {
 			if _, err := clientBuf.WriteTo(targetConn); err != nil {
 				if !isClosedConnError(err) {
@@ -1190,15 +1195,32 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 				logger.Warn("TCP tunnel copy error (client to target): %v", err)
 			}
 		}
+		// Close the target connection to signal completion
+		if tcpConn, ok := targetConn.(*net.TCPConn); ok {
+			tcpConn.CloseWrite()
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
+		defer cancel() // Cancel context when this goroutine exits
 		if _, err := io.Copy(clientConn, targetConn); err != nil {
 			if !isClosedConnError(err) {
 				logger.Warn("TCP tunnel copy error (target to client): %v", err)
 			}
 		}
+		// Close the client connection to signal completion
+		if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+			tcpConn.CloseWrite()
+		}
+	}()
+
+	// Wait for context cancellation or goroutines to complete
+	go func() {
+		<-ctx.Done()
+		// Force close connections when context is cancelled
+		clientConn.Close()
+		targetConn.Close()
 	}()
 
 	wg.Wait()

@@ -41,6 +41,7 @@ func parseFlagsAndConfig() (cfg *config.Config, configPaths []string) {
 	flag.Var(&configs, "config", "Path to configuration file (supports .json and .hcl formats). Can be specified multiple times, later configs take precedence")
 	envfile := flag.String("envfile", "", "Path to env file to load environment variables")
 	debugMode := flag.Bool("debug", false, "Enable debug logging")
+	traceMode := flag.Bool("trace", false, "Enable trace logging")
 	flag.Parse()
 
 	if len(configs) == 0 {
@@ -65,6 +66,10 @@ func parseFlagsAndConfig() (cfg *config.Config, configPaths []string) {
 	if *debugMode {
 		logger.SetLevel(logger.DEBUG)
 		logger.Debug("Debug logging enabled")
+	}
+	if *traceMode {
+		logger.SetLevel(logger.TRACE)
+		logger.Debug("Trace logging enabled")
 	}
 
 	logger.Info("Starting msgtausch proxy server")

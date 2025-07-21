@@ -24,7 +24,7 @@ func TestConnectionCloseHandling(t *testing.T) {
 	defer ln.Close()
 
 	serverAddr := ln.Addr().String()
-	
+
 	// JavaScript content similar to the problematic wgv.de response
 	jsContent := `/* Dynamically generated content! DON'T COPY IT TO YOUR SERVERS! */
 (function(){var w=window,d=document,t="script";console.log("test")})();`
@@ -36,17 +36,17 @@ func TestConnectionCloseHandling(t *testing.T) {
 			if err != nil {
 				return // Listener closed
 			}
-			
+
 			go func(conn net.Conn) {
 				defer conn.Close()
-				
+
 				// Read the HTTP request
 				reader := bufio.NewReader(conn)
 				_, err := http.ReadRequest(reader)
 				if err != nil {
 					return
 				}
-				
+
 				// Send response with Connection: close (like wgv.de does)
 				response := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
 					"Content-Type: text/javascript\r\n"+
@@ -55,7 +55,7 @@ func TestConnectionCloseHandling(t *testing.T) {
 					"Cache-Control: private, no-cache, no-store, must-revalidate\r\n"+
 					"\r\n"+
 					"%s", len(jsContent), jsContent)
-				
+
 				conn.Write([]byte(response))
 				// Immediately close the connection after sending (like Connection: close should)
 			}(conn)
@@ -110,7 +110,7 @@ func TestConnectionCloseHandling(t *testing.T) {
 
 		// Measure the time it takes to complete the request
 		start := time.Now()
-		
+
 		// Make request to our mock server through the proxy
 		targetURL := fmt.Sprintf("http://%s/test.js", serverAddr)
 		req, err := http.NewRequestWithContext(context.Background(), "GET", targetURL, nil)
@@ -163,7 +163,7 @@ func TestConnectionCloseHTTPS(t *testing.T) {
 		w.Header().Set("Connection", "close")
 		w.Header().Set("Content-Type", "text/javascript")
 		w.Header().Set("Cache-Control", "private, no-cache, no-store, must-revalidate")
-		
+
 		jsContent := `/* Test JS content with Connection: close */
 (function(){console.log("connection close test")})();`
 		w.Write([]byte(jsContent))
@@ -216,7 +216,7 @@ func TestConnectionCloseHTTPS(t *testing.T) {
 
 		// Measure the time it takes to complete the request
 		start := time.Now()
-		
+
 		resp, err := client.Get(tlsServer.URL + "/test.js")
 		if err != nil {
 			t.Fatalf("HTTPS request through proxy failed: %v", err)
@@ -230,7 +230,7 @@ func TestConnectionCloseHTTPS(t *testing.T) {
 			t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
 		}
 
-		// Note: Connection: close header might not be preserved in HTTP/2 
+		// Note: Connection: close header might not be preserved in HTTP/2
 		// but the connection handling should still be fast
 		t.Logf("Connection header: %v", resp.Header.Get("Connection"))
 

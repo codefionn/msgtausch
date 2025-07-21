@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -108,7 +109,11 @@ func runProxy(cfg *config.Config, configPaths []string) {
 		go func() {
 			logger.Info("Starting proxy server...")
 			if err := proxyInstance.Start(); err != nil {
-				logger.Fatal("Proxy server error: %v", err)
+				if err == http.ErrServerClosed {
+					logger.Info("Proxy server closed gracefully")
+				} else {
+					logger.Fatal("Proxy server error: %v", err)
+				}
 			}
 			shutdownChan <- struct{}{}
 		}()

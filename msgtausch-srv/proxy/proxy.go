@@ -1197,7 +1197,9 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 		}
 		// Close the target connection to signal completion
 		if tcpConn, ok := targetConn.(*net.TCPConn); ok {
-			tcpConn.CloseWrite()
+			if err := tcpConn.CloseWrite(); err != nil {
+				logger.Debug("Failed to close write on target connection: %v", err)
+			}
 		}
 	}()
 
@@ -1211,7 +1213,9 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 		}
 		// Close the client connection to signal completion
 		if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-			tcpConn.CloseWrite()
+			if err := tcpConn.CloseWrite(); err != nil {
+				logger.Debug("Failed to close write on client connection: %v", err)
+			}
 		}
 	}()
 

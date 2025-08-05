@@ -247,25 +247,21 @@ export MSGTAUSCH_SERVER_1_ENABLED=true
     }
   ],
   "timeout-seconds": 30,
-  "max-concurrent-connections": 100
-},
+  "max-concurrent-connections": 100,
   "statistics": {
     "enabled": true,
     "backend": "sqlite",
     "sqlite-path": "proxy_stats.db",
     "flush-interval": 300
   }
-},
   "allowlist": {
     "type": "ref",
     "id": "internal-network"
-  }
-},
+  },
   "allowlist": {
     "type": "ref",
     "id": "internal-network"
-  }
-},
+  },
   "allowlist": {
     "type": "ref",
     "id": "internal-network"

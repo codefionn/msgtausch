@@ -31,6 +31,15 @@ For comprehensive configuration documentation, see [docs/configuration.md](docs/
 - File extension determines format: `.json` for JSON, `.hcl` for HCL.
 - For HCL, use equivalent field names (`listen-address`, etc).
 
+## Project overview
+
+- **cmd/proxy-test/main.go** - Testing the proxy in the real world
+- **cmd/simulation/main.go** - Attempt for implementing simulation tests that kinda work
+  (kinda like fuzzy testing but way cooler)
+- **cmd/throughput-test/main.go** - Testing throughput on localhost
+  (May your downloads be fast)
+- **main.go** - Main program for running the proxy
+
 ## Building with Docker
 
 This project uses Docker Bake for building and testing. Make sure you have Docker and `docker buildx` installed.

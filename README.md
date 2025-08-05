@@ -37,10 +37,9 @@ This project uses Docker Bake for building and testing. Make sure you have Docke
 
 ### Supported Platforms
 
-The build system supports the following platforms:
-- Linux (amd64, arm64)
-- macOS (amd64, arm64)
-- Windows (amd64)
+The build system supports Linux `amd64` and `arm64` (and the containers are published as such).
+
+This project may work for other operating systems but is specialized for Linux.
 
 ### Quick Start with Docker
 

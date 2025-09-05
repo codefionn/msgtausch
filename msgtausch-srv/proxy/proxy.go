@@ -238,7 +238,6 @@ func (p *Proxy) CompileClassifiers() {
 		logger.Info("No forward configurations found")
 	}
 
-
 	if p.config.Blocklist != nil {
 		blf, err := CompileClassifier(p.config.Blocklist)
 		if err != nil {
@@ -1139,7 +1138,7 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 				remoteIP:   "",
 				remotePort: uint16(remotePort),
 			}
-			
+
 			classifierResult, err := p.httpsClassifier.Classify(classifierInput)
 			if err != nil {
 				logger.Warn("Error evaluating HTTPS classifier for %s: %v, falling back to default detection", targetAddr, err)

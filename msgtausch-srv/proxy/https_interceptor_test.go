@@ -742,10 +742,10 @@ func TestDecryptPEMKey(t *testing.T) {
 
 	// Create encrypted PEM with password
 	password := "test-password-123"
-	encryptedBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", 
+	encryptedBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY",
 		x509.MarshalPKCS1PrivateKey(privateKey), []byte(password), x509.PEMCipherAES256)
 	require.NoError(t, err)
-	
+
 	encryptedPEM := pem.EncodeToMemory(encryptedBlock)
 
 	t.Run("Decrypt unencrypted key without password", func(t *testing.T) {
@@ -770,7 +770,7 @@ func TestDecryptPEMKey(t *testing.T) {
 		block, _ := pem.Decode(result)
 		require.NotNil(t, block)
 		assert.Equal(t, "RSA PRIVATE KEY", block.Type)
-		
+
 		// Verify we can parse the key
 		parsedKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 		require.NoError(t, err)

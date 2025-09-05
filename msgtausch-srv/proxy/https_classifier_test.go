@@ -68,32 +68,32 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 
 		// Test cases
 		testCases := []struct {
-			name           string
-			targetAddr     string
-			remotePort     int
-			expectedHTTPS  bool
-			description    string
+			name          string
+			targetAddr    string
+			remotePort    int
+			expectedHTTPS bool
+			description   string
 		}{
 			{
-				name:           "Classifier matches domain - should be HTTPS",
-				targetAddr:     "example.com:80",
-				remotePort:     80,
-				expectedHTTPS:  true,
-				description:    "Domain matches HTTPS classifier, should override port-based detection",
+				name:          "Classifier matches domain - should be HTTPS",
+				targetAddr:    "example.com:80",
+				remotePort:    80,
+				expectedHTTPS: true,
+				description:   "Domain matches HTTPS classifier, should override port-based detection",
 			},
 			{
-				name:           "Classifier doesn't match domain - should use port detection",
-				targetAddr:     "google.com:443",
-				remotePort:     443,
-				expectedHTTPS:  true,
-				description:    "Domain doesn't match classifier, should fall back to port-based detection",
+				name:          "Classifier doesn't match domain - should use port detection",
+				targetAddr:    "google.com:443",
+				remotePort:    443,
+				expectedHTTPS: true,
+				description:   "Domain doesn't match classifier, should fall back to port-based detection",
 			},
 			{
-				name:           "Classifier doesn't match domain on non-HTTPS port",
-				targetAddr:     "google.com:80",
-				remotePort:     80,
-				expectedHTTPS:  false,
-				description:    "Domain doesn't match classifier and port is not HTTPS default",
+				name:          "Classifier doesn't match domain on non-HTTPS port",
+				targetAddr:    "google.com:80",
+				remotePort:    80,
+				expectedHTTPS: false,
+				description:   "Domain doesn't match classifier and port is not HTTPS default",
 			},
 		}
 
@@ -109,13 +109,13 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 					if tc.targetAddr == "google.com:443" || tc.targetAddr == "google.com:80" {
 						hostname = "google.com"
 					}
-					
+
 					classifierInput := ClassifierInput{
 						host:       hostname,
 						remoteIP:   "",
 						remotePort: uint16(tc.remotePort),
 					}
-					
+
 					classifierResult, err := server.httpsClassifier.Classify(classifierInput)
 					if err != nil {
 						t.Fatalf("Error evaluating HTTPS classifier: %v", err)
@@ -206,7 +206,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 		// Create proxy and compile classifiers
 		proxy := NewProxy(cfg)
 
-		// Add a test server  
+		// Add a test server
 		serverCfg := config.ServerConfig{
 			Type:           config.ProxyTypeStandard,
 			ListenAddress:  "127.0.0.1:8080",
@@ -336,10 +336,10 @@ func TestHTTPSClassifierTypes(t *testing.T) {
 			port     uint16
 			expected bool
 		}{
-			{"Domain matches", "secure.example.com", 80, true},   // Domain matches
-			{"Port matches", "other.com", 443, true},             // Port matches
-			{"Both match", "secure.example.com", 443, true},      // Both match
-			{"Neither match", "other.com", 80, false},            // Neither matches
+			{"Domain matches", "secure.example.com", 80, true}, // Domain matches
+			{"Port matches", "other.com", 443, true},           // Port matches
+			{"Both match", "secure.example.com", 443, true},    // Both match
+			{"Neither match", "other.com", 80, false},          // Neither matches
 		}
 
 		for _, tc := range testCases {

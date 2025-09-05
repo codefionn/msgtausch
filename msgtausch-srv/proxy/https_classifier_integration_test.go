@@ -47,10 +47,10 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 
 		// Test the classifier directly
 		testCases := []struct {
-			name           string
-			host           string
-			port           uint16
-			expectedHTTPS  bool
+			name          string
+			host          string
+			port          uint16
+			expectedHTTPS bool
 		}{
 			{
 				name:          "Domain matches classifier - should be HTTPS even on port 80",
@@ -60,7 +60,7 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 			},
 			{
 				name:          "Domain matches classifier - should be HTTPS on port 443",
-				host:          "secure.example.com", 
+				host:          "secure.example.com",
 				port:          443,
 				expectedHTTPS: true,
 			},
@@ -101,8 +101,8 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 					finalHTTPS = defaultHTTPS // Should fall back to port-based detection
 				}
 
-				assert.Equal(t, tc.expectedHTTPS, finalHTTPS, 
-					"HTTPS detection mismatch for %s:%d (classifier: %v, default: %v)", 
+				assert.Equal(t, tc.expectedHTTPS, finalHTTPS,
+					"HTTPS detection mismatch for %s:%d (classifier: %v, default: %v)",
 					tc.host, tc.port, classifierResult, defaultHTTPS)
 			})
 		}
@@ -143,9 +143,9 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 			port     uint16
 			expected bool
 		}{
-			{8443, true},  // Should match classifier
-			{443, false},  // Should NOT match classifier (only default would match)
-			{80, false},   // Should not match
+			{8443, true}, // Should match classifier
+			{443, false}, // Should NOT match classifier (only default would match)
+			{80, false},  // Should not match
 		}
 
 		for _, tc := range testCases {
@@ -396,7 +396,7 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 
 		// Classifier is compiled successfully but won't resolve at runtime
 		assert.NotNil(t, server.httpsClassifier, "HTTPS classifier should be compiled (references are valid)")
-		
+
 		// Test that the classifier fails when used due to unresolved reference
 		_, err := server.httpsClassifier.Classify(ClassifierInput{
 			host:       "test.com",
@@ -548,7 +548,7 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 		// Benchmark classifier evaluation speed
 		start := time.Now()
 		iterations := 1000
-		
+
 		for i := 0; i < iterations; i++ {
 			_, err := server.httpsClassifier.Classify(ClassifierInput{
 				host:       "speed.example.com",
@@ -557,13 +557,12 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 			})
 			require.NoError(t, err)
 		}
-		
+
 		duration := time.Since(start)
 		avgTime := duration / time.Duration(iterations)
-		
+
 		// Should be very fast (under 100 microseconds per evaluation)
-		assert.Less(t, avgTime, 100*time.Microsecond, 
+		assert.Less(t, avgTime, 100*time.Microsecond,
 			"Classifier evaluation should be fast (got %v per evaluation)", avgTime)
 	})
 }
-

@@ -69,8 +69,9 @@ The `interception` object controls traffic interception capabilities:
 | `enabled` | `bool` | `false` | Master switch for traffic interception |
 | `http` | `bool` | `false` | Enable HTTP traffic interception |
 | `https` | `bool` | `false` | Enable HTTPS traffic interception |
-| `ca_file` | `string` | `""` | Path to CA certificate file |
+| `ca-file` | `string` | `""` | Path to CA certificate file |
 | `ca-key-file` | `string` | `""` | Path to CA private key file |
+| `ca-key-passwd` | `string` | `""` | Optional password for encrypted CA private key file |
 
 ### Classifiers
 
@@ -181,6 +182,7 @@ Configuration can be overridden using environment variables with the `MSGTAUSCH_
 | `MSGTAUSCH_INTERCEPTHTTPS` | Enable HTTPS traffic interception | bool |
 | `MSGTAUSCH_CAFILE` | Path to CA certificate file | string |
 | `MSGTAUSCH_CAKEYFILE` | Path to CA private key file | string |
+| `MSGTAUSCH_CAKEYPASSWD` | Password for encrypted CA private key file | string |
 | `MSGTAUSCH_STATISTICS_ENABLED` | Enable statistics collection | bool |
 | `MSGTAUSCH_STATISTICS_BACKEND` | Statistics backend type | string |
 | `MSGTAUSCH_STATISTICS_SQLITE_PATH` | Path to SQLite stats database | string |
@@ -397,6 +399,127 @@ export MSGTAUSCH_STATISTICS_BACKEND=sqlite
 export MSGTAUSCH_STATISTICS_SQLITE_PATH=./proxy_stats.db
 ```
 
+### Interception Configuration Examples
+
+#### Basic HTTP Interception
+```json
+{
+  "servers": [
+    {
+      "type": "http",
+      "listen-address": "127.0.0.1:8080"
+    }
+  ],
+  "interception": {
+    "enabled": true,
+    "http": true,
+    "https": false
+  }
+}
+```
+
+#### HTTPS Interception with CA Certificate
+```json
+{
+  "servers": [
+    {
+      "type": "https",
+      "listen-address": "127.0.0.1:8443"
+    }
+  ],
+  "interception": {
+    "enabled": true,
+    "http": false,
+    "https": true,
+    "ca-file": "/path/to/ca.crt",
+    "ca-key-file": "/path/to/ca.key"
+  }
+}
+```
+
+#### Full Interception with Password-Protected CA Key
+```json
+{
+  "servers": [
+    {
+      "type": "https",
+      "listen-address": "0.0.0.0:8443"
+    },
+    {
+      "type": "http",
+      "listen-address": "0.0.0.0:8080"
+    }
+  ],
+  "interception": {
+    "enabled": true,
+    "http": true,
+    "https": true,
+    "ca-file": "/etc/ssl/proxy/ca.crt",
+    "ca-key-file": "/etc/ssl/proxy/ca.key",
+    "ca-key-passwd": "secret-ca-password"
+  }
+}
+```
+
+#### HCL Interception Configuration
+```hcl
+servers = [
+  {
+    type = "https"
+    listen-address = "127.0.0.1:8443"
+  }
+]
+
+interception = {
+  enabled = true
+  http = false
+  https = true
+  ca-file = "/opt/certs/proxy-ca.pem"
+  ca-key-file = "/opt/certs/proxy-ca-key.pem"
+  ca-key-passwd = "ca-key-password"
+}
+```
+
+#### Interception via Environment Variables
+```bash
+# Enable interception globally
+export MSGTAUSCH_INTERCEPT=true
+
+# Enable both HTTP and HTTPS interception
+export MSGTAUSCH_INTERCEPTHTTP=true
+export MSGTAUSCH_INTERCEPTHTTPS=true
+
+# Set CA certificate files
+export MSGTAUSCH_CAFILE=/etc/ssl/certs/proxy-ca.crt
+export MSGTAUSCH_CAKEYFILE=/etc/ssl/private/proxy-ca.key
+export MSGTAUSCH_CAKEYPASSWD=my-secure-password
+
+# Set up HTTPS intercepting server
+export MSGTAUSCH_SERVER_0_LISTENADDRESS=0.0.0.0:8443
+export MSGTAUSCH_SERVER_0_TYPE=https
+export MSGTAUSCH_SERVER_0_ENABLED=true
+```
+
+#### Using Secrets for Sensitive Configuration
+```json
+{
+  "interception": {
+    "enabled": true,
+    "https": true,
+    "ca-file": "/etc/ssl/proxy/ca.crt",
+    "ca-key-file": "/etc/ssl/proxy/ca.key",
+    "ca-key-passwd": {
+      "_secret": "CA_KEY_PASSWORD"
+    }
+  }
+}
+```
+
+Then set the environment variable:
+```bash
+export CA_KEY_PASSWORD=your-actual-password
+```
+
 ## Configuration Validation
 
 The configuration is validated on startup with the following rules:
@@ -406,16 +529,33 @@ The configuration is validated on startup with the following rules:
 - File paths must be accessible (for CA files, domains files)
 - Classifier references must point to existing named classifiers
 - Forward addresses must be valid host:port combinations
+- Interception CA files must exist and be readable when HTTPS interception is enabled
+- CA private key files must match the CA certificate
+- Configuration keys must use hyphens, not underscores (e.g., `ca-file` not `ca_file`)
 
 ## Best Practices
 
-- **Use named classifiers** for complex rules that are reused
-- **Monitor statistics database** growth and implement retention policies
-- **Test statistics configuration** in non-production environments
-- **Use appropriate buffer sizes** based on expected traffic volume
-- **Consider PostgreSQL** for high-traffic deployments
+### General Configuration
+1. **Use named classifiers** for complex rules that are reused
 2. **Order forwarding rules** from most specific to least specific
 3. **Set appropriate connection limits** based on expected load
 4. **Use environment variables** for deployment-specific settings
 5. **Test configuration changes** in a non-production environment first
 6. **Monitor connection usage** and adjust limits accordingly
+
+### Interception Configuration
+1. **Secure CA private keys** with appropriate file permissions (600 or 400)
+2. **Use password-protected CA keys** in production environments
+3. **Store CA passwords** in environment variables or secrets management systems
+4. **Generate dedicated CA certificates** for proxy interception (don't reuse existing CAs)
+5. **Test certificate chain validity** before deployment
+6. **Monitor certificate expiration** and implement renewal processes
+7. **Use separate servers** for HTTP and HTTPS interception when possible
+8. **Consider performance impact** of HTTPS interception on high-traffic systems
+
+### Statistics Configuration
+1. **Monitor statistics database** growth and implement retention policies
+2. **Test statistics configuration** in non-production environments
+3. **Use appropriate buffer sizes** based on expected traffic volume
+4. **Consider PostgreSQL** for high-traffic deployments
+5. **Implement regular database backups** for important statistics data

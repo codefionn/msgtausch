@@ -29,11 +29,13 @@ const (
 
 // InterceptionConfig defines settings for HTTP/HTTPS traffic interception
 type InterceptionConfig struct {
-	Enabled   bool   // Whether interception is enabled
-	HTTP      bool   // Whether to intercept HTTP traffic
-	HTTPS     bool   // Whether to intercept HTTPS traffic
-	CAFile    string // Path to CA certificate file (for HTTPS/QUIC interceptor)
-	CAKeyFile string // Path to CA private key file (for HTTPS/QUIC interceptor)
+	Enabled         bool   // Whether interception is enabled
+	HTTP            bool   // Whether to intercept HTTP traffic
+	HTTPS           bool   // Whether to intercept HTTPS traffic
+	HTTPSClassifier string // Optional classifier ID to determine if traffic should be treated as HTTPS
+	CAFile          string // Path to CA certificate file (for HTTPS/QUIC interceptor)
+	CAKeyFile       string // Path to CA private key file (for HTTPS/QUIC interceptor)
+	CAKeyPasswd     string // Optional password for encrypted CA private key file
 }
 
 // PortalConfig defines settings for the admin portal
@@ -219,6 +221,9 @@ func validateConfigKeys(data map[string]any) error {
 		"flush_interval":             "flush-interval",
 		"sqlite_path":                "sqlite-path",
 		"postgres_dsn":               "postgres-dsn",
+		"ca_file":                    "ca-file",
+		"ca_key_file":                "ca-key-file",
+		"ca_key_passwd":              "ca-key-passwd",
 	}
 
 	// Check top-level keys
@@ -250,6 +255,15 @@ func validateConfigKeys(data map[string]any) error {
 						return fmt.Errorf("invalid forward config key '%s' at index %d: use '%s' instead (hyphens, not underscores)", key, i, correctKey)
 					}
 				}
+			}
+		}
+	}
+
+	// Check interception configuration keys
+	if interception, ok := data["interception"].(map[string]any); ok {
+		for key := range interception {
+			if correctKey, exists := keyMappings[key]; exists {
+				return fmt.Errorf("invalid interception config key '%s': use '%s' instead (hyphens, not underscores)", key, correctKey)
 			}
 		}
 	}
@@ -726,6 +740,77 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 		}
 	}
 
+	// Handle interception configuration
+	if val, exists := data["interception"]; exists {
+		interceptionMap, ok := val.(map[string]any)
+		if !ok {
+			return fmt.Errorf("interception configuration must be an object")
+		}
+
+		// Parse enabled
+		if enabledVal, exists := interceptionMap["enabled"]; exists {
+			if enabled, err := parseValue[bool](enabledVal); err == nil {
+				cfg.Interception.Enabled = *enabled
+			} else {
+				return fmt.Errorf("interception enabled must be a boolean: %w", err)
+			}
+		}
+
+		// Parse http
+		if httpVal, exists := interceptionMap["http"]; exists {
+			if http, err := parseValue[bool](httpVal); err == nil {
+				cfg.Interception.HTTP = *http
+			} else {
+				return fmt.Errorf("interception http must be a boolean: %w", err)
+			}
+		}
+
+		// Parse https
+		if httpsVal, exists := interceptionMap["https"]; exists {
+			if https, err := parseValue[bool](httpsVal); err == nil {
+				cfg.Interception.HTTPS = *https
+			} else {
+				return fmt.Errorf("interception https must be a boolean: %w", err)
+			}
+		}
+
+		// Parse https-classifier
+		if httpsClassifierVal, exists := interceptionMap["https-classifier"]; exists {
+			if httpsClassifier, err := parseValue[string](httpsClassifierVal); err == nil {
+				cfg.Interception.HTTPSClassifier = *httpsClassifier
+			} else {
+				return fmt.Errorf("interception https-classifier must be a string: %w", err)
+			}
+		}
+
+		// Parse ca-file
+		if caFileVal, exists := interceptionMap["ca-file"]; exists {
+			if caFile, err := parseValue[string](caFileVal); err == nil {
+				cfg.Interception.CAFile = *caFile
+			} else {
+				return fmt.Errorf("interception ca-file must be a string: %w", err)
+			}
+		}
+
+		// Parse ca-key-file
+		if caKeyFileVal, exists := interceptionMap["ca-key-file"]; exists {
+			if caKeyFile, err := parseValue[string](caKeyFileVal); err == nil {
+				cfg.Interception.CAKeyFile = *caKeyFile
+			} else {
+				return fmt.Errorf("interception ca-key-file must be a string: %w", err)
+			}
+		}
+
+		// Parse ca-key-passwd
+		if caKeyPasswdVal, exists := interceptionMap["ca-key-passwd"]; exists {
+			if caKeyPasswd, err := parseValue[string](caKeyPasswdVal); err == nil {
+				cfg.Interception.CAKeyPasswd = *caKeyPasswd
+			} else {
+				return fmt.Errorf("interception ca-key-passwd must be a string: %w", err)
+			}
+		}
+	}
+
 	// Handle statistics configuration
 	if val, exists := data["statistics"]; exists {
 		statsMap, ok := val.(map[string]any)
@@ -1041,6 +1126,10 @@ func loadConfigFromEnv(cfg *Config) {
 	if interceptHTTPS := os.Getenv("MSGTAUSCH_INTERCEPTHTTPS"); interceptHTTPS != "" {
 		cfg.Interception.HTTPS = strings.EqualFold(interceptHTTPS, "true") || interceptHTTPS == "1"
 	}
+	// Handle global HTTPS classifier setting
+	if httpsClassifier := os.Getenv("MSGTAUSCH_HTTPSCLASSIFIER"); httpsClassifier != "" {
+		cfg.Interception.HTTPSClassifier = httpsClassifier
+	}
 
 	// Handle global CA certificate file setting
 	if caFile := os.Getenv("MSGTAUSCH_CAFILE"); caFile != "" {
@@ -1050,6 +1139,11 @@ func loadConfigFromEnv(cfg *Config) {
 	// Handle global CA key file setting
 	if caKeyFile := os.Getenv("MSGTAUSCH_CAKEYFILE"); caKeyFile != "" {
 		cfg.Interception.CAKeyFile = caKeyFile
+	}
+
+	// Handle global CA key password setting
+	if caKeyPasswd := os.Getenv("MSGTAUSCH_CAKEYPASSWD"); caKeyPasswd != "" {
+		cfg.Interception.CAKeyPasswd = caKeyPasswd
 	}
 
 	// Handle portal configuration from environment variables

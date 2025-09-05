@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -28,6 +30,40 @@ type contextKey struct {
 
 var clientKey = &contextKey{name: "http-client"}
 var clientIPKey = &contextKey{name: "client-ip"}
+
+// decryptPEMKey decrypts a password-protected PEM private key.
+// If password is empty, it assumes the key is not encrypted and returns the original PEM data.
+func decryptPEMKey(keyPEM []byte, password string) ([]byte, error) {
+	if password == "" {
+		// No password provided, assume key is not encrypted
+		return keyPEM, nil
+	}
+
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+
+	// Check if the key is encrypted
+	if !x509.IsEncryptedPEMBlock(block) {
+		// Key is not encrypted, return original PEM
+		return keyPEM, nil
+	}
+
+	// Decrypt the PEM block
+	decryptedBytes, err := x509.DecryptPEMBlock(block, []byte(password))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt PEM block: %w", err)
+	}
+
+	// Re-encode as unencrypted PEM
+	decryptedBlock := &pem.Block{
+		Type:  block.Type,
+		Bytes: decryptedBytes,
+	}
+
+	return pem.EncodeToMemory(decryptedBlock), nil
+}
 
 func WithClient(ctx context.Context, client *http.Client) context.Context {
 	return context.WithValue(ctx, clientKey, client)
@@ -65,6 +101,7 @@ type Server struct {
 	compiledForwards    []compiledForward
 	blocklistClassifier Classifier
 	allowlistClassifier Classifier
+	httpsClassifier     Classifier
 	proxy               *Proxy
 }
 
@@ -201,6 +238,7 @@ func (p *Proxy) CompileClassifiers() {
 		logger.Info("No forward configurations found")
 	}
 
+
 	if p.config.Blocklist != nil {
 		blf, err := CompileClassifier(p.config.Blocklist)
 		if err != nil {
@@ -247,12 +285,33 @@ func NewProxy(cfg *config.Config) *Proxy {
 			continue
 		}
 
+		// Compile HTTPS classifier directly if configured
+		var httpsClassifier Classifier
+		if cfg.Interception.HTTPSClassifier != "" {
+			if cfg.Classifiers != nil {
+				if classifierConfig, exists := cfg.Classifiers[cfg.Interception.HTTPSClassifier]; exists {
+					compiled, err := CompileClassifier(classifierConfig)
+					if err != nil {
+						logger.Error("Failed to compile HTTPS classifier '%s' for server %s: %v", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress, err)
+					} else {
+						httpsClassifier = compiled
+						logger.Debug("Compiled HTTPS classifier '%s' for server %s", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress)
+					}
+				} else {
+					logger.Warn("HTTPS classifier '%s' not found in classifiers config for server %s", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress)
+				}
+			} else {
+				logger.Warn("HTTPS classifier '%s' configured but no classifiers defined for server %s", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress)
+			}
+		}
+
 		server := &Server{
 			config:              cfg,
 			serverConfig:        serverCfg,
 			compiledForwards:    p.compiledForwards,
 			blocklistClassifier: p.blocklistClassifier,
 			allowlistClassifier: p.allowlistClassifier,
+			httpsClassifier:     httpsClassifier,
 			server:              &http.Server{Addr: serverCfg.ListenAddress},
 			proxy:               p,
 		}
@@ -291,13 +350,20 @@ func NewProxy(cfg *config.Config) *Proxy {
 				}
 				cleanCAKeyPath = absPath
 			}
-			caKey, err := os.ReadFile(cleanCAKeyPath)
+			caKeyPEM, err := os.ReadFile(cleanCAKeyPath)
 			if err != nil {
 				logger.Error("Failed to read CA private key file '%s': %v", cleanCAKeyPath, err)
 				continue
 			}
 
-			httpsInterceptor, err := NewHTTPSInterceptor(caCert, caKey, p, nil, nil)
+			// Decrypt the private key if password is provided
+			decryptedCAKey, err := decryptPEMKey(caKeyPEM, cfg.Interception.CAKeyPasswd)
+			if err != nil {
+				logger.Error("Failed to decrypt CA private key: %v", err)
+				continue
+			}
+
+			httpsInterceptor, err := NewHTTPSInterceptor(caCert, decryptedCAKey, p, nil, nil)
 			if err != nil {
 				logger.Error("Failed to create HTTPS interceptor: %v", err)
 				continue
@@ -450,12 +516,18 @@ func (p *Server) Start() error {
 			logger.Error("Failed to read CA certificate file '%s': %v", cleanCACertPath, err)
 			return err
 		}
-		caKey, err := os.ReadFile(caKeyFile)
+		caKeyPEM, err := os.ReadFile(caKeyFile)
 		if err != nil {
 			return fmt.Errorf("failed to read CA key file '%s': %w", caKeyFile, err)
 		}
 
-		p.httpsInterceptor, err = NewHTTPSInterceptor(caCert, caKey, p.proxy, nil, nil)
+		// Decrypt the private key if password is provided
+		decryptedCAKey, err := decryptPEMKey(caKeyPEM, p.config.Interception.CAKeyPasswd)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt CA private key: %w", err)
+		}
+
+		p.httpsInterceptor, err = NewHTTPSInterceptor(caCert, decryptedCAKey, p.proxy, nil, nil)
 		if err != nil {
 			return fmt.Errorf("failed to initialize HTTPS interceptor: %w", err)
 		}
@@ -1042,7 +1114,7 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 	logger.Debug("WebSocket tunnel closed for %s", targetHost)
 }
 
-func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectionID int64, _, _ string, _ int) {
+func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectionID int64, _, _ string, remotePort int) {
 	targetAddr := r.Host
 
 	logger.Debug("CONNECT request for %s", targetAddr)
@@ -1050,10 +1122,32 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 	if p.shouldInterceptTunnel(r) {
 		logger.Debug("Intercepting CONNECT request for %s", targetAddr)
 
+		// First use the default port-based detection
 		isHTTPS := strings.HasSuffix(targetAddr, ":443") ||
+			remotePort == 443 ||
+			strings.HasSuffix(targetAddr, ":8443") ||
+			remotePort == 8443 ||
 			strings.Contains(r.URL.String(), "https://") ||
 			r.URL.Scheme == "https" ||
 			strings.Contains(targetAddr, "127.0.0.1")
+
+		// If HTTPS classifier is configured, use it to override the default detection
+		if p.httpsClassifier != nil {
+			hostname := strings.Split(targetAddr, ":")[0]
+			classifierInput := ClassifierInput{
+				host:       hostname,
+				remoteIP:   "",
+				remotePort: uint16(remotePort),
+			}
+			
+			classifierResult, err := p.httpsClassifier.Classify(classifierInput)
+			if err != nil {
+				logger.Warn("Error evaluating HTTPS classifier for %s: %v, falling back to default detection", targetAddr, err)
+			} else {
+				logger.Debug("HTTPS classifier result for %s: %v (default detection: %v)", targetAddr, classifierResult, isHTTPS)
+				isHTTPS = classifierResult
+			}
+		}
 
 		logger.Debug("Protocol detection: isHTTPS=%v, targetAddr=%s, URL=%s, Scheme=%s",
 			isHTTPS, targetAddr, r.URL.String(), r.URL.Scheme)

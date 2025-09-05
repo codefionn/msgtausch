@@ -410,7 +410,17 @@ func (h *HTTPSInterceptor) HandleTCPConnection(clientConn net.Conn, host string)
 				return
 			}
 
-			logger.Debug("Intercepted HTTP request: %s %s %s", req.Method, req.URL, req.Proto)
+			// Construct full URL for logging
+			fullURL := req.URL.String()
+			if req.URL.Host == "" && req.Header.Get("Host") != "" {
+				// For requests without host in URL, construct it from Host header
+				scheme := "https" // We know this is HTTPS interception
+				fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
+				if req.URL.RawQuery != "" {
+					fullURL += "?" + req.URL.RawQuery
+				}
+			}
+			logger.Debug("Intercepted HTTPS request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 
 			// Reject CONNECT requests to prevent tunneling bypasses
 			if req.Method == http.MethodConnect {

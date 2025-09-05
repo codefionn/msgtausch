@@ -728,3 +728,143 @@ func TestHTTPSInterceptor_WebSocketSupport(t *testing.T) {
 		assert.Equal(t, "test-value-123", string(message))
 	})
 }
+
+func TestDecryptPEMKey(t *testing.T) {
+	// Generate a test RSA key
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	// Create unencrypted PEM
+	unencryptedPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+
+	// Create encrypted PEM with password
+	password := "test-password-123"
+	encryptedBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY", 
+		x509.MarshalPKCS1PrivateKey(privateKey), []byte(password), x509.PEMCipherAES256)
+	require.NoError(t, err)
+	
+	encryptedPEM := pem.EncodeToMemory(encryptedBlock)
+
+	t.Run("Decrypt unencrypted key without password", func(t *testing.T) {
+		result, err := decryptPEMKey(unencryptedPEM, "")
+		require.NoError(t, err)
+		assert.Equal(t, unencryptedPEM, result)
+	})
+
+	t.Run("Decrypt unencrypted key with password", func(t *testing.T) {
+		result, err := decryptPEMKey(unencryptedPEM, password)
+		require.NoError(t, err)
+		assert.Equal(t, unencryptedPEM, result)
+	})
+
+	t.Run("Decrypt encrypted key with correct password", func(t *testing.T) {
+		result, err := decryptPEMKey(encryptedPEM, password)
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.NotEqual(t, encryptedPEM, result) // Should be different from encrypted
+
+		// Verify the decrypted key can be parsed
+		block, _ := pem.Decode(result)
+		require.NotNil(t, block)
+		assert.Equal(t, "RSA PRIVATE KEY", block.Type)
+		
+		// Verify we can parse the key
+		parsedKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		require.NoError(t, err)
+		assert.Equal(t, privateKey.N, parsedKey.N)
+	})
+
+	t.Run("Decrypt encrypted key without password", func(t *testing.T) {
+		result, err := decryptPEMKey(encryptedPEM, "")
+		require.NoError(t, err)
+		assert.Equal(t, encryptedPEM, result) // Should return original encrypted PEM
+	})
+
+	t.Run("Decrypt encrypted key with wrong password", func(t *testing.T) {
+		_, err := decryptPEMKey(encryptedPEM, "wrong-password")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to decrypt PEM block")
+	})
+
+	t.Run("Decrypt invalid PEM data", func(t *testing.T) {
+		invalidPEM := []byte("invalid pem data")
+		_, err := decryptPEMKey(invalidPEM, "password")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to decode PEM block")
+	})
+}
+
+func TestHTTPSInterceptorWithPasswordProtectedCA(t *testing.T) {
+	// Generate test CA certificate and key
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Test CA"},
+			Country:      []string{"US"},
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	caCertDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	require.NoError(t, err)
+
+	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
+
+	// Create encrypted CA key with password
+	password := "secure-ca-password"
+	encryptedCAKeyBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY",
+		x509.MarshalPKCS1PrivateKey(caKey), []byte(password), x509.PEMCipherAES256)
+	require.NoError(t, err)
+	encryptedCAKeyPEM := pem.EncodeToMemory(encryptedCAKeyBlock)
+
+	t.Run("Create interceptor with password-protected key", func(t *testing.T) {
+		// Decrypt the key using our function
+		decryptedCAKeyPEM, err := decryptPEMKey(encryptedCAKeyPEM, password)
+		require.NoError(t, err)
+
+		// Create HTTPS interceptor with decrypted key
+		mockProxy := &Proxy{
+			config: &config.Config{
+				TimeoutSeconds: 30,
+			},
+		}
+
+		interceptor, err := NewHTTPSInterceptor(caCertPEM, decryptedCAKeyPEM, mockProxy, nil, nil)
+		require.NoError(t, err)
+		assert.NotNil(t, interceptor)
+		assert.NotNil(t, interceptor.caCert)
+		assert.NotNil(t, interceptor.caKey)
+		assert.Equal(t, caKey.N, interceptor.caKey.N)
+	})
+
+	t.Run("Fail to create interceptor with wrong password", func(t *testing.T) {
+		// Try to decrypt with wrong password
+		_, err := decryptPEMKey(encryptedCAKeyPEM, "wrong-password")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to decrypt PEM block")
+	})
+
+	t.Run("Create interceptor without decrypting encrypted key", func(t *testing.T) {
+		// Try to create interceptor directly with encrypted key (should fail)
+		mockProxy := &Proxy{
+			config: &config.Config{
+				TimeoutSeconds: 30,
+			},
+		}
+
+		_, err := NewHTTPSInterceptor(caCertPEM, encryptedCAKeyPEM, mockProxy, nil, nil)
+		assert.Error(t, err)
+		// The error should be related to key parsing since the encrypted key can't be parsed directly
+	})
+}

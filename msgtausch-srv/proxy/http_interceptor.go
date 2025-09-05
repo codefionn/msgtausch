@@ -105,7 +105,16 @@ func (h *HTTPInterceptor) applyResponseHooks(resp *http.Response) error {
 
 // InterceptRequest handles intercepting an HTTP request, applying hooks, and forwarding it
 func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Request) {
-	logger.Debug("HTTP interceptor handling request to %s", req.URL.String())
+	// Construct full URL for logging
+	fullURL := req.URL.String()
+	if req.URL.Host == "" && req.Header.Get("Host") != "" {
+		scheme := "http"
+		fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
+		if req.URL.RawQuery != "" {
+			fullURL += "?" + req.URL.RawQuery
+		}
+	}
+	logger.Debug("HTTP interceptor handling request to %s (URL: %s)", req.URL.String(), fullURL)
 
 	// Reject CONNECT requests to prevent tunneling bypasses
 	if req.Method == http.MethodConnect {
@@ -201,7 +210,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	logger.Debug("HTTP interceptor completed request to %s with status %d", req.URL.String(), resp.StatusCode)
+	logger.Debug("HTTP interceptor completed request to %s with status %d (URL: %s)", req.URL.String(), resp.StatusCode, fullURL)
 }
 
 // HandleTCPConnection handles a raw TCP connection for HTTP interception
@@ -243,6 +252,9 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 	var isWebSocket atomic.Bool
 	isWebSocket.Store(false)
 
+	// Track current request URL for logging (shared between goroutines)
+	var currentURL atomic.Value
+
 	// Use wait group to coordinate goroutine completion
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
@@ -282,7 +294,18 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 				return
 			}
 
-			logger.Debug("Intercepted HTTP request: %s %s %s", req.Method, req.URL, req.Proto)
+			// Construct full URL for logging
+			fullURL := req.URL.String()
+			if req.URL.Host == "" && req.Header.Get("Host") != "" {
+				scheme := "http"
+				fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
+				if req.URL.RawQuery != "" {
+					fullURL += "?" + req.URL.RawQuery
+				}
+			}
+			// Store URL for response logging
+			currentURL.Store(fullURL)
+			logger.Debug("Intercepted HTTP request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 
 			// Reject CONNECT requests to prevent tunneling bypasses
 			if req.Method == http.MethodConnect {
@@ -397,7 +420,12 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 				return
 			}
 
-			logger.Debug("Intercepted HTTP response with status: %s", resp.Status)
+			// Log response with URL context
+			fullURL := "unknown"
+			if storedURL := currentURL.Load(); storedURL != nil {
+				fullURL = storedURL.(string)
+			}
+			logger.Debug("Intercepted HTTP response with status: %s (URL: %s)", resp.Status, fullURL)
 
 			// Check for WebSocket upgrade response
 			if resp.StatusCode == http.StatusSwitchingProtocols &&

@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/des"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -9,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -28,6 +31,55 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// createLegacyEncryptedPEM creates a legacy DES-CBC encrypted PEM block for testing purposes
+// WARNING: This is insecure and only used for testing backward compatibility
+func createLegacyEncryptedPEM(t *testing.T, blockType string, data []byte, password string) []byte {
+	// Generate random IV
+	iv := make([]byte, des.BlockSize)
+	_, err := rand.Read(iv)
+	require.NoError(t, err)
+
+	// Derive key using MD5 (legacy method)
+	key := make([]byte, 8) // DES key is 8 bytes
+	h := md5.New()
+	h.Write([]byte(password))
+	h.Write(iv)
+	copy(key, h.Sum(nil))
+
+	// Add PKCS#5 padding
+	padLen := des.BlockSize - (len(data) % des.BlockSize)
+	padded := make([]byte, len(data)+padLen)
+	copy(padded, data)
+	for i := len(data); i < len(padded); i++ {
+		padded[i] = byte(padLen)
+	}
+
+	// Encrypt using DES-CBC
+	cipher, err := des.NewCipher(key)
+	require.NoError(t, err)
+
+	encrypted := make([]byte, len(padded))
+	for i := 0; i < len(padded); i += des.BlockSize {
+		end := i + des.BlockSize
+		if end > len(padded) {
+			end = len(padded)
+		}
+		cipher.Encrypt(encrypted[i:end], padded[i:end])
+	}
+
+	// Create PEM block with legacy headers
+	block := &pem.Block{
+		Type:  blockType,
+		Bytes: encrypted,
+		Headers: map[string]string{
+			"Proc-Type": "4,ENCRYPTED",
+			"DEK-Info":  "DES-CBC," + strings.ToUpper(hex.EncodeToString(iv)),
+		},
+	}
+
+	return pem.EncodeToMemory(block)
+}
 
 // generateTestCA generates a test CA certificate and private key for testing purposes
 func generateTestCA(t *testing.T) ([]byte, []byte) {
@@ -740,13 +792,10 @@ func TestDecryptPEMKey(t *testing.T) {
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	})
 
-	// Create encrypted PEM with password
+	// Create encrypted PEM with password (using legacy DES-CBC for testing)
 	password := "test-password-123"
-	encryptedBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY",
-		x509.MarshalPKCS1PrivateKey(privateKey), []byte(password), x509.PEMCipherAES256)
-	require.NoError(t, err)
-
-	encryptedPEM := pem.EncodeToMemory(encryptedBlock)
+	encryptedPEM := createLegacyEncryptedPEM(t, "RSA PRIVATE KEY",
+		x509.MarshalPKCS1PrivateKey(privateKey), password)
 
 	t.Run("Decrypt unencrypted key without password", func(t *testing.T) {
 		result, err := decryptPEMKey(unencryptedPEM, "")
@@ -786,7 +835,7 @@ func TestDecryptPEMKey(t *testing.T) {
 	t.Run("Decrypt encrypted key with wrong password", func(t *testing.T) {
 		_, err := decryptPEMKey(encryptedPEM, "wrong-password")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to decrypt PEM block")
+		assert.Contains(t, err.Error(), "failed to decrypt legacy PEM block")
 	})
 
 	t.Run("Decrypt invalid PEM data", func(t *testing.T) {
@@ -821,12 +870,10 @@ func TestHTTPSInterceptorWithPasswordProtectedCA(t *testing.T) {
 
 	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
 
-	// Create encrypted CA key with password
+	// Create encrypted CA key with password (using legacy DES-CBC for testing)
 	password := "secure-ca-password"
-	encryptedCAKeyBlock, err := x509.EncryptPEMBlock(rand.Reader, "RSA PRIVATE KEY",
-		x509.MarshalPKCS1PrivateKey(caKey), []byte(password), x509.PEMCipherAES256)
-	require.NoError(t, err)
-	encryptedCAKeyPEM := pem.EncodeToMemory(encryptedCAKeyBlock)
+	encryptedCAKeyPEM := createLegacyEncryptedPEM(t, "RSA PRIVATE KEY",
+		x509.MarshalPKCS1PrivateKey(caKey), password)
 
 	t.Run("Create interceptor with password-protected key", func(t *testing.T) {
 		// Decrypt the key using our function
@@ -852,7 +899,7 @@ func TestHTTPSInterceptorWithPasswordProtectedCA(t *testing.T) {
 		// Try to decrypt with wrong password
 		_, err := decryptPEMKey(encryptedCAKeyPEM, "wrong-password")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to decrypt PEM block")
+		assert.Contains(t, err.Error(), "failed to decrypt legacy PEM block")
 	})
 
 	t.Run("Create interceptor without decrypting encrypted key", func(t *testing.T) {

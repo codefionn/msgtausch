@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
-	"crypto/x509"
+	"crypto/des" // nolint:gosec // Legacy PEM decryption for backward compatibility
+	"crypto/md5" // nolint:gosec // Legacy PEM decryption for backward compatibility
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +33,87 @@ type contextKey struct {
 var clientKey = &contextKey{name: "http-client"}
 var clientIPKey = &contextKey{name: "client-ip"}
 
+// isLegacyEncryptedPEMBlock checks if a PEM block is encrypted using legacy RFC 1423 encryption
+func isLegacyEncryptedPEMBlock(block *pem.Block) bool {
+	_, hasInfo := block.Headers["Proc-Type"]
+	_, hasKey := block.Headers["DEK-Info"]
+	return hasInfo && hasKey
+}
+
+// decryptLegacyPEMBlock decrypts a legacy encrypted PEM block (RFC 1423)
+// WARNING: This is insecure and only provided for backward compatibility
+func decryptLegacyPEMBlock(block *pem.Block, password []byte) ([]byte, error) {
+	procType, ok := block.Headers["Proc-Type"]
+	if !ok || procType != "4,ENCRYPTED" {
+		return nil, errors.New("PEM block does not have encrypted proc type")
+	}
+
+	dekInfo, ok := block.Headers["DEK-Info"]
+	if !ok {
+		return nil, errors.New("PEM block does not have DEK-Info header")
+	}
+
+	// Parse DEK-Info header (e.g., "DES-CBC,IV")
+	parts := strings.Split(dekInfo, ",")
+	if len(parts) != 2 {
+		return nil, errors.New("invalid DEK-Info format")
+	}
+
+	alg := parts[0]
+	if alg != "DES-CBC" {
+		return nil, fmt.Errorf("unsupported encryption algorithm: %s", alg)
+	}
+
+	// Decode IV from hex
+	iv := make([]byte, des.BlockSize)
+	if len(parts[1]) != 16 {
+		return nil, errors.New("invalid IV length")
+	}
+	for i := 0; i < 16; i += 2 {
+		var b byte
+		_, err := fmt.Sscanf(parts[1][i:i+2], "%02x", &b)
+		if err != nil {
+			return nil, fmt.Errorf("invalid IV hex: %w", err)
+		}
+		iv[i/2] = b
+	}
+
+	// Derive key using MD5 (legacy method)
+	key := make([]byte, 8) // DES key is 8 bytes
+	h := md5.New()         // nolint:gosec // Legacy PEM decryption for backward compatibility
+	h.Write(password)
+	h.Write(iv[:8])
+	copy(key, h.Sum(nil))
+
+	// Decrypt using DES-CBC
+	cipher, err := des.NewCipher(key) // nolint:gosec // Legacy PEM decryption for backward compatibility
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DES cipher: %w", err)
+	}
+
+	decrypted := make([]byte, len(block.Bytes))
+	for i := 0; i < len(block.Bytes); i += des.BlockSize {
+		end := i + des.BlockSize
+		if end > len(block.Bytes) {
+			end = len(block.Bytes)
+		}
+		cipher.Decrypt(decrypted[i:end], block.Bytes[i:end])
+	}
+
+	// Remove PKCS#5 padding
+	padLen := int(decrypted[len(decrypted)-1])
+	if padLen > des.BlockSize || padLen == 0 {
+		return nil, errors.New("invalid padding")
+	}
+	for i := len(decrypted) - padLen; i < len(decrypted); i++ {
+		if decrypted[i] != byte(padLen) {
+			return nil, errors.New("invalid padding")
+		}
+	}
+
+	return decrypted[:len(decrypted)-padLen], nil
+}
+
 // decryptPEMKey decrypts a password-protected PEM private key.
 // If password is empty, it assumes the key is not encrypted and returns the original PEM data.
 func decryptPEMKey(keyPEM []byte, password string) ([]byte, error) {
@@ -44,16 +127,16 @@ func decryptPEMKey(keyPEM []byte, password string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode PEM block")
 	}
 
-	// Check if the key is encrypted
-	if !x509.IsEncryptedPEMBlock(block) {
+	// Check if the key is encrypted using legacy RFC 1423 method
+	if !isLegacyEncryptedPEMBlock(block) {
 		// Key is not encrypted, return original PEM
 		return keyPEM, nil
 	}
 
-	// Decrypt the PEM block
-	decryptedBytes, err := x509.DecryptPEMBlock(block, []byte(password))
+	// Decrypt the PEM block using legacy method (INSECURE - for backward compatibility only)
+	decryptedBytes, err := decryptLegacyPEMBlock(block, []byte(password))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt PEM block: %w", err)
+		return nil, fmt.Errorf("failed to decrypt legacy PEM block: %w", err)
 	}
 
 	// Re-encode as unencrypted PEM

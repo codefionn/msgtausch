@@ -16,7 +16,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "https-domains",
+				HTTPSClassifier: &config.ClassifierRef{Id: "https-domains"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"https-domains": &config.ClassifierDomain{
@@ -40,15 +40,26 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 
 			// Compile HTTPS classifier directly for testing
 			var httpsClassifier Classifier
-			if cfg.Interception.HTTPSClassifier != "" {
-				if cfg.Classifiers != nil {
-					if classifierConfig, exists := cfg.Classifiers[cfg.Interception.HTTPSClassifier]; exists {
-						compiled, err := CompileClassifier(classifierConfig)
+			if cfg.Interception.HTTPSClassifier != nil {
+				if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
+					// First, compile all classifiers to get the full map
+					if cfg.Classifiers != nil {
+						compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
 						if err != nil {
-							t.Fatalf("Failed to compile HTTPS classifier: %v", err)
+							t.Fatalf("Failed to compile classifiers map: %v", err)
 						}
-						httpsClassifier = compiled
+						// Look up the specific classifier by ID
+						if compiled, exists := compiledMap[classifierRef.Id]; exists {
+							httpsClassifier = compiled
+						}
 					}
+				} else {
+					// If it's not a ClassifierRef, try to compile it directly
+					compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier)
+					if err != nil {
+						t.Fatalf("Failed to compile HTTPS classifier: %v", err)
+					}
+					httpsClassifier = compiled
 				}
 			}
 
@@ -152,7 +163,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "", // No classifier configured
+				HTTPSClassifier: nil, // No classifier configured
 			},
 		}
 
@@ -194,7 +205,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "non-existent-classifier",
+				HTTPSClassifier: &config.ClassifierRef{Id: "non-existent-classifier"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"other-classifier": &config.ClassifierDomain{
@@ -216,16 +227,26 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 
 		// The server creation should handle the missing classifier gracefully
 		var httpsClassifier Classifier
-		if cfg.Interception.HTTPSClassifier != "" {
-			if cfg.Classifiers != nil {
-				if classifierConfig, exists := cfg.Classifiers[cfg.Interception.HTTPSClassifier]; exists {
-					compiled, err := CompileClassifier(classifierConfig)
+		if cfg.Interception.HTTPSClassifier != nil {
+			if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
+				// First, compile all classifiers to get the full map
+				if cfg.Classifiers != nil {
+					compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
 					if err == nil {
-						httpsClassifier = compiled
+						// Look up the specific classifier by ID
+						if compiled, exists := compiledMap[classifierRef.Id]; exists {
+							httpsClassifier = compiled
+						}
 					}
 				}
+			} else {
+				// If it's not a ClassifierRef, try to compile it directly
+				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier)
+				if err == nil {
+					httpsClassifier = compiled
+				}
 			}
-			// If classifier doesn't exist, httpsClassifier remains nil
+			// If compilation fails or classifier not found, httpsClassifier remains nil
 		}
 
 		server := &Server{
@@ -254,7 +275,7 @@ func TestHTTPSClassifierTypes(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "https-ports",
+				HTTPSClassifier: &config.ClassifierRef{Id: "https-ports"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"https-ports": &config.ClassifierPort{
@@ -306,7 +327,7 @@ func TestHTTPSClassifierTypes(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "https-domain-or-port",
+				HTTPSClassifier: &config.ClassifierRef{Id: "https-domain-or-port"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"https-domain-or-port": &config.ClassifierOr{

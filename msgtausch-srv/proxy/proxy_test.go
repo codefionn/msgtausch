@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -2271,4 +2272,204 @@ func TestHTTPSInterceptionWithStandardProxy(t *testing.T) {
 		}
 		defer resp.Body.Close()
 	})
+}
+
+// Test that when only HTTP interception is enabled (and HTTPS interception is disabled),
+// a CONNECT tunnel carrying TLS is not mistakenly parsed as HTTP by the HTTP interceptor.
+// Expected correct behavior: HTTPS request succeeds via raw tunnel without interception.
+// Current bug: HTTP interceptor tries to read an HTTP request from TLS bytes and the request fails.
+func TestCONNECTTunnelWithHTTPInterceptionOnly_TLSTunneledNotParsed(t *testing.T) {
+	// Setup a simple HTTPS backend
+	backendContent := "ok"
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(backendContent))
+	}))
+	defer tlsSrv.Close()
+
+	// Configure a standard proxy with interception enabled, HTTP=true, HTTPS=false
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{
+				Type:          config.ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:0",
+				Enabled:       true,
+			},
+		},
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
+		Interception: config.InterceptionConfig{
+			Enabled: true,
+			HTTP:    true,
+			HTTPS:   false,
+		},
+	}
+
+	proxy := NewProxy(cfg)
+
+	// Start proxy server
+	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
+	proxyAddr := listener.Addr().String()
+
+	go func() {
+		if err := proxy.StartWithListener(listener); err != http.ErrServerClosed && err != nil {
+			t.Errorf("Proxy server error: %v", err)
+		}
+	}()
+	defer proxy.Stop()
+
+	// Wait for proxy to start
+	time.Sleep(100 * time.Millisecond)
+
+	// HTTP client using the proxy, performing HTTPS through CONNECT
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			// We are not testing cert validation here; allow self-signed test server
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			ForceAttemptHTTP2:   false,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	// Expected: this should succeed by tunneling TLS, not parsing as HTTP
+	resp, err := client.Get(tlsSrv.URL)
+	if err != nil {
+		// Reproduce current bug: this path will trigger when the HTTP interceptor
+		// attempts to parse TLS handshake as an HTTP request (malformed HTTP request).
+		t.Fatalf("HTTPS over CONNECT via proxy failed (likely parsed as HTTP): %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+	if got := string(body); got != backendContent {
+		t.Fatalf("Unexpected backend body: got %q want %q", got, backendContent)
+	}
+}
+
+// Test that non-HTTPS CONNECT targets are handled by the HTTP interceptor
+// when HTTP interception is enabled, by verifying a request hook runs and
+// modifies the tunneled plaintext HTTP request.
+func TestCONNECTTunnel_NonHTTPS_UsesHTTPInterceptor(t *testing.T) {
+	// Plain HTTP backend that asserts our interceptor-added header
+	headerSeen := make(chan bool, 1)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Intercepted") == "1" {
+			headerSeen <- true
+		} else {
+			headerSeen <- false
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer httpSrv.Close()
+
+	// Determine backend host:port, but use "localhost" in CONNECT target to avoid
+	// the HTTPS heuristic that flags 127.0.0.1 as HTTPS.
+	backendURL, err := url.Parse(httpSrv.URL)
+	require.NoError(t, err)
+	_, port, err := net.SplitHostPort(backendURL.Host)
+	require.NoError(t, err)
+	target := net.JoinHostPort("localhost", port)
+
+	// Proxy with HTTP interception enabled and HTTPS interception disabled
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{Type: config.ProxyTypeStandard, ListenAddress: "127.0.0.1:0", Enabled: true},
+		},
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
+		Interception:   config.InterceptionConfig{Enabled: true, HTTP: true, HTTPS: false},
+	}
+	proxy := NewProxy(cfg)
+
+	// Add a request hook to assert the interceptor path is used
+	require.NotEmpty(t, proxy.servers)
+	proxy.servers[0].httpInterceptor.AddRequestHook("mark", func(r *http.Request) error {
+		r.Header.Set("X-Intercepted", "1")
+		return nil
+	})
+
+	// Start proxy
+	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
+	require.NoError(t, err)
+	proxyAddr := listener.Addr().String()
+	go func() {
+		if err := proxy.StartWithListener(listener); err != http.ErrServerClosed && err != nil {
+			t.Errorf("Proxy server error: %v", err)
+		}
+	}()
+	defer proxy.Stop()
+
+	// Small delay for startup
+	time.Sleep(100 * time.Millisecond)
+
+	// Manually perform CONNECT to proxy, then send HTTP request through the tunnel
+	conn, err := net.Dial("tcp", proxyAddr)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// Send CONNECT request for non-HTTPS target
+	_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	require.NoError(t, err)
+
+	// Read the 200 Connection Established response
+	br := bufio.NewReader(conn)
+	// A minimal parse: read status line
+	statusLine, err := br.ReadString('\n')
+	require.NoError(t, err)
+	if !strings.Contains(statusLine, "200") {
+		t.Fatalf("expected 200 from proxy for CONNECT, got: %q", statusLine)
+	}
+	// Read until blank line
+	for {
+		line, err := br.ReadString('\n')
+		require.NoError(t, err)
+		if line == "\r\n" { // end of headers
+			break
+		}
+	}
+
+	// Send a plaintext HTTP request over the tunnel
+	_, err = fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: %s\r\n\r\n", target)
+	require.NoError(t, err)
+
+	// Read backend response status line
+	respStatus, err := br.ReadString('\n')
+	require.NoError(t, err)
+	if !strings.Contains(respStatus, "200") {
+		t.Fatalf("unexpected backend status via tunnel: %q", respStatus)
+	}
+	// Drain headers
+	for {
+		line, err := br.ReadString('\n')
+		require.NoError(t, err)
+		if line == "\r\n" { // end of headers
+			break
+		}
+	}
+
+	// Read a small body chunk
+	buf := make([]byte, 2)
+	_, _ = io.ReadFull(br, buf)
+
+	// Verify hook executed (header seen by backend)
+	select {
+	case ok := <-headerSeen:
+		if !ok {
+			t.Fatalf("interceptor hook header not observed by backend")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for backend header observation")
+	}
 }

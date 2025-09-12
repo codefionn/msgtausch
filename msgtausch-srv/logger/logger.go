@@ -36,6 +36,10 @@ func SetLevel(level LogLevel) {
 	currentLevel = level
 }
 
+func IsLevelEnabled(level LogLevel) bool {
+	return level >= currentLevel
+}
+
 // GetLevelFromString converts a string level to LogLevel
 func GetLevelFromString(level string) LogLevel {
 	switch strings.ToUpper(level) {

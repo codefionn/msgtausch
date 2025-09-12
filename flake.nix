@@ -34,28 +34,30 @@
           customTempl = buildTemplPkg { inherit pkgs; };
         in
         pkgs.buildGo124Module {
-        pname = "msgtausch";
-        inherit version src;
-        go = pkgs.go_1_24;
-        goVersion = "1.24";
-        vendorHash = "sha256-GHAYslWU8Dm62o100fMmYqk4IU5Ltey8gwKgUD5grPs=";
-        subPackages = [ "." ];
-        env.CGO_ENABLED = 1;
-        nativeBuildInputs = [ pkgs.installShellFiles pkgs.git customTempl ];
-        ldflags = [
-          "-X main.version=${version} -s -w"
-        ];
-        doCheck = false;
-        outputs = [ "out" ];
-        preBuild = ''
-          # Generate templates using the nixpkgs templ package
-          templ generate
-        '';
-        postInstall = ''
-          mkdir -p $out/bin
-          mv $GOPATH/bin/msgtausch $out/bin/
-        '';
-      };
+          pname = "msgtausch";
+          inherit version src;
+          go = pkgs.go_1_24;
+          goVersion = "1.24";
+          # Let the builder vendor dependencies internally, but ignore any in-tree vendor/
+          vendorHash = "sha256-rFUVAUivUxhDHo/COi5mfX3Mfoqhfma3MuRn48Sxuqg=";
+          stripVendor = true;
+          subPackages = [ "." ];
+          env.CGO_ENABLED = 1;
+          nativeBuildInputs = [ pkgs.installShellFiles pkgs.git customTempl ];
+          ldflags = [
+            "-X main.version=${version} -s -w"
+          ];
+          doCheck = false;
+          outputs = [ "out" ];
+          preBuild = ''
+            # Generate templates using the nixpkgs templ package
+            templ generate
+          '';
+          postInstall = ''
+            mkdir -p $out/bin
+            mv $GOPATH/bin/msgtausch $out/bin/
+          '';
+        };
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -85,8 +87,9 @@
           ];
           shellHook = ''
             export CGO_ENABLED=1
+            export GOFLAGS="-mod=mod"
             export VERSION=${version}
-            echo "msgtausch devShell: Go ${gopkgs.version} | VERSION=${version}"
+            echo "msgtausch devShell: Go ${gopkgs.version} | VERSION=${version} | GOFLAGS=$GOFLAGS"
           '';
         };
 
@@ -99,6 +102,7 @@
             pkgs.git
           ];
           buildPhase = ''
+            export GOFLAGS="-mod=mod"
             ${gopkgs}/bin/go test -v ./...
           '';
           installPhase = ''

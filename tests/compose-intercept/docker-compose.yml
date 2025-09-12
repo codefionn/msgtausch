@@ -1,0 +1,69 @@
+version: "3.8"
+
+# End-to-end interception tests using containers.
+# Prefers podman compose/podman-compose, but also compatible with docker compose.
+
+services:
+  proxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime-release
+    image: msgtausch:test
+    command: ["-config", "/config/config.json", "-debug"]
+    volumes:
+      - ./proxy-config.json:/config/config.json:ro
+      - ./ca:/ca:ro
+    environment:
+      - MSGTAUSCH_LOG_LEVEL=debug
+    ports:
+      - "8080:8080"
+    networks:
+      - msgtausch-intercept-test
+
+  http-backend:
+    build:
+      context: ./backend
+    image: msgtausch-test-backend:local
+    environment:
+      - PORT=5678
+      - TLS=false
+    expose:
+      - "5678"
+    networks:
+      - msgtausch-intercept-test
+
+  https-backend:
+    image: msgtausch-test-backend:local
+    environment:
+      - PORT=8443
+      - TLS=true
+    expose:
+      - "8443"
+    networks:
+      - msgtausch-intercept-test
+
+  client:
+    image: curlimages/curl:8.8.0
+    depends_on:
+      proxy:
+        condition: service_started
+      http-backend:
+        condition: service_started
+      https-backend:
+        condition: service_started
+    volumes:
+      - ./client/test.sh:/test.sh:ro
+      - ./ca:/ca:ro
+    environment:
+      - HTTP_PROXY=http://proxy:8080
+      - HTTPS_PROXY=http://proxy:8080
+      - NO_PROXY=localhost,127.0.0.1
+    entrypoint: ["sh", "/test.sh"]
+    networks:
+      - msgtausch-intercept-test
+
+networks:
+  msgtausch-intercept-test:
+    name: msgtausch-intercept-test
+    external: false

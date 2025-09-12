@@ -62,3 +62,6 @@ coverage.html
 /log.txt
 /weird_request
 /weird-request
+
+/.gocache/
+/.claude

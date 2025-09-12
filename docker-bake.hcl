@@ -69,6 +69,19 @@ target "simulation" {
   output = ["type=cacheonly"]
 }
 
+// Target for running compose-intercept integration tests
+target "compose-intercept-test" {
+  context = "./tests/compose-intercept"
+  dockerfile-inline = <<EOF
+FROM docker/compose:2.23.3
+RUN apk add --no-cache bash curl
+WORKDIR /test
+COPY . .
+CMD ["docker-compose", "up", "--build", "--abort-on-container-exit", "--exit-code-from", "client"]
+EOF
+  output = ["type=cacheonly"]
+}
+
 target "nix" {
   target = "nix-build"
   dockerfile = "Dockerfile"
@@ -89,5 +102,5 @@ group "default" {
 
 // CI group for continuous integration
 group "ci" {
-  targets = ["templ", "format", "test", "release"]
+  targets = ["templ", "format", "test", "compose-intercept-test", "release"]
 }

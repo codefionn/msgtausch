@@ -248,12 +248,64 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 	clientReader := bufio.NewReader(clientConn)
 	upstreamReader := bufio.NewReader(upstreamConn)
 
+	// Peek at the first few bytes to detect if this is TLS or HTTP
+	firstBytes, err := clientReader.Peek(1)
+	if err != nil {
+		if err != io.EOF && !isClosedConnError(err) {
+			logger.Error("Error peeking at connection: %v", err)
+		}
+		return
+	}
+
+	// Check for TLS handshake (first byte is 0x16 for TLS handshake)
+	if len(firstBytes) > 0 && firstBytes[0] == 0x16 {
+		logger.Debug("Detected TLS handshake, switching to raw TCP tunnel mode")
+		// This is a TLS connection, fallback to raw tunneling
+		h.rawTunnel(clientConn, upstreamConn)
+		return
+	}
+
+	// Read the first request to check for CONNECT method before starting goroutines
+	firstReq, err := http.ReadRequest(clientReader)
+	if err != nil {
+		if err != io.EOF && !isClosedConnError(err) {
+			logger.Error("Error reading initial HTTP request: %v", err)
+		}
+		return
+	}
+
+	// Reject CONNECT requests to prevent tunneling bypasses
+	if firstReq.Method == http.MethodConnect {
+		logger.Warn("Rejected CONNECT request to %s - method not allowed in interceptor", firstReq.URL.String())
+		// Send 405 Method Not Allowed response
+		response := &http.Response{
+			Status:        "405 Method Not Allowed",
+			StatusCode:    http.StatusMethodNotAllowed,
+			Proto:         firstReq.Proto,
+			ProtoMajor:    firstReq.ProtoMajor,
+			ProtoMinor:    firstReq.ProtoMinor,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader("Method Not Allowed")),
+			ContentLength: 18,
+		}
+		response.Header.Set("Content-Type", "text/plain")
+		response.Header.Set("Content-Length", "18")
+		_ = response.Write(clientConn)
+		return
+	}
+
 	// Track if this is a WebSocket connection
 	var isWebSocket atomic.Bool
 	isWebSocket.Store(false)
 
 	// Track current request URL for logging (shared between goroutines)
 	var currentURL atomic.Value
+
+	// Check if the first request is a WebSocket upgrade
+	if strings.ToLower(firstReq.Header.Get("Upgrade")) == "websocket" {
+		logger.Debug("Detected WebSocket upgrade request")
+		isWebSocket.Store(true)
+	}
 
 	// Use wait group to coordinate goroutine completion
 	wg := &sync.WaitGroup{}
@@ -263,36 +315,51 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 	go func() {
 		defer wg.Done()
 
-		for {
-			// If we've already detected WebSocket, switch to direct copying
-			if isWebSocket.Load() {
-				// For WebSockets, we just copy bytes directly
-				buffer := make([]byte, 32*1024)
-				for {
-					n, err := clientReader.Read(buffer)
-					if err != nil {
-						if err != io.EOF && !isClosedConnError(err) {
-							logger.Error("WebSocket client read error: %v", err)
+		// Process the first request that we already read
+		processedRequests := 0
+		requestsToProcess := []*http.Request{firstReq}
+
+		for len(requestsToProcess) > 0 || processedRequests == 0 {
+			var req *http.Request
+
+			if len(requestsToProcess) > 0 {
+				// Process a queued request
+				req = requestsToProcess[0]
+				requestsToProcess = requestsToProcess[1:]
+			} else {
+				// If we've already detected WebSocket, switch to direct copying
+				if isWebSocket.Load() {
+					// For WebSockets, we just copy bytes directly
+					buffer := make([]byte, 32*1024)
+					for {
+						n, err := clientReader.Read(buffer)
+						if err != nil {
+							if err != io.EOF && !isClosedConnError(err) {
+								logger.Error("WebSocket client read error: %v", err)
+							}
+							return
 						}
-						return
-					}
 
-					_, err = upstreamConn.Write(buffer[:n])
-					if err != nil {
-						logger.Error("WebSocket upstream write error: %v", err)
-						return
+						_, err = upstreamConn.Write(buffer[:n])
+						if err != nil {
+							logger.Error("WebSocket upstream write error: %v", err)
+							return
+						}
 					}
+				}
+
+				// For HTTP traffic, parse the request
+				var err error
+				req, err = http.ReadRequest(clientReader)
+				if err != nil {
+					if err != io.EOF && !isClosedConnError(err) {
+						logger.Error("Error reading HTTP request: %v", err)
+					}
+					return
 				}
 			}
 
-			// For HTTP traffic, parse the request
-			req, err := http.ReadRequest(clientReader)
-			if err != nil {
-				if err != io.EOF && !isClosedConnError(err) {
-					logger.Error("Error reading HTTP request: %v", err)
-				}
-				return
-			}
+			processedRequests++
 
 			// Construct full URL for logging
 			fullURL := req.URL.String()
@@ -307,26 +374,6 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			currentURL.Store(fullURL)
 			logger.Debug("Intercepted HTTP request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 
-			// Reject CONNECT requests to prevent tunneling bypasses
-			if req.Method == http.MethodConnect {
-				logger.Warn("Rejected CONNECT request to %s - method not allowed in interceptor", req.URL.String())
-				// Send 405 Method Not Allowed response
-				response := &http.Response{
-					Status:        "405 Method Not Allowed",
-					StatusCode:    http.StatusMethodNotAllowed,
-					Proto:         req.Proto,
-					ProtoMajor:    req.ProtoMajor,
-					ProtoMinor:    req.ProtoMinor,
-					Header:        make(http.Header),
-					Body:          io.NopCloser(strings.NewReader("Method Not Allowed")),
-					ContentLength: 18,
-				}
-				response.Header.Set("Content-Type", "text/plain")
-				response.Header.Set("Content-Length", "18")
-				_ = response.Write(clientConn)
-				return
-			}
-
 			// Check for WebSocket upgrade request
 			if strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
 				logger.Debug("Detected WebSocket upgrade request")
@@ -336,6 +383,7 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			// Read and potentially modify the body
 			var bodyData []byte
 			if req.Body != nil {
+				var err error
 				bodyData, err = io.ReadAll(req.Body)
 				if closeErr := req.Body.Close(); closeErr != nil {
 					logger.Error("Error closing request body: %v", closeErr)
@@ -352,7 +400,7 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			}
 
 			// Apply custom request hooks
-			err = h.applyRequestHooks(req)
+			err := h.applyRequestHooks(req)
 			if err != nil {
 				logger.Error("Error applying request hooks: %v", err)
 				return
@@ -531,4 +579,46 @@ func removeProxyHeaders(header http.Header) {
 	for _, h := range proxyHeaders {
 		header.Del(h)
 	}
+}
+
+// rawTunnel handles raw TCP tunneling when TLS data is detected
+// This is used as a fallback when the HTTP interceptor detects TLS handshake bytes
+func (h *HTTPInterceptor) rawTunnel(clientConn, upstreamConn net.Conn) {
+	logger.Debug("Starting raw TCP tunnel")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Copy client to upstream
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(upstreamConn, clientConn)
+		if err != nil && !isClosedConnError(err) {
+			logger.Error("Raw tunnel: client to upstream copy error: %v", err)
+		}
+		// Close write side to signal EOF
+		if tcpConn, ok := upstreamConn.(*net.TCPConn); ok {
+			if err := tcpConn.CloseWrite(); err != nil {
+				logger.Debug("Failed to close write on upstream connection: %v", err)
+			}
+		}
+	}()
+
+	// Copy upstream to client
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(clientConn, upstreamConn)
+		if err != nil && !isClosedConnError(err) {
+			logger.Error("Raw tunnel: upstream to client copy error: %v", err)
+		}
+		// Close write side to signal EOF
+		if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+			if err := tcpConn.CloseWrite(); err != nil {
+				logger.Debug("Failed to close write on client connection: %v", err)
+			}
+		}
+	}()
+
+	wg.Wait()
+	logger.Debug("Raw TCP tunnel closed")
 }

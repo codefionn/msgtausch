@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "0.0.0.0:8080",
+      "enabled": true
+    }
+  ],
+  "timeout-seconds": 10,
+  "max-concurrent-connections": 200,
+  "interception": {
+    "enabled": true,
+    "http": true,
+    "https": true,
+    "ca-file": "/ca/test_ca.crt",
+    "ca-key-file": "/ca/test_ca.key"
+  },
+  "statistics": {
+    "enabled": false
+  }
+}
+

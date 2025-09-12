@@ -2,8 +2,6 @@ module github.com/codefionn/msgtausch
 
 go 1.24.1
 
-require golang.org/x/net v0.39.0
-
 require (
 	github.com/a-h/templ v0.3.906
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
@@ -13,7 +11,9 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/quic-go/quic-go v0.52.0
+	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
 	github.com/zclconf/go-cty v1.16.3
+	golang.org/x/net v0.39.0
 )
 
 require (

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -27,7 +29,7 @@ import (
 type HTTPSInterceptor struct {
 	CA              tls.Certificate   // CA certificate and private key
 	caCert          *x509.Certificate // Parsed CA cert
-	caKey           *rsa.PrivateKey   // Parsed CA key
+	caKey           crypto.PrivateKey // Parsed CA key (supports RSA and EC)
 	certCache       map[string]*tls.Certificate
 	cacheMutex      sync.RWMutex
 	certWaitGroups  map[string]*sync.WaitGroup                   // Wait groups for ongoing certificate generation
@@ -55,21 +57,29 @@ func NewHTTPSInterceptor(caCertPEM, caKeyPEM []byte, proxy *Proxy, requestHandle
 	if block == nil {
 		return nil, fmt.Errorf("failed to decode CA key PEM")
 	}
-	// Try to parse the key as PKCS#1 first
-	var caKey *rsa.PrivateKey
+	// Try to parse the key as PKCS#1 first (RSA)
+	var caKey crypto.PrivateKey
 	pkcs1Key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		// If that fails, try PKCS#8 format
+		// If that fails, try PKCS#8 format (supports both RSA and EC)
 		logger.Debug("Failed to parse key as PKCS#1, trying PKCS#8: %v", err)
 		pkcs8Key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse CA key (tried both PKCS#1 and PKCS#8): %w", err)
-		}
-		// Convert to RSA private key
-		var ok bool
-		caKey, ok = pkcs8Key.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("CA key is not an RSA private key")
+			// If PKCS#8 also fails, try EC private key format
+			logger.Debug("Failed to parse key as PKCS#8, trying EC: %v", err)
+			ecKey, ecErr := x509.ParseECPrivateKey(block.Bytes)
+			if ecErr != nil {
+				return nil, fmt.Errorf("failed to parse CA key (tried PKCS#1, PKCS#8, and EC): %w", ecErr)
+			}
+			caKey = ecKey
+		} else {
+			// PKCS#8 key can be RSA or EC
+			switch key := pkcs8Key.(type) {
+			case *rsa.PrivateKey, *ecdsa.PrivateKey:
+				caKey = key
+			default:
+				return nil, fmt.Errorf("CA key is not a supported private key type (RSA or EC)")
+			}
 		}
 	} else {
 		caKey = pkcs1Key
@@ -123,9 +133,16 @@ func (h *HTTPSInterceptor) HandleHTTPSIntercept(w http.ResponseWriter, req *http
 		return
 	}
 
+	// Extract client IP from the connection
+	clientIP, _, err := net.SplitHostPort(clientConn.RemoteAddr().String())
+	if err != nil {
+		logger.Debug("Failed to extract client IP from connection %s: %v", clientConn.RemoteAddr().String(), err)
+		clientIP = "" // fallback to empty string
+	}
+
 	// Hand off to the TCP connection handler, using the hostname for certificate generation
 	// but the full host:port for the actual connection
-	h.HandleTCPConnection(clientConn, host)
+	h.HandleTCPConnectionWithClientIP(clientConn, host, clientIP)
 }
 
 // getOrCreateCert returns a certificate for the given host, generating it if necessary.
@@ -235,6 +252,20 @@ func (h *HTTPSInterceptor) getOrCreateCert(host string) (*tls.Certificate, error
 // and parses the HTTP traffic flowing through the TLS tunnel.
 // The host can be empty an empty string if unknown.
 func (h *HTTPSInterceptor) HandleTCPConnection(clientConn net.Conn, host string) {
+	// Extract client IP from connection if not provided
+	clientIP, _, err := net.SplitHostPort(clientConn.RemoteAddr().String())
+	if err != nil {
+		logger.Debug("Failed to extract client IP from connection %s: %v", clientConn.RemoteAddr().String(), err)
+		clientIP = "" // fallback to empty string
+	}
+	h.HandleTCPConnectionWithClientIP(clientConn, host, clientIP)
+}
+
+// HandleTCPConnectionWithClientIP intercepts HTTPS traffic from a raw TCP connection with a known client IP.
+// This method accepts a direct TCP connection rather than an HTTP request,
+// and parses the HTTP traffic flowing through the TLS tunnel.
+// The host can be empty an empty string if unknown.
+func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, host, clientIP string) {
 	logger.Debug("HTTPS interceptor handling direct TCP connection to %s (will parse HTTP traffic)", host)
 
 	// For cleanliness, ensure we close the connection when done
@@ -332,7 +363,9 @@ func (h *HTTPSInterceptor) HandleTCPConnection(clientConn net.Conn, host string)
 	}
 
 	// Use the proxy's createForwardTCPClient to establish connection
-	rawConn, err := h.proxy.createForwardTCPClient(context.Background(), host)
+	// Create context with client IP for proper connection tracking
+	ctx := WithClientIP(context.Background(), clientIP)
+	rawConn, err := h.proxy.createForwardTCPClient(ctx, host)
 	if err != nil {
 		logger.Error("HTTPS interception failed: Unable to connect to upstream: %v", err)
 		return
@@ -410,17 +443,21 @@ func (h *HTTPSInterceptor) HandleTCPConnection(clientConn net.Conn, host string)
 				return
 			}
 
-			// Construct full URL for logging
-			fullURL := req.URL.String()
-			if req.URL.Host == "" && req.Header.Get("Host") != "" {
-				// For requests without host in URL, construct it from Host header
-				scheme := "https" // We know this is HTTPS interception
-				fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
-				if req.URL.RawQuery != "" {
-					fullURL += "?" + req.URL.RawQuery
+			if logger.IsLevelEnabled(logger.DEBUG) {
+				// Construct full URL for logging
+				fullURL := req.URL.String()
+				if req.URL.Host == "" && req.Header.Get("Host") != "" {
+					// For requests without host in URL, construct it from Host header
+					scheme := "https" // We know this is HTTPS interception
+					fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
+					if req.URL.RawQuery != "" {
+						fullURL += "?" + req.URL.RawQuery
+					}
+				} else if req.URL.Host == "" && host != "" {
+					fullURL = fmt.Sprintf("https://%s%s", host, req.URL.Path)
 				}
+				logger.Debug("Intercepted HTTPS request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 			}
-			logger.Debug("Intercepted HTTPS request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 
 			// Reject CONNECT requests to prevent tunneling bypasses
 			if req.Method == http.MethodConnect {

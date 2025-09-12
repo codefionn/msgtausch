@@ -2,10 +2,6 @@ package proxy
 
 import (
 	"context"
-	"crypto/des" // nolint:gosec // Legacy PEM decryption for backward compatibility
-	"crypto/md5" // nolint:gosec // Legacy PEM decryption for backward compatibility
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,120 +29,7 @@ type contextKey struct {
 var clientKey = &contextKey{name: "http-client"}
 var clientIPKey = &contextKey{name: "client-ip"}
 
-// isLegacyEncryptedPEMBlock checks if a PEM block is encrypted using legacy RFC 1423 encryption
-func isLegacyEncryptedPEMBlock(block *pem.Block) bool {
-	_, hasInfo := block.Headers["Proc-Type"]
-	_, hasKey := block.Headers["DEK-Info"]
-	return hasInfo && hasKey
-}
-
-// decryptLegacyPEMBlock decrypts a legacy encrypted PEM block (RFC 1423)
-// WARNING: This is insecure and only provided for backward compatibility
-func decryptLegacyPEMBlock(block *pem.Block, password []byte) ([]byte, error) {
-	procType, ok := block.Headers["Proc-Type"]
-	if !ok || procType != "4,ENCRYPTED" {
-		return nil, errors.New("PEM block does not have encrypted proc type")
-	}
-
-	dekInfo, ok := block.Headers["DEK-Info"]
-	if !ok {
-		return nil, errors.New("PEM block does not have DEK-Info header")
-	}
-
-	// Parse DEK-Info header (e.g., "DES-CBC,IV")
-	parts := strings.Split(dekInfo, ",")
-	if len(parts) != 2 {
-		return nil, errors.New("invalid DEK-Info format")
-	}
-
-	alg := parts[0]
-	if alg != "DES-CBC" {
-		return nil, fmt.Errorf("unsupported encryption algorithm: %s", alg)
-	}
-
-	// Decode IV from hex
-	iv := make([]byte, des.BlockSize)
-	if len(parts[1]) != 16 {
-		return nil, errors.New("invalid IV length")
-	}
-	for i := 0; i < 16; i += 2 {
-		var b byte
-		_, err := fmt.Sscanf(parts[1][i:i+2], "%02x", &b)
-		if err != nil {
-			return nil, fmt.Errorf("invalid IV hex: %w", err)
-		}
-		iv[i/2] = b
-	}
-
-	// Derive key using MD5 (legacy method)
-	key := make([]byte, 8) // DES key is 8 bytes
-	h := md5.New()         // nolint:gosec // Legacy PEM decryption for backward compatibility
-	h.Write(password)
-	h.Write(iv[:8])
-	copy(key, h.Sum(nil))
-
-	// Decrypt using DES-CBC
-	cipher, err := des.NewCipher(key) // nolint:gosec // Legacy PEM decryption for backward compatibility
-	if err != nil {
-		return nil, fmt.Errorf("failed to create DES cipher: %w", err)
-	}
-
-	decrypted := make([]byte, len(block.Bytes))
-	for i := 0; i < len(block.Bytes); i += des.BlockSize {
-		end := i + des.BlockSize
-		if end > len(block.Bytes) {
-			end = len(block.Bytes)
-		}
-		cipher.Decrypt(decrypted[i:end], block.Bytes[i:end])
-	}
-
-	// Remove PKCS#5 padding
-	padLen := int(decrypted[len(decrypted)-1])
-	if padLen > des.BlockSize || padLen == 0 {
-		return nil, errors.New("invalid padding")
-	}
-	for i := len(decrypted) - padLen; i < len(decrypted); i++ {
-		if decrypted[i] != byte(padLen) {
-			return nil, errors.New("invalid padding")
-		}
-	}
-
-	return decrypted[:len(decrypted)-padLen], nil
-}
-
-// decryptPEMKey decrypts a password-protected PEM private key.
-// If password is empty, it assumes the key is not encrypted and returns the original PEM data.
-func decryptPEMKey(keyPEM []byte, password string) ([]byte, error) {
-	if password == "" {
-		// No password provided, assume key is not encrypted
-		return keyPEM, nil
-	}
-
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block")
-	}
-
-	// Check if the key is encrypted using legacy RFC 1423 method
-	if !isLegacyEncryptedPEMBlock(block) {
-		// Key is not encrypted, return original PEM
-		return keyPEM, nil
-	}
-
-	// Decrypt the PEM block using legacy method (INSECURE - for backward compatibility only)
-	decryptedBytes, err := decryptLegacyPEMBlock(block, []byte(password))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt legacy PEM block: %w", err)
-	}
-
-	// Re-encode as unencrypted PEM
-	decryptedBlock := &pem.Block{
-		Type:  block.Type,
-		Bytes: decryptedBytes,
-	}
-
-	return pem.EncodeToMemory(decryptedBlock), nil
-}
+// PEM decryption helpers moved to pem_decrypt.go to keep this file focused
 
 func WithClient(ctx context.Context, client *http.Client) context.Context {
 	return context.WithValue(ctx, clientKey, client)
@@ -367,23 +250,36 @@ func NewProxy(cfg *config.Config) *Proxy {
 			continue
 		}
 
-		// Compile HTTPS classifier directly if configured
+		// Compile HTTPS classifier if configured
 		var httpsClassifier Classifier
-		if cfg.Interception.HTTPSClassifier != "" {
-			if cfg.Classifiers != nil {
-				if classifierConfig, exists := cfg.Classifiers[cfg.Interception.HTTPSClassifier]; exists {
-					compiled, err := CompileClassifier(classifierConfig)
+		if cfg.Interception.HTTPSClassifier != nil {
+			if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
+				// First, compile all classifiers to get the full map
+				if cfg.Classifiers != nil {
+					compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
 					if err != nil {
-						logger.Error("Failed to compile HTTPS classifier '%s' for server %s: %v", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress, err)
+						logger.Error("Failed to compile classifiers map for server %s: %v", serverCfg.ListenAddress, err)
 					} else {
-						httpsClassifier = compiled
-						logger.Debug("Compiled HTTPS classifier '%s' for server %s", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress)
+						// Look up the specific classifier by ID
+						if compiled, exists := compiledMap[classifierRef.Id]; exists {
+							httpsClassifier = compiled
+							logger.Debug("Compiled HTTPS classifier '%s' for server %s", classifierRef.Id, serverCfg.ListenAddress)
+						} else {
+							logger.Warn("HTTPS classifier '%s' not found in classifiers config for server %s", classifierRef.Id, serverCfg.ListenAddress)
+						}
 					}
 				} else {
-					logger.Warn("HTTPS classifier '%s' not found in classifiers config for server %s", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress)
+					logger.Warn("HTTPS classifier '%s' configured but no classifiers defined for server %s", classifierRef.Id, serverCfg.ListenAddress)
 				}
 			} else {
-				logger.Warn("HTTPS classifier '%s' configured but no classifiers defined for server %s", cfg.Interception.HTTPSClassifier, serverCfg.ListenAddress)
+				// If it's not a ClassifierRef, try to compile it directly
+				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier)
+				if err != nil {
+					logger.Error("Failed to compile HTTPS classifier for server %s: %v", serverCfg.ListenAddress, err)
+				} else {
+					httpsClassifier = compiled
+					logger.Debug("Compiled HTTPS classifier for server %s", serverCfg.ListenAddress)
+				}
 			}
 		}
 
@@ -456,7 +352,62 @@ func NewProxy(cfg *config.Config) *Proxy {
 			server.httpInterceptor = NewHTTPInterceptor(p)
 
 		case config.ProxyTypeStandard:
-
+			// Initialize interceptors for the standard forward proxy when configured
+			if cfg.Interception.Enabled {
+				// HTTP interception
+				if cfg.Interception.HTTP && server.httpInterceptor == nil {
+					server.httpInterceptor = NewHTTPInterceptor(p)
+				}
+				// HTTPS interception requires CA cert and key
+				if cfg.Interception.HTTPS && server.httpsInterceptor == nil {
+					caFile := cfg.Interception.CAFile
+					caKeyFile := cfg.Interception.CAKeyFile
+					if caFile == "" || caKeyFile == "" {
+						logger.Error("HTTPS interception enabled but CA certificate/key not configured (server %s)", serverCfg.ListenAddress)
+					} else {
+						cleanCACertPath := filepath.Clean(caFile)
+						if !filepath.IsAbs(cleanCACertPath) {
+							absPath, err := filepath.Abs(cleanCACertPath)
+							if err != nil {
+								logger.Error("Invalid CA certificate file path: %v", err)
+								// skip initializing https interceptor
+							} else {
+								cleanCACertPath = absPath
+							}
+						}
+						caCert, err := os.ReadFile(cleanCACertPath)
+						if err != nil {
+							logger.Error("Failed to read CA certificate file '%s': %v", cleanCACertPath, err)
+						} else {
+							cleanCAKeyPath := filepath.Clean(caKeyFile)
+							if !filepath.IsAbs(cleanCAKeyPath) {
+								absPath, err := filepath.Abs(cleanCAKeyPath)
+								if err != nil {
+									logger.Error("Invalid CA private key file path: %v", err)
+								} else {
+									cleanCAKeyPath = absPath
+								}
+							}
+							caKeyPEM, err := os.ReadFile(cleanCAKeyPath)
+							if err != nil {
+								logger.Error("Failed to read CA private key file '%s': %v", cleanCAKeyPath, err)
+							} else {
+								decryptedCAKey, err := decryptPEMKey(caKeyPEM, cfg.Interception.CAKeyPasswd)
+								if err != nil {
+									logger.Error("Failed to decrypt CA private key: %v", err)
+								} else {
+									httpsInterceptor, err := NewHTTPSInterceptor(caCert, decryptedCAKey, p, nil, nil)
+									if err != nil {
+										logger.Error("Failed to create HTTPS interceptor: %v", err)
+									} else {
+										server.httpsInterceptor = httpsInterceptor
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 		default:
 			logger.Error("Unknown proxy type: %s", serverCfg.Type)
 			continue
@@ -577,47 +528,16 @@ func (p *Server) Start() error {
 		return p.server.ListenAndServe()
 
 	case config.ProxyTypeHTTPS:
-		caFile := p.config.Interception.CAFile
-		caKeyFile := p.config.Interception.CAKeyFile
-
-		if caFile == "" || caKeyFile == "" {
-			return fmt.Errorf("HTTPS interceptor requires CA certificate and key files")
-		}
-
-		cleanCACertPath := filepath.Clean(caFile)
-		if !filepath.IsAbs(cleanCACertPath) {
-			absPath, err := filepath.Abs(cleanCACertPath)
-			if err != nil {
-				logger.Error("Invalid CA certificate file path: %v", err)
-				return err
-			}
-			cleanCACertPath = absPath
-		}
-		caCert, err := os.ReadFile(cleanCACertPath)
-		if err != nil {
-			logger.Error("Failed to read CA certificate file '%s': %v", cleanCACertPath, err)
-			return err
-		}
-		caKeyPEM, err := os.ReadFile(caKeyFile)
-		if err != nil {
-			return fmt.Errorf("failed to read CA key file '%s': %w", caKeyFile, err)
-		}
-
-		// Decrypt the private key if password is provided
-		decryptedCAKey, err := decryptPEMKey(caKeyPEM, p.config.Interception.CAKeyPasswd)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt CA private key: %w", err)
-		}
-
-		p.httpsInterceptor, err = NewHTTPSInterceptor(caCert, decryptedCAKey, p.proxy, nil, nil)
-		if err != nil {
-			return fmt.Errorf("failed to initialize HTTPS interceptor: %w", err)
+		if p.httpsInterceptor == nil {
+			return fmt.Errorf("HTTPS interceptor not initialized")
 		}
 
 		return p.startHTTPSInterceptor()
 
 	case config.ProxyTypeHTTP:
-		p.httpInterceptor = NewHTTPInterceptor(p.proxy)
+		if p.httpInterceptor == nil {
+			p.httpInterceptor = NewHTTPInterceptor(p.proxy)
+		}
 
 		handler := http.HandlerFunc(p.handleRequest)
 		p.server = &http.Server{
@@ -1237,14 +1157,19 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 		logger.Debug("HTTPS interception enabled: %v, interceptor: %v",
 			p.isHTTPSInterceptionEnabled(), p.httpsInterceptor != nil)
 
-		if p.isHTTPSInterceptionEnabled() && isHTTPS {
-			logger.Debug("HTTPS interception for address: %s", targetAddr)
-			if p.httpsInterceptor != nil {
-				logger.Debug("Calling HTTPS interceptor for %s", targetAddr)
-				p.httpsInterceptor.HandleHTTPSIntercept(w, r)
-				return
-			} else {
+		// If the target is HTTPS but HTTPS interception is disabled/not available,
+		// do NOT pass the tunnel to the HTTP interceptor. Fall through to raw tunneling.
+		if isHTTPS {
+			if p.isHTTPSInterceptionEnabled() {
+				logger.Debug("HTTPS interception for address: %s", targetAddr)
+				if p.httpsInterceptor != nil {
+					logger.Debug("Calling HTTPS interceptor for %s", targetAddr)
+					p.httpsInterceptor.HandleHTTPSIntercept(w, r)
+					return
+				}
 				logger.Error("HTTPS interception requested but interceptor not initialized")
+			} else {
+				logger.Debug("HTTPS detected for %s but HTTPS interception disabled; using raw CONNECT tunnel", targetAddr)
 			}
 		} else if p.isHTTPInterceptionEnabled() {
 			hj, ok := w.(http.Hijacker)

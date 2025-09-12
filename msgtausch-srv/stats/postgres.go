@@ -127,10 +127,19 @@ func (p *PostgreSQLCollector) initSchema() error {
 // StartConnection records the start of a connection
 func (p *PostgreSQLCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
 	var id int64
+
+	// Handle empty IP address by using NULL
+	var clientIPParam interface{}
+	if clientIP == "" {
+		clientIPParam = nil
+	} else {
+		clientIPParam = clientIP
+	}
+
 	err := p.db.QueryRowContext(ctx,
 		`INSERT INTO connections (client_ip, target_host, target_port, protocol)
 		 VALUES ($1, $2, $3, $4) RETURNING id`,
-		clientIP, targetHost, targetPort, protocol).Scan(&id)
+		clientIPParam, targetHost, targetPort, protocol).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to record connection start: %w", err)
 	}

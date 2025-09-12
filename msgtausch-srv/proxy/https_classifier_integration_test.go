@@ -28,7 +28,7 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "secure-domains",
+				HTTPSClassifier: &config.ClassifierRef{Id: "secure-domains"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"secure-domains": &config.ClassifierDomain{
@@ -123,7 +123,7 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "https-ports",
+				HTTPSClassifier: &config.ClassifierRef{Id: "https-ports"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"https-ports": &config.ClassifierPort{
@@ -174,7 +174,7 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "complex-https",
+				HTTPSClassifier: &config.ClassifierRef{Id: "complex-https"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"complex-https": &config.ClassifierOr{
@@ -245,7 +245,7 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 
 // TestHTTPSClassifierReferences tests classifier references and complex configurations
 func TestHTTPSClassifierReferences(t *testing.T) {
-	t.Run("Classifier reference functionality - should fail", func(t *testing.T) {
+	t.Run("Classifier reference functionality - should work", func(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
@@ -260,7 +260,7 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 				Enabled:         true,
 				HTTP:            true,
 				HTTPS:           true,
-				HTTPSClassifier: "https-ref",
+				HTTPSClassifier: &config.ClassifierRef{Id: "https-ref"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"https-ref": &config.ClassifierRef{
@@ -277,19 +277,17 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 		server := proxy.servers[0]
 		require.NotNil(t, server.httpsClassifier)
 
-		// Test that reference fails because it's not resolved
-		// This is expected behavior since individual classifier compilation
-		// doesn't resolve references
-		_, err := server.httpsClassifier.Classify(ClassifierInput{
+		// Test that reference works correctly - references should be resolved
+		result, err := server.httpsClassifier.Classify(ClassifierInput{
 			host:       "secure.example.com",
 			remoteIP:   "",
 			remotePort: 80,
 		})
-		require.Error(t, err, "Reference should fail when not resolved")
-		assert.Contains(t, err.Error(), "not found", "Error should indicate classifier not found")
+		require.NoError(t, err, "Reference should work when properly resolved")
+		assert.True(t, result, "Should match the domain classifier")
 	})
 
-	t.Run("Nested classifier references - should fail", func(t *testing.T) {
+	t.Run("Nested classifier references - should work", func(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
@@ -303,7 +301,7 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "level1-ref",
+				HTTPSClassifier: &config.ClassifierRef{Id: "level1-ref"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"level1-ref": &config.ClassifierRef{
@@ -323,14 +321,14 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 		server := proxy.servers[0]
 		require.NotNil(t, server.httpsClassifier)
 
-		// Test that nested reference fails - expected behavior
-		_, err := server.httpsClassifier.Classify(ClassifierInput{
+		// Test that nested reference works correctly - nested references should be resolved
+		result, err := server.httpsClassifier.Classify(ClassifierInput{
 			host:       "example.com",
 			remoteIP:   "",
 			remotePort: 9443,
 		})
-		require.Error(t, err, "Nested reference should fail when not resolved")
-		assert.Contains(t, err.Error(), "not found", "Error should indicate classifier not found")
+		require.NoError(t, err, "Nested reference should work when properly resolved")
+		assert.True(t, result, "Should match the port classifier (port 9443)")
 	})
 }
 
@@ -350,7 +348,7 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "nonexistent-classifier",
+				HTTPSClassifier: &config.ClassifierRef{Id: "nonexistent-classifier"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"other-classifier": &config.ClassifierDomain{
@@ -381,7 +379,7 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "invalid-classifier",
+				HTTPSClassifier: &config.ClassifierRef{Id: "invalid-classifier"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"invalid-classifier": &config.ClassifierRef{
@@ -421,7 +419,7 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "some-classifier",
+				HTTPSClassifier: &config.ClassifierRef{Id: "some-classifier"},
 			},
 			// No classifiers defined at all
 		}
@@ -447,7 +445,7 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "", // Empty classifier name
+				HTTPSClassifier: nil, // No classifier
 			},
 			Classifiers: map[string]config.Classifier{
 				"some-classifier": &config.ClassifierDomain{
@@ -487,7 +485,7 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "perf-test-classifier",
+				HTTPSClassifier: &config.ClassifierRef{Id: "perf-test-classifier"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"perf-test-classifier": &config.ClassifierDomain{
@@ -532,7 +530,7 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 			Interception: config.InterceptionConfig{
 				Enabled:         true,
 				HTTPS:           true,
-				HTTPSClassifier: "speed-test",
+				HTTPSClassifier: &config.ClassifierRef{Id: "speed-test"},
 			},
 			Classifiers: map[string]config.Classifier{
 				"speed-test": &config.ClassifierDomain{

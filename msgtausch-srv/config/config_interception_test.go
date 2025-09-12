@@ -537,7 +537,7 @@ func TestHTTPSClassifierConfig(t *testing.T) {
 	testCases := []struct {
 		name                    string
 		configJSON              string
-		expectedHTTPSClassifier string
+		expectedHTTPSClassifier *ClassifierRef
 		expectError             bool
 		errorSubstring          string
 	}{
@@ -552,7 +552,7 @@ func TestHTTPSClassifierConfig(t *testing.T) {
 					"ca-key-file": "/path/to/ca-key.pem"
 				}
 			}`,
-			expectedHTTPSClassifier: "my-https-classifier",
+			expectedHTTPSClassifier: &ClassifierRef{Id: "my-https-classifier"},
 			expectError:             false,
 		},
 		{
@@ -565,7 +565,7 @@ func TestHTTPSClassifierConfig(t *testing.T) {
 					"ca-key-file": "/path/to/ca-key.pem"
 				}
 			}`,
-			expectedHTTPSClassifier: "",
+			expectedHTTPSClassifier: nil,
 			expectError:             false,
 		},
 		{
@@ -599,8 +599,21 @@ func TestHTTPSClassifierConfig(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 
-			if cfg.Interception.HTTPSClassifier != tc.expectedHTTPSClassifier {
-				t.Errorf("Expected HTTPSClassifier to be '%s', got: '%s'", tc.expectedHTTPSClassifier, cfg.Interception.HTTPSClassifier)
+			// Check HTTPSClassifier
+			if tc.expectedHTTPSClassifier == nil {
+				if cfg.Interception.HTTPSClassifier != nil {
+					t.Errorf("Expected HTTPSClassifier to be nil, got: %v", cfg.Interception.HTTPSClassifier)
+				}
+			} else {
+				if cfg.Interception.HTTPSClassifier == nil {
+					t.Errorf("Expected HTTPSClassifier to be %v, got: nil", tc.expectedHTTPSClassifier)
+				} else if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*ClassifierRef); ok {
+					if classifierRef.Id != tc.expectedHTTPSClassifier.Id {
+						t.Errorf("Expected HTTPSClassifier ID to be '%s', got: '%s'", tc.expectedHTTPSClassifier.Id, classifierRef.Id)
+					}
+				} else {
+					t.Errorf("Expected HTTPSClassifier to be ClassifierRef, got: %T", cfg.Interception.HTTPSClassifier)
+				}
 			}
 		})
 	}
@@ -623,8 +636,14 @@ interception = {
 		t.Fatalf("Failed to load config from HCL: %v", err)
 	}
 
-	if cfg.Interception.HTTPSClassifier != "domain-based-https" {
-		t.Errorf("Expected HTTPSClassifier to be 'domain-based-https', got: '%s'", cfg.Interception.HTTPSClassifier)
+	if cfg.Interception.HTTPSClassifier == nil {
+		t.Errorf("Expected HTTPSClassifier to be set, got: nil")
+	} else if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*ClassifierRef); ok {
+		if classifierRef.Id != "domain-based-https" {
+			t.Errorf("Expected HTTPSClassifier ID to be 'domain-based-https', got: '%s'", classifierRef.Id)
+		}
+	} else {
+		t.Errorf("Expected HTTPSClassifier to be ClassifierRef, got: %T", cfg.Interception.HTTPSClassifier)
 	}
 }
 
@@ -647,7 +666,13 @@ func TestHTTPSClassifierConfigEnv(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	if cfg.Interception.HTTPSClassifier != "env-classifier" {
-		t.Errorf("Expected HTTPSClassifier to be 'env-classifier' (from env var), got: '%s'", cfg.Interception.HTTPSClassifier)
+	if cfg.Interception.HTTPSClassifier == nil {
+		t.Errorf("Expected HTTPSClassifier to be set, got: nil")
+	} else if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*ClassifierRef); ok {
+		if classifierRef.Id != "env-classifier" {
+			t.Errorf("Expected HTTPSClassifier ID to be 'env-classifier', got: '%s'", classifierRef.Id)
+		}
+	} else {
+		t.Errorf("Expected HTTPSClassifier to be ClassifierRef, got: %T", cfg.Interception.HTTPSClassifier)
 	}
 }

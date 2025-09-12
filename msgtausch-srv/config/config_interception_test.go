@@ -676,3 +676,119 @@ func TestHTTPSClassifierConfigEnv(t *testing.T) {
 		t.Errorf("Expected HTTPSClassifier to be ClassifierRef, got: %T", cfg.Interception.HTTPSClassifier)
 	}
 }
+
+func TestLoadConfigJSON_ExcludeClassifier(t *testing.T) {
+	testCases := []struct {
+		name                      string
+		configJSON                string
+		expectedExcludeClassifier *ClassifierRef
+		expectError               bool
+		errorSubstring            string
+	}{
+		{
+			name: "Exclude classifier config",
+			configJSON: `{
+				"interception": {
+					"enabled": true,
+					"https": true,
+					"exclude-classifier": "no-intercept-hosts",
+					"ca-file": "/path/to/ca.pem",
+					"ca-key-file": "/path/to/ca-key.pem"
+				}
+			}`,
+			expectedExcludeClassifier: &ClassifierRef{Id: "no-intercept-hosts"},
+			expectError:               false,
+		},
+		{
+			name: "No exclude classifier",
+			configJSON: `{
+				"interception": {
+					"enabled": true,
+					"https": true,
+					"ca-file": "/path/to/ca.pem",
+					"ca-key-file": "/path/to/ca-key.pem"
+				}
+			}`,
+			expectedExcludeClassifier: nil,
+			expectError:               false,
+		},
+		{
+			name: "Invalid exclude classifier field type",
+			configJSON: `{
+				"interception": {
+					"exclude-classifier": 123
+				}
+			}`,
+			expectError:    true,
+			errorSubstring: "interception exclude-classifier must be a string",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := createTempConfigFileLocal(t, t.TempDir(), "config.json", tc.configJSON)
+			cfg, err := LoadConfig(configPath)
+
+			if tc.expectError {
+				if err == nil {
+					t.Fatalf("Expected error containing '%s', but got no error", tc.errorSubstring)
+				}
+				if !strings.Contains(err.Error(), tc.errorSubstring) {
+					t.Fatalf("Expected error containing '%s', but got: %v", tc.errorSubstring, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			// Check ExcludeClassifier
+			if tc.expectedExcludeClassifier == nil {
+				if cfg.Interception.ExcludeClassifier != nil {
+					t.Errorf("Expected ExcludeClassifier to be nil, got: %v", cfg.Interception.ExcludeClassifier)
+				}
+			} else {
+				if cfg.Interception.ExcludeClassifier == nil {
+					t.Errorf("Expected ExcludeClassifier to be %v, got: nil", tc.expectedExcludeClassifier)
+				} else if classifierRef, ok := cfg.Interception.ExcludeClassifier.(*ClassifierRef); ok {
+					if classifierRef.Id != tc.expectedExcludeClassifier.Id {
+						t.Errorf("Expected ExcludeClassifier ID to be '%s', got: '%s'", tc.expectedExcludeClassifier.Id, classifierRef.Id)
+					}
+				} else {
+					t.Errorf("Expected ExcludeClassifier to be ClassifierRef, got: %T", cfg.Interception.ExcludeClassifier)
+				}
+			}
+		})
+	}
+}
+
+// TestExcludeClassifierConfigEnv tests environment variable parsing for exclude classifier
+func TestExcludeClassifierConfigEnv(t *testing.T) {
+	// Set environment variable
+	os.Setenv("MSGTAUSCH_EXCLUDECLASSIFIER", "env-exclude")
+	defer os.Unsetenv("MSGTAUSCH_EXCLUDECLASSIFIER")
+
+	// Create minimal config file
+	configJSON := `{
+		"interception": {
+			"enabled": true
+		}
+	}`
+
+	configPath := createTempConfigFileLocal(t, t.TempDir(), "config.json", configJSON)
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Interception.ExcludeClassifier == nil {
+		t.Errorf("Expected ExcludeClassifier to be set, got: nil")
+	} else if classifierRef, ok := cfg.Interception.ExcludeClassifier.(*ClassifierRef); ok {
+		if classifierRef.Id != "env-exclude" {
+			t.Errorf("Expected ExcludeClassifier ID to be 'env-exclude', got: '%s'", classifierRef.Id)
+		}
+	} else {
+		t.Errorf("Expected ExcludeClassifier to be ClassifierRef, got: %T", cfg.Interception.ExcludeClassifier)
+	}
+}

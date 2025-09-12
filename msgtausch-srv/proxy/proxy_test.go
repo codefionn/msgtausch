@@ -2473,3 +2473,235 @@ func TestCONNECTTunnel_NonHTTPS_UsesHTTPInterceptor(t *testing.T) {
 		t.Fatalf("timeout waiting for backend header observation")
 	}
 }
+
+// TestExcludeClassifierInterception tests that the exclude classifier prevents interception for matching hosts
+func TestExcludeClassifierInterception(t *testing.T) {
+	// Test shouldInterceptTunnel function directly with different configurations
+
+	// Test 1: No exclude classifier - should intercept
+	t.Run("no exclude classifier allows interception", func(t *testing.T) {
+		cfg := &config.Config{
+			Servers: []config.ServerConfig{
+				{
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
+				},
+			},
+			Interception: config.InterceptionConfig{
+				Enabled: true,
+				HTTP:    true,
+				HTTPS:   true,
+			},
+		}
+
+		proxy := NewProxy(cfg)
+		server := proxy.servers[0]
+
+		req := &http.Request{
+			Method: "CONNECT",
+			Host:   "example.com:443",
+		}
+
+		shouldIntercept := server.shouldInterceptTunnel(req)
+		assert.True(t, shouldIntercept, "Should intercept when no exclude classifier is configured")
+	})
+
+	// Test 2: Exclude classifier matches - should NOT intercept
+	t.Run("exclude classifier blocks interception for matching host", func(t *testing.T) {
+		cfg := &config.Config{
+			Servers: []config.ServerConfig{
+				{
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
+				},
+			},
+			Classifiers: map[string]config.Classifier{
+				"exclude-domains": &config.ClassifierDomain{
+					Domain: "blocked.com",
+					Op:     config.ClassifierOpEqual,
+				},
+			},
+			Interception: config.InterceptionConfig{
+				Enabled:           true,
+				HTTP:              true,
+				HTTPS:             true,
+				ExcludeClassifier: &config.ClassifierRef{Id: "exclude-domains"},
+			},
+		}
+
+		proxy := NewProxy(cfg)
+		server := proxy.servers[0]
+
+		// Test with excluded host
+		req := &http.Request{
+			Method: "CONNECT",
+			Host:   "blocked.com:443",
+		}
+
+		shouldIntercept := server.shouldInterceptTunnel(req)
+		assert.False(t, shouldIntercept, "Should NOT intercept when host matches exclude classifier")
+	})
+
+	// Test 3: Exclude classifier doesn't match - should intercept
+	t.Run("exclude classifier allows interception for non-matching host", func(t *testing.T) {
+		cfg := &config.Config{
+			Servers: []config.ServerConfig{
+				{
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
+				},
+			},
+			Classifiers: map[string]config.Classifier{
+				"exclude-domains": &config.ClassifierDomain{
+					Domain: "blocked.com",
+					Op:     config.ClassifierOpEqual,
+				},
+			},
+			Interception: config.InterceptionConfig{
+				Enabled:           true,
+				HTTP:              true,
+				HTTPS:             true,
+				ExcludeClassifier: &config.ClassifierRef{Id: "exclude-domains"},
+			},
+		}
+
+		proxy := NewProxy(cfg)
+		server := proxy.servers[0]
+
+		// Test with non-excluded host
+		req := &http.Request{
+			Method: "CONNECT",
+			Host:   "allowed.com:443",
+		}
+
+		shouldIntercept := server.shouldInterceptTunnel(req)
+		assert.True(t, shouldIntercept, "Should intercept when host doesn't match exclude classifier")
+	})
+
+	// Test 4: Complex exclude classifier with OR logic
+	t.Run("exclude classifier with OR logic", func(t *testing.T) {
+		cfg := &config.Config{
+			Servers: []config.ServerConfig{
+				{
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
+				},
+			},
+			Classifiers: map[string]config.Classifier{
+				"exclude-list": &config.ClassifierOr{
+					Classifiers: []config.Classifier{
+						&config.ClassifierDomain{
+							Domain: "blocked1.com",
+							Op:     config.ClassifierOpEqual,
+						},
+						&config.ClassifierDomain{
+							Domain: "blocked2.com",
+							Op:     config.ClassifierOpEqual,
+						},
+					},
+				},
+			},
+			Interception: config.InterceptionConfig{
+				Enabled:           true,
+				HTTP:              true,
+				HTTPS:             true,
+				ExcludeClassifier: &config.ClassifierRef{Id: "exclude-list"},
+			},
+		}
+
+		proxy := NewProxy(cfg)
+		server := proxy.servers[0]
+
+		// Test first blocked host
+		req1 := &http.Request{Method: "CONNECT", Host: "blocked1.com:443"}
+		shouldIntercept1 := server.shouldInterceptTunnel(req1)
+		assert.False(t, shouldIntercept1, "Should NOT intercept blocked1.com")
+
+		// Test second blocked host
+		req2 := &http.Request{Method: "CONNECT", Host: "blocked2.com:443"}
+		shouldIntercept2 := server.shouldInterceptTunnel(req2)
+		assert.False(t, shouldIntercept2, "Should NOT intercept blocked2.com")
+
+		// Test allowed host
+		req3 := &http.Request{Method: "CONNECT", Host: "allowed.com:443"}
+		shouldIntercept3 := server.shouldInterceptTunnel(req3)
+		assert.True(t, shouldIntercept3, "Should intercept allowed.com")
+	})
+
+	// Test 5: Host with port handling
+	t.Run("exclude classifier handles host with port", func(t *testing.T) {
+		cfg := &config.Config{
+			Servers: []config.ServerConfig{
+				{
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
+				},
+			},
+			Classifiers: map[string]config.Classifier{
+				"exclude-domains": &config.ClassifierDomain{
+					Domain: "blocked.com",
+					Op:     config.ClassifierOpEqual,
+				},
+			},
+			Interception: config.InterceptionConfig{
+				Enabled:           true,
+				HTTP:              true,
+				HTTPS:             true,
+				ExcludeClassifier: &config.ClassifierRef{Id: "exclude-domains"},
+			},
+		}
+
+		proxy := NewProxy(cfg)
+		server := proxy.servers[0]
+
+		// Test with port - should still be excluded (port is stripped)
+		req := &http.Request{
+			Method: "CONNECT",
+			Host:   "blocked.com:8443",
+		}
+
+		shouldIntercept := server.shouldInterceptTunnel(req)
+		assert.False(t, shouldIntercept, "Should NOT intercept when hostname matches exclude classifier (port should be stripped)")
+	})
+}
+
+// TestExcludeClassifierDisabled tests behavior when interception is disabled
+func TestExcludeClassifierDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{
+				Type:          config.ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:0",
+				Enabled:       true,
+			},
+		},
+		Classifiers: map[string]config.Classifier{
+			"exclude-domains": &config.ClassifierDomain{
+				Domain: "blocked.com",
+				Op:     config.ClassifierOpEqual,
+			},
+		},
+		Interception: config.InterceptionConfig{
+			Enabled:           false, // Interception disabled
+			HTTP:              true,
+			HTTPS:             true,
+			ExcludeClassifier: &config.ClassifierRef{Id: "exclude-domains"},
+		},
+	}
+
+	proxy := NewProxy(cfg)
+	server := proxy.servers[0]
+
+	req := &http.Request{
+		Method: "CONNECT",
+		Host:   "blocked.com:443",
+	}
+
+	shouldIntercept := server.shouldInterceptTunnel(req)
+	assert.False(t, shouldIntercept, "Should NOT intercept when interception is globally disabled")
+}

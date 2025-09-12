@@ -68,6 +68,7 @@ type Server struct {
 	blocklistClassifier Classifier
 	allowlistClassifier Classifier
 	httpsClassifier     Classifier
+	excludeClassifier   Classifier
 	proxy               *Proxy
 }
 
@@ -283,6 +284,39 @@ func NewProxy(cfg *config.Config) *Proxy {
 			}
 		}
 
+		// Compile exclude classifier if configured
+		var excludeClassifier Classifier
+		if cfg.Interception.ExcludeClassifier != nil {
+			if classifierRef, ok := cfg.Interception.ExcludeClassifier.(*config.ClassifierRef); ok {
+				// First, compile all classifiers to get the full map
+				if cfg.Classifiers != nil {
+					compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
+					if err != nil {
+						logger.Error("Failed to compile classifiers map for exclude classifier on server %s: %v", serverCfg.ListenAddress, err)
+					} else {
+						// Look up the specific classifier by ID
+						if compiled, exists := compiledMap[classifierRef.Id]; exists {
+							excludeClassifier = compiled
+							logger.Debug("Compiled exclude classifier '%s' for server %s", classifierRef.Id, serverCfg.ListenAddress)
+						} else {
+							logger.Warn("Exclude classifier '%s' not found in classifiers config for server %s", classifierRef.Id, serverCfg.ListenAddress)
+						}
+					}
+				} else {
+					logger.Warn("Exclude classifier '%s' configured but no classifiers defined for server %s", classifierRef.Id, serverCfg.ListenAddress)
+				}
+			} else {
+				// If it's not a ClassifierRef, try to compile it directly
+				compiled, err := CompileClassifier(cfg.Interception.ExcludeClassifier)
+				if err != nil {
+					logger.Error("Failed to compile exclude classifier for server %s: %v", serverCfg.ListenAddress, err)
+				} else {
+					excludeClassifier = compiled
+					logger.Debug("Compiled exclude classifier for server %s", serverCfg.ListenAddress)
+				}
+			}
+		}
+
 		server := &Server{
 			config:              cfg,
 			serverConfig:        serverCfg,
@@ -290,6 +324,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 			blocklistClassifier: p.blocklistClassifier,
 			allowlistClassifier: p.allowlistClassifier,
 			httpsClassifier:     httpsClassifier,
+			excludeClassifier:   excludeClassifier,
 			server:              &http.Server{Addr: serverCfg.ListenAddress},
 			proxy:               p,
 		}
@@ -698,7 +733,7 @@ func isClosedConnError(err error) bool {
 func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	targetAddr := r.Host
-	logger.Debug("CONNECT request for %s", targetAddr)
+	logger.Debug("%s request for %s", r.Method, targetAddr)
 
 	if p.proxy.portal.IsPortalRequest(r) {
 		p.proxy.portal.ServeHTTP(w, r)
@@ -1433,6 +1468,30 @@ func (p *Server) shouldInterceptTunnel(r *http.Request) bool {
 	}
 
 	isEnabled := p.config.Interception.Enabled && (p.config.Interception.HTTP || p.config.Interception.HTTPS)
+
+	// Check exclude classifier if configured
+	if isEnabled && p.excludeClassifier != nil {
+		hostname := r.Host
+		// Remove port from hostname if present
+		if colonIdx := strings.Index(hostname, ":"); colonIdx != -1 {
+			hostname = hostname[:colonIdx]
+		}
+
+		classifierInput := ClassifierInput{
+			host:       hostname,
+			remoteIP:   "",
+			remotePort: 0,
+		}
+
+		excluded, err := p.excludeClassifier.Classify(classifierInput)
+		if err != nil {
+			logger.Warn("Error evaluating exclude classifier for %s: %v", r.Host, err)
+		} else if excluded {
+			logger.Debug("Host %s is excluded from interception by exclude classifier", r.Host)
+			return false
+		}
+	}
+
 	logger.Debug("Should intercept tunnel for %s: %v (enabled in config: %v)",
 		r.Host, isEnabled, p.config.Interception.Enabled)
 	return isEnabled

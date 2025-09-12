@@ -520,6 +520,8 @@ Then set the environment variable:
 export CA_KEY_PASSWORD=your-actual-password
 ```
 
+In a systemd service you can use `EnvironmentFile` to securely include your secrets.
+
 ## Configuration Validation
 
 The configuration is validated on startup with the following rules:

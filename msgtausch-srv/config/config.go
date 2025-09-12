@@ -29,13 +29,14 @@ const (
 
 // InterceptionConfig defines settings for HTTP/HTTPS traffic interception
 type InterceptionConfig struct {
-	Enabled         bool       // Whether interception is enabled
-	HTTP            bool       // Whether to intercept HTTP traffic
-	HTTPS           bool       // Whether to intercept HTTPS traffic
-	HTTPSClassifier Classifier // Optional classifier to determine if traffic should be treated as HTTPS
-	CAFile          string     // Path to CA certificate file (for HTTPS/QUIC interceptor)
-	CAKeyFile       string     // Path to CA private key file (for HTTPS/QUIC interceptor)
-	CAKeyPasswd     string     // Optional password for encrypted CA private key file
+	Enabled           bool       // Whether interception is enabled
+	HTTP              bool       // Whether to intercept HTTP traffic
+	HTTPS             bool       // Whether to intercept HTTPS traffic
+	HTTPSClassifier   Classifier // Optional classifier to determine if traffic should be treated as HTTPS
+	ExcludeClassifier Classifier // Optional classifier to exclude hosts from interception
+	CAFile            string     // Path to CA certificate file (for HTTPS/QUIC interceptor)
+	CAKeyFile         string     // Path to CA private key file (for HTTPS/QUIC interceptor)
+	CAKeyPasswd       string     // Optional password for encrypted CA private key file
 }
 
 // PortalConfig defines settings for the admin portal
@@ -783,6 +784,15 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 			}
 		}
 
+		// Parse exclude-classifier
+		if excludeClassifierVal, exists := interceptionMap["exclude-classifier"]; exists {
+			if excludeClassifier, err := parseValue[string](excludeClassifierVal); err == nil {
+				cfg.Interception.ExcludeClassifier = &ClassifierRef{Id: *excludeClassifier}
+			} else {
+				return fmt.Errorf("interception exclude-classifier must be a string: %w", err)
+			}
+		}
+
 		// Parse ca-file
 		if caFileVal, exists := interceptionMap["ca-file"]; exists {
 			if caFile, err := parseValue[string](caFileVal); err == nil {
@@ -1129,6 +1139,11 @@ func loadConfigFromEnv(cfg *Config) {
 	// Handle global HTTPS classifier setting
 	if httpsClassifier := os.Getenv("MSGTAUSCH_HTTPSCLASSIFIER"); httpsClassifier != "" {
 		cfg.Interception.HTTPSClassifier = &ClassifierRef{Id: httpsClassifier}
+	}
+
+	// Handle global exclude classifier setting
+	if excludeClassifier := os.Getenv("MSGTAUSCH_EXCLUDECLASSIFIER"); excludeClassifier != "" {
+		cfg.Interception.ExcludeClassifier = &ClassifierRef{Id: excludeClassifier}
 	}
 
 	// Handle global CA certificate file setting

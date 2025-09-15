@@ -464,7 +464,23 @@ func (b *BufferedCollector) GetBandwidthStats(ctx context.Context, days int) (*B
 
 // GetSystemStats delegates to underlying collector
 func (b *BufferedCollector) GetSystemStats(ctx context.Context) (*SystemStats, error) {
-	return b.underlying.GetSystemStats(ctx)
+	stats, err := b.underlying.GetSystemStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Adjust current connection count to reflect connections that ended
+	// but have not yet been flushed to the underlying collector.
+	b.buffer.mu.RLock()
+	completed := int64(len(b.buffer.completedConnections))
+	b.buffer.mu.RUnlock()
+	if completed > 0 {
+		if stats.CurrentConnections > completed {
+			stats.CurrentConnections -= completed
+		} else {
+			stats.CurrentConnections = 0
+		}
+	}
+	return stats, nil
 }
 
 // ForceFlush immediately flushes all buffered data

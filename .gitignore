@@ -66,6 +66,13 @@ coverage.html
 /.gocache/
 /.claude
 
-/msgtausch-stats.db
-/msgtausch-stats.db-shm
-/msgtausch-stats.db-wal
+msgtausch-stats*.db
+msgtausch-stats*.db-shm
+msgtausch-stats*.db-wal
+msgtausch_stats*.db
+msgtausch_stats*.db-shm
+msgtausch_stats*.db-wal
+
+test_proxy_stats*.db
+test_proxy_stats*.db-shm
+test_proxy_stats*.db-wal

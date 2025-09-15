@@ -12,6 +12,9 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
+// contextKey is a custom type for context keys to avoid string collisions
+type contextKey string
+
 // MockConnectionTracker is a mock implementation of ConnectionTracker
 type MockConnectionTracker struct {
 	mock.Mock
@@ -509,7 +512,7 @@ func TestSystemStatsCollector_ContextHandling(t *testing.T) {
 		{
 			name: "Context with values",
 			ctxFunc: func() context.Context {
-				return context.WithValue(context.Background(), "test", "value")
+				return context.WithValue(context.Background(), contextKey("test"), "value")
 			},
 			expectError: false,
 		},

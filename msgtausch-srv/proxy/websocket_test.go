@@ -281,12 +281,12 @@ func createTestProxy(t *testing.T, proxyType config.ProxyType, interception bool
 func TestWebSocketConnectionMultipleProxies(t *testing.T) {
 	// Create a test echo websocket server
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Log the incoming request for debugging
-		t.Logf("WebSocket server received request: %s %s, Headers: %v", r.Method, r.URL.Path, r.Header)
+		// Log the incoming request for debugging (avoid t.Logf inside handler goroutine)
+		logger.Debug("WebSocket server received request: %s %s, Headers: %v", r.Method, r.URL.Path, r.Header)
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Logf("WebSocket upgrade failed: %v", err)
+			logger.Debug("WebSocket upgrade failed: %v", err)
 			return
 		}
 		defer conn.Close()
@@ -297,7 +297,7 @@ func TestWebSocketConnectionMultipleProxies(t *testing.T) {
 			if err != nil {
 				break
 			}
-			t.Logf("WebSocket server received message: %s", string(message))
+			logger.Debug("WebSocket server received message: %s", string(message))
 			err = conn.WriteMessage(messageType, message)
 			if err != nil {
 				break
@@ -503,12 +503,12 @@ func TestLargeWebSocketMessages(t *testing.T) {
 		for {
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
-				t.Logf("Error reading message: %v", err)
+				logger.Debug("Error reading message: %v", err)
 				break
 			}
 			err = conn.WriteMessage(messageType, message)
 			if err != nil {
-				t.Logf("Error writing message: %v", err)
+				logger.Debug("Error writing message: %v", err)
 				break
 			}
 		}

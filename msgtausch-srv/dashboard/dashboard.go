@@ -3,10 +3,8 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
-	"sync"
 	"time"
 
-	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
 	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 )
@@ -18,20 +16,6 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 		logger.Error("Failed to encode JSON response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
-}
-
-// Dashboard provides a web interface for viewing proxy statistics
-type Dashboard struct {
-	config    *config.Config
-	collector stats.Collector
-
-	mutex sync.RWMutex
-	cache *cache
-}
-
-type cache struct {
-	lastUpdate time.Time
-	data       *Data
 }
 
 // Data represents the statistics data for the dashboard

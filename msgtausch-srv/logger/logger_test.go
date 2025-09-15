@@ -42,16 +42,16 @@ func TestSetLevel(t *testing.T) {
 	}
 
 	// Save the original level to restore it after the test
-	originalLevel := currentLevel
+	originalLevel := GetLevel()
 	defer func() {
-		currentLevel = originalLevel
+		SetLevel(originalLevel)
 	}()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			SetLevel(tt.level)
-			if currentLevel != tt.expectedLevel {
-				t.Errorf("SetLevel() = %v, want %v", currentLevel, tt.expectedLevel)
+			if GetLevel() != tt.expectedLevel {
+				t.Errorf("SetLevel() = %v, want %v", GetLevel(), tt.expectedLevel)
 			}
 		})
 	}
@@ -139,15 +139,15 @@ func TestLogLevelFiltering(t *testing.T) {
 	}
 
 	// Save the original level to restore it after the test
-	originalLevel := currentLevel
+	originalLevel := GetLevel()
 	defer func() {
-		currentLevel = originalLevel
+		SetLevel(originalLevel)
 	}()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set the current log level
-			currentLevel = tt.currentLevel
+			SetLevel(tt.currentLevel)
 
 			// Capture the output
 			output := captureOutput(func() {
@@ -164,7 +164,7 @@ func TestLogLevelFiltering(t *testing.T) {
 				case FATAL:
 					// Special case for FATAL to avoid os.Exit
 					// We're just testing the filtering logic, not the exit behavior
-					if tt.logLevel >= currentLevel {
+					if IsLevelEnabled(FATAL) {
 						stdLogger.Printf("[%s] %s", levelToString(FATAL), "test message")
 					}
 				}
@@ -223,9 +223,9 @@ func TestLogFormatting(t *testing.T) {
 	}
 
 	// Save the original level to restore it after the test
-	originalLevel := currentLevel
+	originalLevel := GetLevel()
 	defer func() {
-		currentLevel = originalLevel
+		SetLevel(originalLevel)
 	}()
 
 	// Set level to DEBUG to ensure all messages are logged
@@ -254,9 +254,9 @@ func TestLogFormatting(t *testing.T) {
 // TestFatalBehavior tests the formatting of Fatal messages without actually calling os.Exit
 func TestFatalBehavior(t *testing.T) {
 	// Save the original level to restore it after the test
-	originalLevel := currentLevel
+	originalLevel := GetLevel()
 	defer func() {
-		currentLevel = originalLevel
+		SetLevel(originalLevel)
 	}()
 
 	// Set level to DEBUG to ensure the message is logged

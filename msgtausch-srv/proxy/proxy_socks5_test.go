@@ -50,7 +50,9 @@ func setupMockSocks5Server(t *testing.T, requiredUser, requiredPass string) (str
 				if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 					return // Listener closed, exit goroutine
 				}
-				t.Logf("Mock SOCKS5 server accept error: %v", err)
+				// Avoid using t.Logf in goroutine after test completion
+				// Use standard output to record the accept error for debugging
+				fmt.Printf("Mock SOCKS5 server accept error: %v\n", err)
 				return
 			}
 
@@ -261,7 +263,8 @@ func handleMockSocks5Connection(t *testing.T, clientConn net.Conn, requiredUser,
 		return
 	}
 	defer targetConn.Close()
-	t.Logf("Mock SOCKS5: Successfully connected to target %s", targetAddr)
+	// Avoid using t.Logf in goroutine: print to stdout for debug
+	fmt.Printf("Mock SOCKS5: Successfully connected to target %s\n", targetAddr)
 
 	// 5. Send success reply to client
 	// Reply: [0x05, 0x00, 0x00, atyp, bindAddr..., bindPort...]
@@ -277,7 +280,7 @@ func handleMockSocks5Connection(t *testing.T, clientConn net.Conn, requiredUser,
 	}
 
 	// 6. Proxy data bidirectionally
-	t.Logf("Mock SOCKS5: Starting data proxy between client and %s", targetAddr)
+	fmt.Printf("Mock SOCKS5: Starting data proxy between client and %s\n", targetAddr)
 	errChan := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(targetConn, clientConn)
@@ -291,10 +294,10 @@ func handleMockSocks5Connection(t *testing.T, clientConn net.Conn, requiredUser,
 	// Wait for copying to finish
 	for i := 0; i < 2; i++ {
 		if err := <-errChan; err != nil && err != io.EOF {
-			t.Logf("Mock SOCKS5: proxy copy error: %v", err)
+			fmt.Printf("Mock SOCKS5: proxy copy error: %v\n", err)
 		}
 	}
-	t.Logf("Mock SOCKS5: Data proxy finished for %s", targetAddr)
+	fmt.Printf("Mock SOCKS5: Data proxy finished for %s\n", targetAddr)
 }
 
 func TestSocks5Forward(t *testing.T) {

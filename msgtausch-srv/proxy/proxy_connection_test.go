@@ -23,8 +23,8 @@ func TestConnectionKeepaliveMultipleRequests(t *testing.T) {
 	var connectionsMu sync.Mutex
 	activeConnections := make(map[net.Conn]bool)
 
-	// Create a test HTTP server that tracks connections
-	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Create a test HTTP server that tracks connections (unstarted to set custom listener)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Track request count
 		atomic.AddInt32(&requestCount, 1)
 
@@ -37,18 +37,24 @@ func TestConnectionKeepaliveMultipleRequests(t *testing.T) {
 		reqNum := atomic.LoadInt32(&requestCount)
 		content := fmt.Sprintf("Response %d from keepalive server", reqNum)
 		w.Write([]byte(content))
-	}))
-	defer testServer.Close()
+	})
 
-	// Wrap the test server's listener to track connections
-	originalListener := testServer.Listener
+	testServer := httptest.NewUnstartedServer(handler)
+
+	// Create and wrap a custom listener before starting the server to avoid races
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
 	wrappedListener := &connectionTrackingListener{
-		Listener:          originalListener,
+		Listener:          ln,
 		connectionCount:   &connectionCount,
 		activeConnections: activeConnections,
 		connectionsMu:     &connectionsMu,
 	}
 	testServer.Listener = wrappedListener
+	testServer.Start()
+	defer testServer.Close()
 
 	// Create proxy configuration
 	cfg := &config.Config{

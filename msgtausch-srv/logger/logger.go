@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // LogLevel represents the severity of a log message
@@ -25,19 +26,28 @@ const (
 )
 
 var (
-	// currentLevel is the current logging level
-	currentLevel LogLevel = INFO
+	// currentLevel holds the current logging level atomically
+	currentLevel atomic.Int32
 	// stdLogger is the standard logger instance
 	stdLogger = log.New(os.Stdout, "", log.LstdFlags)
 )
 
+func init() {
+	currentLevel.Store(int32(INFO))
+}
+
 // SetLevel sets the current logging level
 func SetLevel(level LogLevel) {
-	currentLevel = level
+	currentLevel.Store(int32(level))
 }
 
 func IsLevelEnabled(level LogLevel) bool {
-	return level >= currentLevel
+	return level >= LogLevel(currentLevel.Load())
+}
+
+// GetLevel returns the current logging level.
+func GetLevel() LogLevel {
+	return LogLevel(currentLevel.Load())
 }
 
 // GetLevelFromString converts a string level to LogLevel
@@ -82,7 +92,7 @@ func levelToString(level LogLevel) string {
 
 // logMessage logs a message at the specified level with optional context
 func logMessage(level LogLevel, format string, v ...any) {
-	if level < currentLevel {
+	if level < LogLevel(currentLevel.Load()) {
 		return
 	}
 

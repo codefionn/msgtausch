@@ -2,6 +2,8 @@ package stats
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"testing"
 	"time"
@@ -93,8 +95,9 @@ func TestFactory(t *testing.T) {
 		{
 			name: "sqlite default",
 			config: config.StatisticsConfig{
-				Enabled: true,
-				Backend: "sqlite",
+				Enabled:    true,
+				Backend:    "sqlite",
+				SQLitePath: "msgtausch_stats" + randomSuffix() + ".db",
 			},
 		},
 		{
@@ -191,7 +194,6 @@ func testCollector(t *testing.T, collector Collector) {
 		t.Fatalf("HealthCheck failed: %v", err)
 	}
 }
-
 func BenchmarkBufferedCollector(b *testing.B) {
 	underlying := NewDummyCollector()
 	collector := NewBufferedCollectorWithInterval(underlying, 1*time.Second)
@@ -205,4 +207,13 @@ func BenchmarkBufferedCollector(b *testing.B) {
 		collector.RecordHTTPRequest(ctx, connID, "GET", "/test", "example.com", "agent", 0)
 		collector.RecordHTTPResponse(ctx, connID, 200, 1024)
 	}
+}
+
+// randomSuffix generates a random hex string for use in temporary filenames.
+func randomSuffix() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }

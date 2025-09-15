@@ -39,7 +39,7 @@
           go = pkgs.go_1_24;
           goVersion = "1.24";
           # Let the builder vendor dependencies internally, but ignore any in-tree vendor/
-          vendorHash = "sha256-rFUVAUivUxhDHo/COi5mfX3Mfoqhfma3MuRn48Sxuqg=";
+          vendorHash = "sha256-a2mjJVwYYkSATYC/EH5qqfCNqzXVefqdYJZutuuiZHA=";
           stripVendor = true;
           subPackages = [ "." ];
           env.CGO_ENABLED = 1;

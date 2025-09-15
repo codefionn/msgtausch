@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
@@ -17,6 +18,11 @@ type trackedConn struct {
 	bytesReceived int64
 	startTime     time.Time
 	ctx           context.Context
+	// internal synchronization for periodic flush and end-of-connection recording
+	mu            sync.Mutex
+	flushSent     int64
+	flushReceived int64
+	endOnce       sync.Once
 }
 
 // newTrackedConn creates a new tracked connection.
@@ -34,10 +40,20 @@ func newTrackedConn(ctx context.Context, conn net.Conn, collector stats.Collecto
 func (c *trackedConn) Read(b []byte) (n int, err error) {
 	n, err = c.Conn.Read(b)
 	if n > 0 {
+		var toReportSent, toReportRecv int64
+		c.mu.Lock()
 		c.bytesReceived += int64(n)
-		// Record periodic data transfer for long connections
-		if (c.bytesSent+c.bytesReceived)%10240 == 0 { // Every 10KB
-			_ = c.collector.RecordDataTransfer(c.ctx, c.connectionID, c.bytesSent, c.bytesReceived)
+		// Record periodic data transfer for long connections.
+		// Report deltas since the last flush to avoid double-counting.
+		if (c.bytesSent+c.bytesReceived)%10240 == 0 { // Every ~10KB combined
+			toReportSent = c.bytesSent - c.flushSent
+			toReportRecv = c.bytesReceived - c.flushReceived
+			c.flushSent = c.bytesSent
+			c.flushReceived = c.bytesReceived
+		}
+		c.mu.Unlock()
+		if toReportSent > 0 || toReportRecv > 0 {
+			_ = c.collector.RecordDataTransfer(c.ctx, c.connectionID, toReportSent, toReportRecv)
 		}
 	}
 	return n, err
@@ -47,10 +63,20 @@ func (c *trackedConn) Read(b []byte) (n int, err error) {
 func (c *trackedConn) Write(b []byte) (n int, err error) {
 	n, err = c.Conn.Write(b)
 	if n > 0 {
+		var toReportSent, toReportRecv int64
+		c.mu.Lock()
 		c.bytesSent += int64(n)
-		// Record periodic data transfer for long connections
-		if (c.bytesSent+c.bytesReceived)%10240 == 0 { // Every 10KB
-			_ = c.collector.RecordDataTransfer(c.ctx, c.connectionID, c.bytesSent, c.bytesReceived)
+		// Record periodic data transfer for long connections.
+		// Report deltas since the last flush to avoid double-counting.
+		if (c.bytesSent+c.bytesReceived)%10240 == 0 { // Every ~10KB combined
+			toReportSent = c.bytesSent - c.flushSent
+			toReportRecv = c.bytesReceived - c.flushReceived
+			c.flushSent = c.bytesSent
+			c.flushReceived = c.bytesReceived
+		}
+		c.mu.Unlock()
+		if toReportSent > 0 || toReportRecv > 0 {
+			_ = c.collector.RecordDataTransfer(c.ctx, c.connectionID, toReportSent, toReportRecv)
 		}
 	}
 	return n, err
@@ -60,11 +86,24 @@ func (c *trackedConn) Write(b []byte) (n int, err error) {
 func (c *trackedConn) Close() error {
 	err := c.Conn.Close()
 	duration := time.Since(c.startTime)
-	closeReason := ""
+	// Use a meaningful close reason for downstream stats. Only record once.
+	closeReason := "normal"
 	if err != nil {
 		closeReason = err.Error()
 	}
-
-	_ = c.collector.EndConnection(c.ctx, c.connectionID, c.bytesSent, c.bytesReceived, duration, closeReason)
+	c.endOnce.Do(func() {
+		// Final flush of any unreported deltas before ending
+		var toReportSent, toReportRecv int64
+		c.mu.Lock()
+		toReportSent = c.bytesSent - c.flushSent
+		toReportRecv = c.bytesReceived - c.flushReceived
+		c.flushSent = c.bytesSent
+		c.flushReceived = c.bytesReceived
+		c.mu.Unlock()
+		if toReportSent > 0 || toReportRecv > 0 {
+			_ = c.collector.RecordDataTransfer(c.ctx, c.connectionID, toReportSent, toReportRecv)
+		}
+		_ = c.collector.EndConnection(c.ctx, c.connectionID, c.bytesSent, c.bytesReceived, duration, closeReason)
+	})
 	return err
 }

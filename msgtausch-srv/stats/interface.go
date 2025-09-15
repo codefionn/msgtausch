@@ -29,6 +29,12 @@ type Collector interface {
 	RecordBlockedRequest(ctx context.Context, clientIP, targetHost, reason string) error
 	RecordAllowedRequest(ctx context.Context, clientIP, targetHost string) error
 
+	// Request/Response recording (for matched traffic)
+	RecordFullHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+		requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error
+	RecordFullHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+		responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error
+
 	// Dashboard queries
 	GetOverviewStats(ctx context.Context) (*OverviewStats, error)
 	GetTopDomains(ctx context.Context, limit int) ([]DomainStats, error)
@@ -163,4 +169,29 @@ type SystemStats struct {
 	OSInfo             string  `json:"os_info"`
 	Architecture       string  `json:"architecture"`
 	UptimeSeconds      int64   `json:"uptime_seconds"`
+}
+
+// RecordedHTTPRequest holds full HTTP request data for recording
+type RecordedHTTPRequest struct {
+	ID              int64               `json:"id"`
+	ConnectionID    int64               `json:"connection_id"`
+	Method          string              `json:"method"`
+	URL             string              `json:"url"`
+	Host            string              `json:"host"`
+	UserAgent       string              `json:"user_agent"`
+	RequestHeaders  map[string][]string `json:"request_headers"`
+	RequestBody     []byte              `json:"request_body"`
+	RequestBodySize int64               `json:"request_body_size"`
+	Timestamp       time.Time           `json:"timestamp"`
+}
+
+// RecordedHTTPResponse holds full HTTP response data for recording
+type RecordedHTTPResponse struct {
+	ID               int64               `json:"id"`
+	ConnectionID     int64               `json:"connection_id"`
+	StatusCode       int                 `json:"status_code"`
+	ResponseHeaders  map[string][]string `json:"response_headers"`
+	ResponseBody     []byte              `json:"response_body"`
+	ResponseBodySize int64               `json:"response_body_size"`
+	Timestamp        time.Time           `json:"timestamp"`
 }

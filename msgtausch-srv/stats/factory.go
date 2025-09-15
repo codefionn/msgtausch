@@ -17,7 +17,7 @@ func NewCollectorFactory() *CollectorFactory {
 }
 
 // CreateCollector creates a statistics collector based on the provided configuration
-func (f *CollectorFactory) CreateCollector(cfg config.StatisticsConfig) (Collector, error) {
+func (f *CollectorFactory) CreateCollector(cfg *config.StatisticsConfig) (Collector, error) {
 	if !cfg.Enabled {
 		return NewDummyCollector(), nil
 	}
@@ -59,11 +59,11 @@ func (f *CollectorFactory) CreateCollector(cfg config.StatisticsConfig) (Collect
 
 // CreateCollectorFromConfig creates a collector from the main configuration
 func (f *CollectorFactory) CreateCollectorFromConfig(cfg *config.Config) (Collector, error) {
-	return f.CreateCollector(cfg.Statistics)
+	return f.CreateCollector(&cfg.Statistics)
 }
 
 // MustCreateCollector creates a collector and panics on error
-func (f *CollectorFactory) MustCreateCollector(cfg config.StatisticsConfig) Collector {
+func (f *CollectorFactory) MustCreateCollector(cfg *config.StatisticsConfig) Collector {
 	collector, err := f.CreateCollector(cfg)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create stats collector: %v", err))

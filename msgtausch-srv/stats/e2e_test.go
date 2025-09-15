@@ -30,7 +30,7 @@ func TestEndToEndStatisticsFlow(t *testing.T) {
 
 	// Create factory and collector
 	factory := NewCollectorFactory()
-	collector, err := factory.CreateCollector(cfg)
+	collector, err := factory.CreateCollector(&cfg)
 	require.NoError(t, err)
 	defer collector.Close()
 
@@ -164,7 +164,7 @@ func TestBufferedCollectorGracefulShutdown(t *testing.T) {
 	}
 
 	factory := NewCollectorFactory()
-	collector, err := factory.CreateCollector(cfg)
+	collector, err := factory.CreateCollector(&cfg)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -226,7 +226,7 @@ func TestConfigurationVariations(t *testing.T) {
 			}
 
 			factory := NewCollectorFactory()
-			collector, err := factory.CreateCollector(tt.config)
+			collector, err := factory.CreateCollector(&tt.config)
 			require.NoError(t, err)
 
 			ctx := context.Background()
@@ -267,7 +267,7 @@ func TestHealthCheck(t *testing.T) {
 			}
 
 			factory := NewCollectorFactory()
-			collector, err := factory.CreateCollector(tt.config)
+			collector, err := factory.CreateCollector(&tt.config)
 			require.NoError(t, err)
 			defer collector.Close()
 
@@ -290,7 +290,7 @@ func TestConcurrentOperations(t *testing.T) {
 	}
 
 	factory := NewCollectorFactory()
-	collector, err := factory.CreateCollector(cfg)
+	collector, err := factory.CreateCollector(&cfg)
 	require.NoError(t, err)
 	defer collector.Close()
 

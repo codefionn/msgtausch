@@ -263,6 +263,18 @@ func (b *BufferedCollector) RecordHTTPResponseWithHeaders(ctx context.Context, c
 	return nil
 }
 
+// RecordFullHTTPRequest delegates full HTTP request recording to the underlying collector
+func (b *BufferedCollector) RecordFullHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+	requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
+	return b.underlying.RecordFullHTTPRequest(ctx, connectionID, method, url, host, userAgent, requestHeaders, requestBody, timestamp)
+}
+
+// RecordFullHTTPResponse delegates full HTTP response recording to the underlying collector
+func (b *BufferedCollector) RecordFullHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+	responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
+	return b.underlying.RecordFullHTTPResponse(ctx, connectionID, statusCode, responseHeaders, responseBody, timestamp)
+}
+
 // RecordError records an error
 func (b *BufferedCollector) RecordError(ctx context.Context, connectionID int64, errorType, errorMessage string) error {
 	b.buffer.mu.Lock()

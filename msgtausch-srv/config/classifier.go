@@ -26,6 +26,8 @@ const (
 	ClassifierTypeFalse
 	// ClassifierTypeDomainsFile matches against domains loaded from a file.
 	ClassifierTypeDomainsFile
+	// ClassifierTypeRecord matches traffic that should have full request/response recorded.
+	ClassifierTypeRecord
 )
 
 // ClassifierOp defines the operation type for string comparisons.
@@ -155,4 +157,14 @@ type ClassifierFalse struct{}
 // Type returns the classifier type for this configuration.
 func (c *ClassifierFalse) Type() ClassifierType {
 	return ClassifierTypeFalse
+}
+
+// ClassifierRecord wraps another classifier to mark matching traffic for full recording.
+type ClassifierRecord struct {
+	Classifier Classifier
+}
+
+// Type returns the classifier type for this configuration.
+func (c *ClassifierRecord) Type() ClassifierType {
+	return ClassifierTypeRecord
 }

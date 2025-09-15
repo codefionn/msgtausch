@@ -493,17 +493,17 @@ func CompileClassifier(classifier config.Classifier) (Classifier, error) {
 				},
 			}, nil
 		case config.ClassifierOpContains:
-			// For Contains, we need to check if the host contains the domain
+			// For Contains, check if the host contains the configured domain substring
 			return &ClassifierStrContains{
 				Get: func(input ClassifierInput) (string, error) {
-					return input.host, nil
+					return domainClassifier.Domain, nil
 				},
 			}, nil
 		case config.ClassifierOpNotContains:
-			// For NotContains, we need to check if the host doesn't contain the domain
+			// For NotContains, ensure the host does not contain the configured domain substring
 			return &ClassifierStrNotContains{
 				Get: func(input ClassifierInput) (string, error) {
-					return input.host, nil
+					return domainClassifier.Domain, nil
 				},
 			}, nil
 		case config.ClassifierOpIs:
@@ -543,6 +543,13 @@ func CompileClassifier(classifier config.Classifier) (Classifier, error) {
 			return nil, err
 		}
 		return clf, nil
+	case config.ClassifierTypeRecord:
+		recordClassifier := classifier.(*config.ClassifierRecord)
+		wrappedClassifier, err := CompileClassifier(recordClassifier.Classifier)
+		if err != nil {
+			return nil, err
+		}
+		return &ClassifierRecord{WrappedClassifier: wrappedClassifier}, nil
 	default:
 		return nil, fmt.Errorf("unsupported classifier type: %v", classifier.Type())
 	}
@@ -677,6 +684,16 @@ type ClassifierFalse struct{}
 
 // Classify always returns false.
 func (c *ClassifierFalse) Classify(input ClassifierInput) (bool, error) { return false, nil }
+
+// ClassifierRecord wraps another classifier and marks matching traffic for recording
+type ClassifierRecord struct {
+	WrappedClassifier Classifier
+}
+
+// Classify returns the result of the wrapped classifier
+func (c *ClassifierRecord) Classify(input ClassifierInput) (bool, error) {
+	return c.WrappedClassifier.Classify(input)
+}
 
 // CreateOpClassifier creates a classifier based on the operation type and value.
 func CreateOpClassifier(

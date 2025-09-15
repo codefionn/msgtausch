@@ -121,7 +121,7 @@ func TestFactory(t *testing.T) {
 	factory := NewCollectorFactory()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			collector, err := factory.CreateCollector(tt.config)
+			collector, err := factory.CreateCollector(&tt.config)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("Expected error but got none")

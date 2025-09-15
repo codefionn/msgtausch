@@ -64,6 +64,18 @@ func (d *DummyCollector) RecordAllowedRequest(ctx context.Context, clientIP, tar
 	return nil
 }
 
+// RecordFullHTTPRequest records complete HTTP request data (no-op)
+func (d *DummyCollector) RecordFullHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+	requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
+	return nil
+}
+
+// RecordFullHTTPResponse records complete HTTP response data (no-op)
+func (d *DummyCollector) RecordFullHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+	responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
+	return nil
+}
+
 // HealthCheck always returns healthy for dummy collector
 func (d *DummyCollector) HealthCheck(ctx context.Context) error {
 	return nil

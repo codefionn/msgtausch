@@ -54,15 +54,15 @@ type DataTransferRecord struct {
 
 // Satisfy new full HTTP record API for testStatsCollector
 func (t *testStatsCollector) RecordFullHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
-    requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
-    // For integration tests we don't need to capture full bodies; just accept the call
-    return nil
+	requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
+	// For integration tests we don't need to capture full bodies; just accept the call
+	return nil
 }
 
 func (t *testStatsCollector) RecordFullHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
-    responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
-    // For integration tests we don't need to capture full bodies; just accept the call
-    return nil
+	responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
+	// For integration tests we don't need to capture full bodies; just accept the call
+	return nil
 }
 
 func newTestStatsCollector() *testStatsCollector {

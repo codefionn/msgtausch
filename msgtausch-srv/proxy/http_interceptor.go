@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,6 +104,51 @@ func (h *HTTPInterceptor) applyResponseHooks(resp *http.Response) error {
 	return nil
 }
 
+// shouldRecordRequest determines if this request should be fully recorded based on recording classifier
+func (h *HTTPInterceptor) shouldRecordRequest(req *http.Request) bool {
+	if h.proxy == nil || h.proxy.config == nil || !h.proxy.config.Statistics.Enabled {
+		return false
+	}
+
+	// Use the server's recording classifier if available, otherwise use proxy's
+	var recordingClassifier Classifier
+	if server := h.getServerFromContext(req.Context()); server != nil && server.recordingClassifier != nil {
+		recordingClassifier = server.recordingClassifier
+	} else if h.proxy.recordingClassifier != nil {
+		recordingClassifier = h.proxy.recordingClassifier
+	} else {
+		return false
+	}
+
+	input := ClassifierInput{
+		host:       req.Host,
+		remotePort: 80, // Default HTTP port, will be overridden if available
+	}
+
+	// Extract port from Host header if present
+	if host, port, err := net.SplitHostPort(req.Host); err == nil {
+		input.host = host
+		if portInt, err := strconv.Atoi(port); err == nil {
+			input.remotePort = uint16(portInt)
+		}
+	}
+
+	matches, err := recordingClassifier.Classify(input)
+	if err != nil {
+		logger.Error("Error classifying request for recording: %v", err)
+		return false
+	}
+
+	return matches
+}
+
+// getServerFromContext extracts server from request context if available
+func (h *HTTPInterceptor) getServerFromContext(ctx context.Context) *Server {
+	// This would need to be implemented based on how server context is passed
+	// For now, return nil and rely on proxy-level classifier
+	return nil
+}
+
 // InterceptRequest handles intercepting an HTTP request, applying hooks, and forwarding it
 func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Request) {
 	// Construct full URL for logging
@@ -132,6 +178,20 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		logger.Error("Failed to apply request hooks: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
+	}
+
+	// Check if request should be recorded
+	shouldRecord := h.shouldRecordRequest(req)
+	var requestBody []byte
+	if shouldRecord && clonedReq.Body != nil {
+		// Read the request body for recording
+		requestBody, err = io.ReadAll(clonedReq.Body)
+		if err != nil {
+			logger.Error("Failed to read request body for recording: %v", err)
+		} else {
+			// Replace the body with a reader for the actual request
+			clonedReq.Body = io.NopCloser(bytes.NewReader(requestBody))
+		}
 	}
 
 	// Check if we have a proxy reference
@@ -193,6 +253,18 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	// Read response body for recording if needed
+	var responseBody []byte
+	if shouldRecord {
+		responseBody, err = io.ReadAll(resp.Body)
+		if err != nil {
+			logger.Error("Failed to read response body for recording: %v", err)
+		} else {
+			// Replace the body with a reader for the actual response
+			resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+		}
+	}
+
 	// Copy headers from the upstream response to our response
 	for key, values := range resp.Header {
 		for _, value := range values {
@@ -208,6 +280,35 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 	if err != nil {
 		logger.Error("Error copying response body: %v", err)
 		return
+	}
+
+	// Record the full request/response if needed
+	if shouldRecord && h.proxy.Collector != nil {
+		connectionID := int64(0) // TODO: Get actual connection ID from context
+		timestamp := time.Now()
+
+		// Convert headers to map[string][]string format
+		requestHeaders := make(map[string][]string)
+		for key, values := range req.Header {
+			requestHeaders[key] = values
+		}
+
+		responseHeaders := make(map[string][]string)
+		for key, values := range resp.Header {
+			responseHeaders[key] = values
+		}
+
+		// Record request
+		if err := h.proxy.Collector.RecordFullHTTPRequest(req.Context(), connectionID,
+			req.Method, fullURL, req.Host, req.UserAgent(), requestHeaders, requestBody, timestamp); err != nil {
+			logger.Error("Failed to record full HTTP request: %v", err)
+		}
+
+		// Record response
+		if err := h.proxy.Collector.RecordFullHTTPResponse(req.Context(), connectionID,
+			resp.StatusCode, responseHeaders, responseBody, timestamp); err != nil {
+			logger.Error("Failed to record full HTTP response: %v", err)
+		}
 	}
 
 	logger.Debug("HTTP interceptor completed request to %s with status %d (URL: %s)", req.URL.String(), resp.StatusCode, fullURL)

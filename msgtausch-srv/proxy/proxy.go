@@ -68,6 +68,7 @@ type Server struct {
 	compiledForwards    []compiledForward
 	blocklistClassifier Classifier
 	allowlistClassifier Classifier
+	recordingClassifier Classifier
 	httpsClassifier     Classifier
 	excludeClassifier   Classifier
 	proxy               *Proxy
@@ -79,6 +80,7 @@ type Proxy struct {
 	compiledForwards    []compiledForward
 	blocklistClassifier Classifier
 	allowlistClassifier Classifier
+	recordingClassifier Classifier
 	portal              *dashboard.Portal
 	stats.Collector
 }
@@ -223,6 +225,15 @@ func (p *Proxy) CompileClassifiers() {
 			p.allowlistClassifier = alf
 		}
 	}
+
+	if p.config.Statistics.Recording != nil {
+		rcf, err := CompileClassifier(p.config.Statistics.Recording)
+		if err != nil {
+			logger.Error("Error compiling recording classifier: %v", err)
+		} else {
+			p.recordingClassifier = rcf
+		}
+	}
 }
 
 func NewProxy(cfg *config.Config) *Proxy {
@@ -236,7 +247,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 	if cfg.Statistics.Enabled {
 		var err error
 		factory := stats.NewCollectorFactory()
-		p.Collector, err = factory.CreateCollector(cfg.Statistics)
+		p.Collector, err = factory.CreateCollector(&cfg.Statistics)
 		if err != nil {
 			logger.Error("Failed to initialize statistics collector: %v", err)
 		}
@@ -324,6 +335,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 			compiledForwards:    p.compiledForwards,
 			blocklistClassifier: p.blocklistClassifier,
 			allowlistClassifier: p.allowlistClassifier,
+			recordingClassifier: p.recordingClassifier,
 			httpsClassifier:     httpsClassifier,
 			excludeClassifier:   excludeClassifier,
 			server:              &http.Server{Addr: serverCfg.ListenAddress},

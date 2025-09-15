@@ -1,0 +1,27 @@
+{
+  "servers": [
+    {
+      "type": "http",
+      "listen-address": "127.0.0.1:8080",
+      "enabled": true
+    }
+  ],
+  "statistics": {
+    "enabled": true,
+    "backend": "sqlite",
+    "sqlite-path": "recording_test.db",
+    "recording": {
+      "type": "record",
+      "classifier": {
+        "type": "domain",
+        "op": "contains",
+        "domain": "example"
+      }
+    }
+  },
+  "interception": {
+    "enabled": true,
+    "http": true,
+    "https": false
+  }
+}

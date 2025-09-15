@@ -116,13 +116,13 @@ type mockCollector struct {
 
 // Satisfy new full HTTP record API for mockCollector
 func (m *mockCollector) RecordFullHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
-    requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
-    return nil
+	requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
+	return nil
 }
 
 func (m *mockCollector) RecordFullHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
-    responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
-    return nil
+	responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
+	return nil
 }
 
 func (m *mockCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {

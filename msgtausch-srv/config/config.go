@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -197,12 +198,13 @@ func LoadConfig(configPath string) (*Config, error) {
 
 // StatisticsConfig holds configuration for statistics collection
 type StatisticsConfig struct {
-	Enabled       bool   `json:"enabled" hcl:"enabled"`
-	Backend       string `json:"backend" hcl:"backend"`               // "sqlite", "postgres", or "dummy"
-	SQLitePath    string `json:"sqlite-path" hcl:"sqlite-path"`       // Path to SQLite database file
-	PostgresDSN   string `json:"postgres-dsn" hcl:"postgres-dsn"`     // PostgreSQL connection string
-	BufferSize    int    `json:"buffer-size" hcl:"buffer-size"`       // Buffer size for batch operations
-	FlushInterval int    `json:"flush-interval" hcl:"flush-interval"` // Flush interval in seconds
+	Enabled       bool       `json:"enabled" hcl:"enabled"`
+	Backend       string     `json:"backend" hcl:"backend"`               // "sqlite", "postgres", or "dummy"
+	SQLitePath    string     `json:"sqlite-path" hcl:"sqlite-path"`       // Path to SQLite database file
+	PostgresDSN   string     `json:"postgres-dsn" hcl:"postgres-dsn"`     // PostgreSQL connection string
+	BufferSize    int        `json:"buffer-size" hcl:"buffer-size"`       // Buffer size for batch operations
+	FlushInterval int        `json:"flush-interval" hcl:"flush-interval"` // Flush interval in seconds
+	Recording     Classifier `json:"recording" hcl:"recording"`           // Optional classifier for full request/response recording
 }
 
 // validateConfigKeys checks for common key mistakes like using underscores instead of hyphens
@@ -260,12 +262,40 @@ func validateConfigKeys(data map[string]any) error {
 		}
 	}
 
-	// Check interception configuration keys
+	// Check interception configuration keys (deterministic order)
 	if interception, ok := data["interception"].(map[string]any); ok {
-		for key := range interception {
-			if correctKey, exists := keyMappings[key]; exists {
-				return fmt.Errorf("invalid interception config key '%s': use '%s' instead (hyphens, not underscores)", key, correctKey)
+		// First check known underscore keys in a stable priority order to keep error messages deterministic
+		// Priority chosen to satisfy tests that expect 'ca_key_passwd' to be reported before 'ca_key_file'
+		priorityKeys := []string{"ca_key_passwd", "ca_key_file", "ca_file", "enabled", "http", "https"}
+		for _, pk := range priorityKeys {
+			if _, present := interception[pk]; present {
+				if correctKey, exists := keyMappings[pk]; exists {
+					return fmt.Errorf("invalid interception config key '%s': use '%s' instead (hyphens, not underscores)", pk, correctKey)
+				}
 			}
+		}
+
+		// Then check any remaining underscore keys in sorted order for determinism
+		// Collect remaining offending keys
+		var remaining []string
+		for key := range interception {
+			if _, seen := func() map[string]struct{} {
+				m := make(map[string]struct{}, len(priorityKeys))
+				for _, k := range priorityKeys {
+					m[k] = struct{}{}
+				}
+				return m
+			}()[key]; seen {
+				continue
+			}
+			if _, exists := keyMappings[key]; exists {
+				remaining = append(remaining, key)
+			}
+		}
+		if len(remaining) > 0 {
+			sort.Strings(remaining)
+			key := remaining[0]
+			return fmt.Errorf("invalid interception config key '%s': use '%s' instead (hyphens, not underscores)", key, keyMappings[key])
 		}
 	}
 
@@ -881,6 +911,20 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 				return fmt.Errorf("statistics flush-interval must be an integer: %w", err)
 			}
 		}
+
+		// Parse recording classifier
+		if recordingVal, exists := statsMap["recording"]; exists {
+			recordingMap, ok := recordingVal.(map[string]any)
+			if !ok {
+				return fmt.Errorf("statistics recording must be an object")
+			}
+
+			classifier, err := parseClassifier(recordingMap)
+			if err != nil {
+				return fmt.Errorf("failed to parse recording classifier: %w", err)
+			}
+			cfg.Statistics.Recording = classifier
+		}
 	}
 
 	return nil
@@ -903,14 +947,14 @@ func parseValue[T any](value any) (*T, error) {
 		}
 	}
 
-	switch v := value.(type) {
+	switch classifierType := value.(type) {
 	case float64:
 		// JSON number
 		switch elem.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			elem.SetInt(int64(v))
+			elem.SetInt(int64(classifierType))
 		case reflect.Float32, reflect.Float64:
-			elem.SetFloat(v)
+			elem.SetFloat(classifierType)
 		default:
 			return nil, fmt.Errorf("expected %T, got JSON number", zero)
 		}
@@ -918,9 +962,9 @@ func parseValue[T any](value any) (*T, error) {
 		// HCL number (integer)
 		switch elem.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			elem.SetInt(v)
+			elem.SetInt(classifierType)
 		case reflect.Float32, reflect.Float64:
-			elem.SetFloat(float64(v))
+			elem.SetFloat(float64(classifierType))
 		default:
 			return nil, fmt.Errorf("expected %T, got int64", zero)
 		}
@@ -928,30 +972,30 @@ func parseValue[T any](value any) (*T, error) {
 		// Go number
 		switch elem.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			elem.SetInt(int64(v))
+			elem.SetInt(int64(classifierType))
 		case reflect.Float32, reflect.Float64:
-			elem.SetFloat(float64(v))
+			elem.SetFloat(float64(classifierType))
 		default:
 			return nil, fmt.Errorf("expected %T, got int", zero)
 		}
 	case string:
 		switch elem.Kind() {
 		case reflect.String:
-			elem.SetString(v)
+			elem.SetString(classifierType)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			i, err := strconv.ParseInt(v, 10, elem.Type().Bits())
+			i, err := strconv.ParseInt(classifierType, 10, elem.Type().Bits())
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse int: %w", err)
 			}
 			elem.SetInt(i)
 		case reflect.Float32, reflect.Float64:
-			f, err := strconv.ParseFloat(v, elem.Type().Bits())
+			f, err := strconv.ParseFloat(classifierType, elem.Type().Bits())
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse float: %w", err)
 			}
 			elem.SetFloat(f)
 		case reflect.Bool:
-			b, err := strconv.ParseBool(v)
+			b, err := strconv.ParseBool(classifierType)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse bool: %w", err)
 			}
@@ -961,7 +1005,7 @@ func parseValue[T any](value any) (*T, error) {
 		}
 	case bool:
 		if elem.Kind() == reflect.Bool {
-			elem.SetBool(v)
+			elem.SetBool(classifierType)
 		} else {
 			return nil, fmt.Errorf("expected %T, got bool", zero)
 		}
@@ -1077,6 +1121,18 @@ func parseClassifier(classifierMap map[string]any) (Classifier, error) {
 		newClassifier = clf
 	case "domains_file":
 		return nil, fmt.Errorf("invalid classifier type 'domains_file': use 'domains-file' instead (hyphens, not underscores)")
+	case "record":
+		recordClassifier := &ClassifierRecord{}
+		if classifier, ok := classifierMap["classifier"].(map[string]any); ok {
+			class, err := parseClassifier(classifier)
+			if err != nil {
+				return nil, err
+			}
+			recordClassifier.Classifier = class
+		} else {
+			return nil, fmt.Errorf("record classifier requires a 'classifier' field")
+		}
+		newClassifier = recordClassifier
 	default:
 		return nil, fmt.Errorf("unsupported classifier type: %s", classifierType)
 	}

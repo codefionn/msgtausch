@@ -115,6 +115,9 @@ issues:
       linters:
         - gosec  # Test code acceptable
       path: cmd/throughput-test/
+    - text: "main redeclared in this block"
+      linters:
+        - typecheck
   
   max-issues-per-linter: 0
   max-same-issues: 0

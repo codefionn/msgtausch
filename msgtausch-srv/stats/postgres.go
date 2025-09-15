@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -113,6 +114,33 @@ func (p *PostgreSQLCollector) initSchema() error {
 			timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_data_transfers_connection_id ON data_transfers(connection_id)`,
+
+		`CREATE TABLE IF NOT EXISTS recorded_http_requests (
+			id SERIAL PRIMARY KEY,
+			connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			method TEXT NOT NULL,
+			url TEXT NOT NULL,
+			host TEXT NOT NULL,
+			user_agent TEXT,
+			request_headers JSONB, -- JSON encoded headers
+			request_body BYTEA,
+			request_body_size INTEGER DEFAULT 0,
+			timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_recorded_http_requests_connection_id ON recorded_http_requests(connection_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_recorded_http_requests_timestamp ON recorded_http_requests(timestamp)`,
+
+		`CREATE TABLE IF NOT EXISTS recorded_http_responses (
+			id SERIAL PRIMARY KEY,
+			connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+			status_code INTEGER NOT NULL,
+			response_headers JSONB, -- JSON encoded headers
+			response_body BYTEA,
+			response_body_size INTEGER DEFAULT 0,
+			timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_connection_id ON recorded_http_responses(connection_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_timestamp ON recorded_http_responses(timestamp)`,
 	}
 
 	for _, query := range queries {
@@ -603,6 +631,44 @@ func (p *PostgreSQLCollector) GetActiveConnectionCount() int64 {
 	}
 
 	return count
+}
+
+// RecordFullHTTPRequest records complete HTTP request data including headers and body
+func (p *PostgreSQLCollector) RecordFullHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+	requestHeaders map[string][]string, requestBody []byte, timestamp time.Time) error {
+	// Encode headers as JSON
+	headersJSON, err := json.Marshal(requestHeaders)
+	if err != nil {
+		return fmt.Errorf("failed to encode request headers: %w", err)
+	}
+
+	_, err = p.db.ExecContext(ctx,
+		`INSERT INTO recorded_http_requests (connection_id, method, url, host, user_agent, request_headers, request_body, request_body_size, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		connectionID, method, url, host, userAgent, string(headersJSON), requestBody, len(requestBody), timestamp)
+	if err != nil {
+		return fmt.Errorf("failed to record full HTTP request: %w", err)
+	}
+	return nil
+}
+
+// RecordFullHTTPResponse records complete HTTP response data including headers and body
+func (p *PostgreSQLCollector) RecordFullHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+	responseHeaders map[string][]string, responseBody []byte, timestamp time.Time) error {
+	// Encode headers as JSON
+	headersJSON, err := json.Marshal(responseHeaders)
+	if err != nil {
+		return fmt.Errorf("failed to encode response headers: %w", err)
+	}
+
+	_, err = p.db.ExecContext(ctx,
+		`INSERT INTO recorded_http_responses (connection_id, status_code, response_headers, response_body, response_body_size, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		connectionID, statusCode, string(headersJSON), responseBody, len(responseBody), timestamp)
+	if err != nil {
+		return fmt.Errorf("failed to record full HTTP response: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database connection

@@ -21,6 +21,7 @@ templ Dashboard(title string, configured bool) {
 
         <nav class="nav" aria-label="Main navigation">
             <a href="#" onclick="showTab('overview')" class="nav-link active" data-tab="overview">Overview</a>
+            <a href="#" onclick="showTab('system')" class="nav-link" data-tab="system">System</a>
             <a href="#" onclick="showTab('domains')" class="nav-link" data-tab="domains">Domains</a>
             <a href="#" onclick="showTab('security')" class="nav-link" data-tab="security">Security</a>
             <a href="#" onclick="showTab('errors')" class="nav-link" data-tab="errors">Errors</a>
@@ -85,6 +86,55 @@ templ Dashboard(title string, configured bool) {
                             </tr>
                         </thead>
                         <tbody id="security-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-system" class="tab-content">
+                <div class="stats-grid" id="system-stats">
+                    <div class="stat-card card">
+                        <div class="stat-value" id="current-connections">-</div>
+                        <div class="stat-label">Current Connections</div>
+                    </div>
+                    <div class="stat-card card">
+                        <div class="stat-value" id="cpu-usage">-</div>
+                        <div class="stat-label">CPU Usage</div>
+                    </div>
+                    <div class="stat-card card">
+                        <div class="stat-value" id="memory-usage">-</div>
+                        <div class="stat-label">Memory Usage</div>
+                    </div>
+                    <div class="stat-card card">
+                        <div class="stat-value" id="system-uptime">-</div>
+                        <div class="stat-label">System Uptime</div>
+                    </div>
+                </div>
+
+                <div class="table-container card">
+                    <h3>System Information</h3>
+                    <table id="system-info-table">
+                        <tbody>
+                            <tr>
+                                <th scope="row">CPU Cores</th>
+                                <td id="cpu-count">-</td>
+                            </tr>
+                            <tr>
+                                <th scope="row">Architecture</th>
+                                <td id="architecture">-</td>
+                            </tr>
+                            <tr>
+                                <th scope="row">Operating System</th>
+                                <td id="os-info">-</td>
+                            </tr>
+                            <tr>
+                                <th scope="row">Total Memory</th>
+                                <td id="memory-total">-</td>
+                            </tr>
+                            <tr>
+                                <th scope="row">Used Memory</th>
+                                <td id="memory-used">-</td>
+                            </tr>
+                        </tbody>
                     </table>
                 </div>
             </div>

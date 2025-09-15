@@ -559,6 +559,29 @@ func (s *SQLiteCollector) GetBandwidthStats(ctx context.Context, days int) (stat
 	return stats, nil
 }
 
+// GetSystemStats returns system statistics
+func (s *SQLiteCollector) GetSystemStats(ctx context.Context) (*SystemStats, error) {
+	systemCollector := NewSystemStatsCollector(s)
+	return systemCollector.CollectSystemStats(ctx)
+}
+
+// GetActiveConnectionCount returns the number of active connections
+func (s *SQLiteCollector) GetActiveConnectionCount() int64 {
+	query := `SELECT COUNT(*) FROM connections WHERE ended_at IS NULL`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int64
+	err := s.db.QueryRowContext(ctx, query).Scan(&count)
+	if err != nil {
+		logger.Debug("Failed to get active connection count: %v", err)
+		return 0
+	}
+
+	return count
+}
+
 // Close closes the database connection
 func (s *SQLiteCollector) Close() error {
 	if s.db != nil {

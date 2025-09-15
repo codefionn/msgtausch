@@ -94,6 +94,11 @@ func (d *DummyCollector) GetBandwidthStats(ctx context.Context, days int) (*Band
 	return &BandwidthStats{Daily: []DailyBandwidth{}, Total: 0}, nil
 }
 
+// GetSystemStats returns empty system stats for dummy collector
+func (d *DummyCollector) GetSystemStats(ctx context.Context) (*SystemStats, error) {
+	return &SystemStats{}, nil
+}
+
 // Close does nothing for dummy collector
 func (d *DummyCollector) Close() error {
 	return nil

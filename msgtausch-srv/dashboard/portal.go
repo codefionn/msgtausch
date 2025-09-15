@@ -120,6 +120,8 @@ func (p *Portal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.serveDashboard(w, r)
 	case r.URL.Path == "/api/dashboard":
 		p.serveData(w, r)
+	case r.URL.Path == "/api/dashboard/system":
+		p.serveDataSystem(w, r)
 	case r.URL.Path == "/api/domains":
 		p.serveDomainsData(w, r)
 	case r.URL.Path == "/api/security":
@@ -252,6 +254,14 @@ func (p *Portal) getData(ctx context.Context) (*Data, error) {
 	}
 	data.BandwidthStats = bandwidth
 
+	// Load system stats
+	systemStats, err := p.collector.GetSystemStats(ctx)
+	if err != nil {
+		logger.Error("Failed to load system stats: %v", err)
+		return nil, err
+	}
+	data.SystemStats = systemStats
+
 	// Set server stats
 	data.ServerStats = &ServerStats{
 		TotalServers:  len(p.proxy.GetServerInfo()),
@@ -259,6 +269,35 @@ func (p *Portal) getData(ctx context.Context) (*Data, error) {
 	}
 
 	return data, nil
+}
+
+// serveDataSystem serves dashboard statistics as JSON
+func (p *Portal) serveDataSystem(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	data, err := p.getDataSystem(ctx)
+	if err != nil {
+		logger.Error("Failed to query legacy stats: %v", err)
+		http.Error(w, "Failed to load data", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, data)
+}
+
+// getData loads dashboard data using stats collector
+func (p *Portal) getDataSystem(ctx context.Context) (*stats.SystemStats, error) {
+	if p.collector == nil {
+		logger.Debug("Stats collector not available, returning empty dashboard data")
+		return nil, fmt.Errorf("stats collector not available")
+	}
+
+	systemStats, err := p.collector.GetSystemStats(ctx)
+	if err != nil {
+		logger.Error("Failed to load system stats: %v", err)
+		return nil, err
+	}
+
+	return systemStats, nil
 }
 
 // countActiveServers counts the number of active servers

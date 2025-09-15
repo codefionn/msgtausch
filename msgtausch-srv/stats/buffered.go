@@ -462,6 +462,11 @@ func (b *BufferedCollector) GetBandwidthStats(ctx context.Context, days int) (*B
 	return b.underlying.GetBandwidthStats(ctx, days)
 }
 
+// GetSystemStats delegates to underlying collector
+func (b *BufferedCollector) GetSystemStats(ctx context.Context) (*SystemStats, error) {
+	return b.underlying.GetSystemStats(ctx)
+}
+
 // ForceFlush immediately flushes all buffered data
 func (b *BufferedCollector) ForceFlush() {
 	b.flush()

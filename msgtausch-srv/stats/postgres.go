@@ -582,6 +582,29 @@ func (p *PostgreSQLCollector) GetBandwidthStats(ctx context.Context, days int) (
 	return stats, nil
 }
 
+// GetSystemStats returns system statistics
+func (p *PostgreSQLCollector) GetSystemStats(ctx context.Context) (*SystemStats, error) {
+	systemCollector := NewSystemStatsCollector(p)
+	return systemCollector.CollectSystemStats(ctx)
+}
+
+// GetActiveConnectionCount returns the number of active connections
+func (p *PostgreSQLCollector) GetActiveConnectionCount() int64 {
+	query := `SELECT COUNT(*) FROM connections WHERE ended_at IS NULL`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int64
+	err := p.db.QueryRowContext(ctx, query).Scan(&count)
+	if err != nil {
+		logger.Debug("Failed to get active connection count: %v", err)
+		return 0
+	}
+
+	return count
+}
+
 // Close closes the database connection
 func (p *PostgreSQLCollector) Close() error {
 	if p.db != nil {

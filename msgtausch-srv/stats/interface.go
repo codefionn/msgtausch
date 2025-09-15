@@ -35,6 +35,7 @@ type Collector interface {
 	GetSecurityEvents(ctx context.Context, limit int) ([]SecurityEventInfo, error)
 	GetRecentErrors(ctx context.Context, limit int) ([]ErrorSummary, error)
 	GetBandwidthStats(ctx context.Context, days int) (*BandwidthStats, error)
+	GetSystemStats(ctx context.Context) (*SystemStats, error)
 
 	// Health check
 	HealthCheck(ctx context.Context) error
@@ -149,4 +150,17 @@ type DailyBandwidth struct {
 	BytesIn      int64  `json:"bytes_in"`
 	BytesOut     int64  `json:"bytes_out"`
 	RequestCount int64  `json:"request_count"`
+}
+
+// SystemStats provides system hardware and performance information
+type SystemStats struct {
+	CurrentConnections int64   `json:"current_connections"`
+	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
+	MemoryUsedBytes    int64   `json:"memory_used_bytes"`
+	MemoryTotalBytes   int64   `json:"memory_total_bytes"`
+	MemoryUsagePercent float64 `json:"memory_usage_percent"`
+	CPUCount           int     `json:"cpu_count"`
+	OSInfo             string  `json:"os_info"`
+	Architecture       string  `json:"architecture"`
+	UptimeSeconds      int64   `json:"uptime_seconds"`
 }

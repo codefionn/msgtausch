@@ -55,16 +55,19 @@ target "build" {
   platforms = [
     "linux/amd64",
     "linux/arm64",
-    "linux/riscv64",
-    "darwin/amd64",
-    "darwin/arm64",
-    "windows/amd64"
+    "linux/riscv64"
   ]
   output = ["./bin"]
 }
 
 target "simulation" {
   target = "simulation"
+  dockerfile = "Dockerfile"
+  output = ["type=cacheonly"]
+}
+
+target "proxy-test" {
+  target = "proxy-test"
   dockerfile = "Dockerfile"
   output = ["type=cacheonly"]
 }
@@ -97,10 +100,10 @@ target "release" {
 
 // Default group including tests and build
 group "default" {
-  targets = ["templ", "format", "test", "build"]
+  targets = ["templ", "format", "test", "proxy-test", "build"]
 }
 
 // CI group for continuous integration
 group "ci" {
-  targets = ["templ", "format", "test", "compose-intercept-test", "release"]
+  targets = ["templ", "format", "test", "compose-intercept-test", "proxy-test", "release"]
 }

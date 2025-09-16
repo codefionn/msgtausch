@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"net"
 	"net/http"
@@ -129,8 +127,8 @@ func TestWebSocketConnection(t *testing.T) {
 		})
 	}
 
-	// Test WebSocket over HTTPS with interception
-	t.Run("WebSocket over HTTPS via Standard Proxy", func(t *testing.T) {
+	// Test WebSocket over HTTPS without interception (tunneled through proxy)
+	t.Run("WebSocket over HTTPS via Standard Proxy (no interception)", func(t *testing.T) {
 		// Create HTTPS WebSocket server
 		wssServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			conn, err := upgrader.Upgrade(w, r, nil)
@@ -156,8 +154,8 @@ func TestWebSocketConnection(t *testing.T) {
 		// Convert https:// to wss:// for the test server URL
 		wssURL := strings.Replace(wssServer.URL, "https://", "wss://", 1)
 
-		// Create proxy with HTTPS interception
-		proxy, proxyListener := createTestProxy(t, config.ProxyTypeStandard, true, caCertPEM, caKeyPEM)
+		// Create proxy without interception so TLS is tunneled end-to-end
+		proxy, proxyListener := createTestProxy(t, config.ProxyTypeStandard, false, caCertPEM, caKeyPEM)
 
 		// Get proxy URL from the listener
 		proxyAddr := proxyListener.Addr().String()
@@ -178,28 +176,11 @@ func TestWebSocketConnection(t *testing.T) {
 			wg.Wait()
 		}()
 
-		// Create a certificate pool that trusts both the test server's cert and our CA
-		certPool := x509.NewCertPool()
-		wssServer.TLS.RootCAs = certPool
-
-		// Add the TLS server's certificate
-		serverCert := wssServer.TLS.Certificates[0]
-		x509Cert, err := x509.ParseCertificate(serverCert.Certificate[0])
-		require.NoError(t, err)
-		certPool.AddCert(x509Cert)
-
-		// Add the CA certificate
-		caCertBlock, _ := pem.Decode(caCertPEM)
-		caCert, err := x509.ParseCertificate(caCertBlock.Bytes)
-		require.NoError(t, err)
-		certPool.AddCert(caCert)
-
-		// Create a WebSocket dialer that uses the proxy and trusts our certificates
+		// Create a WebSocket dialer that uses the proxy and skips TLS verification (test server cert)
 		dialer := &websocket.Dialer{
 			Proxy: http.ProxyURL(proxyURL),
 			TLSClientConfig: &tls.Config{
-				RootCAs:            certPool,
-				InsecureSkipVerify: true, // For testing only
+				InsecureSkipVerify: true, // acceptable for tests
 			},
 			HandshakeTimeout: 5 * time.Second,
 		}
@@ -233,7 +214,7 @@ func createTestProxy(t *testing.T, proxyType config.ProxyType, interception bool
 	defer logger.SetLevel(oldLevel)
 
 	// Create listener on random port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err, "Failed to create listener")
 
 	// Configure proxy

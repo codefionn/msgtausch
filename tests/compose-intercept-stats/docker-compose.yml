@@ -7,21 +7,22 @@ services:
       context: ../..
       dockerfile_inline: |
         FROM golang:1.24-alpine AS builder
+        RUN apk add --no-cache git make gcc musl-dev sqlite-dev
         WORKDIR /src
         COPY go.mod go.sum ./
         RUN go install github.com/a-h/templ/cmd/templ@latest
         RUN go mod download
         COPY . .
         RUN templ generate
-        RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/msgtausch .
+        RUN CGO_ENABLED=1 go build -ldflags='-s -w' -o /out/msgtausch .
 
         FROM alpine:3.19 AS runtime-release
         RUN apk add --no-cache ca-certificates tzdata
         RUN adduser -D -H app
         USER app
         COPY --from=builder /out/msgtausch /msgtausch
-        COPY tests/compose-intercept/proxy-config.json /config/config.json
-        COPY tests/compose-intercept/ca /ca
+        COPY tests/compose-intercept-stats/proxy-config.json /config/config.json
+        COPY tests/compose-intercept-stats/ca /ca
         ENTRYPOINT ["/msgtausch"]
       target: runtime-release
     image: msgtausch:test
@@ -47,6 +48,7 @@ services:
       context: .
       dockerfile_inline: |
         FROM golang:1.24-alpine AS builder
+        RUN apk add --no-cache git make gcc musl-dev sqlite-dev
         WORKDIR /src
         COPY backend/go.mod ./
         COPY backend/server.go ./
@@ -86,12 +88,13 @@ services:
       context: .
       dockerfile_inline: |
         FROM golang:1.24-alpine AS builder
+        RUN apk add --no-cache git make gcc musl-dev sqlite-dev
         WORKDIR /src
         COPY backend/go.mod ./
         COPY backend/server.go ./
         RUN --mount=type=cache,target=/go/pkg/mod \
             --mount=type=cache,target=/root/.cache/go-build \
-            CGO_ENABLED=0 go build -o /out/backend ./server.go
+            CGO_ENABLED=1 go build -o /out/backend ./server.go
 
         FROM alpine:3.19
         RUN apk add --no-cache wget ca-certificates \
@@ -125,6 +128,22 @@ services:
     networks:
       - msgtausch-intercept-test
 
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=msgtausch_stats
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - msgtausch-intercept-test
+
   client:
     build:
       context: .
@@ -140,6 +159,8 @@ services:
       http-backend:
         condition: service_healthy
       https-backend:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     environment:
       - HTTP_PROXY=http://proxy:8080

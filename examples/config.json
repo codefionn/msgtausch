@@ -15,7 +15,8 @@
         "http": false,
         "https": true,
         "ca-file": "/path/to/ca-cert.pem",
-        "ca-key-file": "/path/to/ca-key.pem"
+        "ca-key-file": "/path/to/ca-key.pem",
+        "insecure-skip-verify": false
     },
     "portal": {
         "username": "admin",

@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"flag"
 	"fmt"
+	"math/big"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -15,6 +22,17 @@ import (
 )
 
 func main() {
+	// Generate a root CA and server certificate for HTTPS targets in the
+	// simulation. The simulation engine will use these when creating HTTPS
+	// target servers and the client will trust the CA.
+	if err := generateAndExportSimCerts(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to generate simulation certificates: %v\n", err)
+		os.Exit(1)
+	}
+	// Enable TLS targets with 50% probability per target server.
+	_ = os.Setenv("SIM_TLS_ENABLE", "1")
+	_ = os.Setenv("SIM_TLS_PROBABILITY", "0.5")
+
 	minutes := flag.Int("minutes", 0, "Run simulation for N minutes, printing only seeds that cause errors")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	stats := flag.Bool("stats", false, "Print detailed statistics for each simulation run")
@@ -227,4 +245,67 @@ func printDetailedStats(stats *msgtausch_simulation.SimulationStats) {
 		}
 	}
 	fmt.Printf("==========================================\n\n")
+}
+
+// generateAndExportSimCerts creates a root CA and a server certificate/key for
+// localhost, 127.0.0.1 and ::1, and exports them via environment variables for
+// the simulation package to consume.
+func generateAndExportSimCerts() error {
+	// Root CA
+	caPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          bigIntTimeSerial(),
+		Subject:               pkix.Name{CommonName: "msgtausch-sim Root CA"},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLenZero:        true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caPriv.PublicKey, caPriv)
+	if err != nil {
+		return err
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+
+	// Server cert
+	srvPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	srvTmpl := &x509.Certificate{
+		SerialNumber: bigIntTimeSerial(),
+		Subject:      pkix.Name{CommonName: "msgtausch-sim Server"},
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		return err
+	}
+	srvDER, err := x509.CreateCertificate(rand.Reader, srvTmpl, caCert, &srvPriv.PublicKey, caPriv)
+	if err != nil {
+		return err
+	}
+	srvCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srvDER})
+	srvKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(srvPriv)})
+
+	// Export to environment
+	_ = os.Setenv("SIM_TLS_CA_CERT_PEM", string(caPEM))
+	_ = os.Setenv("SIM_TLS_SERVER_CERT_PEM", string(srvCertPEM))
+	_ = os.Setenv("SIM_TLS_SERVER_KEY_PEM", string(srvKeyPEM))
+	return nil
+}
+
+// bigIntTimeSerial returns a unique-ish serial based on current time.
+func bigIntTimeSerial() *big.Int {
+	return big.NewInt(time.Now().UnixNano())
 }

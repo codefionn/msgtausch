@@ -1,17 +1,23 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/proxy"
 )
 
 // TestResult represents the outcome of a single test case.
@@ -32,9 +38,10 @@ type TestSuite struct {
 }
 
 func main() {
-	proxyAddr := flag.String("proxy", "127.0.0.1:8080", "Proxy address (host:port)")
+	proxyAddr := flag.String("proxy", "127.0.0.1:7451", "Proxy address (host:port)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	timeout := flag.Int("timeout", 30, "Request timeout in seconds")
+	pastebin := flag.Bool("use-pastebin", false, "Use pastebin.com for large response tests")
 	flag.Parse()
 
 	logger.SetLevel(logger.INFO)
@@ -47,12 +54,112 @@ func main() {
 		logger.Fatal("Invalid proxy address: %v", err)
 	}
 
+	repoDir := findRepoDir()
+
+	createConfig := func(interception bool) *config.Config {
+		return &config.Config{
+			Servers: []config.ServerConfig{
+				{
+					Enabled:              true,
+					Type:                 config.ProxyTypeStandard,
+					ListenAddress:        *proxyAddr,
+					InterceptorName:      "",
+					MaxConnections:       16,
+					ConnectionsPerClient: 16,
+				},
+			},
+			TimeoutSeconds:           2 * *timeout,
+			MaxConcurrentConnections: 16,
+			Classifiers:              map[string]config.Classifier{},
+			Forwards:                 []config.Forward{},
+			Interception: config.InterceptionConfig{
+				Enabled:   interception,
+				HTTP:      interception,
+				HTTPS:     interception,
+				CAFile:    filepath.Join(repoDir, "msgtausch-srv", "proxy", "testdata", "test_ca.crt"),
+				CAKeyFile: filepath.Join(repoDir, "msgtausch-srv", "proxy", "testdata", "test_ca.key"),
+			},
+		}
+	}
+
+	proxyNormal := proxy.NewProxy(createConfig(false))
+	go func() {
+		if err := proxyNormal.Start(); err != nil {
+			logger.Error("proxy (normal) stopped with error: %v", err)
+		}
+	}()
+	time.Sleep(time.Second * 5)
+	isSuccess := runTests(proxyURL, *timeout, *pastebin, false)
+	proxyNormal.Close()
+
+	proxyInterception := proxy.NewProxy(createConfig(true))
+	go func() {
+		if err := proxyInterception.Start(); err != nil {
+			logger.Error("proxy (interception) stopped with error: %v", err)
+		}
+	}()
+	time.Sleep(time.Second * 5)
+	isSuccess = runTests(proxyURL, *timeout, *pastebin, true) && isSuccess
+	proxyInterception.Close()
+
+	if !isSuccess {
+		os.Exit(1)
+	}
+}
+
+func findRepoDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		logger.Fatal("Failed to get current directory: %v", err)
+		panic(err)
+	}
+
+	isRepoDir := func(d string) bool {
+		info0, err0 := os.Stat(d + "cmd")
+		info1, err1 := os.Stat(d + "msgtausch-srv")
+		return err0 == nil && info0.IsDir() && err1 == nil && info1.IsDir()
+	}
+
+	for !isRepoDir(dir + string(os.PathSeparator)) {
+		dir = filepath.Dir(dir)
+		if strings.HasSuffix(dir, string(os.PathSeparator)) || dir == "/" || dir == "." {
+			logger.Fatal("Failed to find repository root directory")
+			panic("Failed to find repository root directory")
+		}
+	}
+
+	return dir
+}
+
+func runTests(proxyURL *url.URL, timeout int, pastebin, interception bool) bool {
+	var tlsClientConfig *tls.Config = nil
+	if interception {
+		publicRaw, err := os.ReadFile(filepath.Join(findRepoDir(), "msgtausch-srv", "proxy", "testdata", "test_ca.crt"))
+		if err != nil {
+			panic(err)
+		}
+		publicPemBlock, _ := pem.Decode(publicRaw)
+		publicCrt, err := x509.ParseCertificate(publicPemBlock.Bytes)
+		if err != nil {
+			panic(err)
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(publicCrt)
+		pool.AppendCertsFromPEM(publicRaw)
+		tlsClientConfig = &tls.Config{
+			RootCAs: pool,
+		}
+
+		logger.Debug("Loaded custom CA certificate for interception testing: Subject=%s, Issuer=%s", publicCrt.Subject, publicCrt.Issuer)
+	}
+
 	suite := &TestSuite{
 		ProxyURL: proxyURL.String(),
 		Client: &http.Client{
-			Timeout: time.Duration(*timeout) * time.Second,
+			Timeout: time.Duration(timeout) * time.Second,
 			Transport: &http.Transport{
-				Proxy: http.ProxyURL(proxyURL),
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: tlsClientConfig,
 			},
 		},
 	}
@@ -61,14 +168,24 @@ func main() {
 
 	// Run httpbin tests
 	logger.Info("Running httpbin.org tests...")
-	suite.runHTTPBinTests()
+	if pastebin {
+		suite.runHTTPBinTests()
+	}
 
 	// Run search engine tests
 	logger.Info("Running search engine tests...")
 	suite.runSearchEngineTests()
 
+	// Minimal GET to OpenAI /v1/responses to reproduce current failure
+	logger.Info("Running OpenAI /v1/responses GET test...")
+	openAIGetURL := "https://api.openai.com/v1/responses"
+	res := suite.testOpenAIGet(openAIGetURL)
+	res.Name = "openai-get-responses"
+	res.URL = openAIGetURL
+	suite.Results = append(suite.Results, res)
+
 	// Print results
-	suite.printResults()
+	return suite.printResults()
 }
 
 func (ts *TestSuite) runHTTPBinTests() {
@@ -462,7 +579,7 @@ func (ts *TestSuite) testSearchEngine(testURL string) TestResult {
 	}
 }
 
-func (ts *TestSuite) printResults() {
+func (ts *TestSuite) printResults() bool {
 	fmt.Printf("\n=== Proxy Test Results ===\n")
 	fmt.Printf("Proxy: %s\n\n", ts.ProxyURL)
 
@@ -496,8 +613,59 @@ func (ts *TestSuite) printResults() {
 
 	if failed > 0 {
 		fmt.Printf("\nSome tests failed. Check proxy configuration and connectivity.\n")
-		os.Exit(1)
+		return false
 	} else {
 		fmt.Printf("\nAll tests passed! Proxy is working correctly.\n")
+		return true
+	}
+}
+
+// testOpenAIGet performs a simple GET to OpenAI's /v1/responses endpoint.
+// Success criteria: any HTTP response is considered success (even 4xx/5xx).
+// Failure indicates a transport/proxy error reproducing the interception issue.
+func (ts *TestSuite) testOpenAIGet(testURL string) TestResult {
+	start := time.Now()
+
+	req, err := http.NewRequest("GET", testURL, nil)
+	if err != nil {
+		return TestResult{
+			Success:  false,
+			Duration: time.Since(start),
+			Error:    fmt.Sprintf("Failed to create request: %v", err),
+		}
+	}
+
+	// If API key is present, add it, but it's not required
+	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "msgtausch-proxy-test/1.0")
+
+	resp, err := ts.Client.Do(req)
+	duration := time.Since(start)
+	if err != nil {
+		return TestResult{
+			Success:  false,
+			Duration: duration,
+			Error:    fmt.Sprintf("Request failed: %v", err),
+		}
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Error("Error closing OpenAI GET response body: %v", closeErr)
+		}
+	}()
+
+	// Read a small snippet for diagnostics
+	buf := make([]byte, 1024)
+	n, _ := io.ReadFull(resp.Body, buf)
+	snippet := strings.TrimSpace(string(buf[:n]))
+	logger.Debug("OpenAI GET status=%d, content-type=%s, body-snippet=%q", resp.StatusCode, resp.Header.Get("Content-Type"), snippet)
+
+	return TestResult{
+		Success:  true, // any HTTP response indicates proxy path worked
+		Duration: duration,
+		Status:   resp.StatusCode,
 	}
 }

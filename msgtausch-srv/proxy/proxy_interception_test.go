@@ -297,11 +297,13 @@ func TestHTTPSInterceptionWithStandardProxy(t *testing.T) {
 		TimeoutSeconds: 5,
 		Classifiers:    make(map[string]config.Classifier),
 		Interception: config.InterceptionConfig{
-			Enabled:   true,
-			HTTP:      true,
-			HTTPS:     true,
-			CAFile:    caCertPath,
-			CAKeyFile: caKeyPath,
+			Enabled: true,
+			HTTP:    true,
+			HTTPS:   true,
+			// Allow MITM to connect to self-signed upstream in this test
+			InsecureSkipVerify: true,
+			CAFile:             caCertPath,
+			CAKeyFile:          caKeyPath,
 		},
 	}
 

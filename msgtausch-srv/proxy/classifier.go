@@ -256,6 +256,7 @@ func tryOptimizeOrClassifier(orClassifier *config.ClassifierOr) Classifier {
 	allDomainEqual := true
 	allDomainIs := true
 	allDomainsFile := true
+	allDomainsIsOrFile := true
 
 detectOptimizations:
 	for _, subClassifier := range orClassifier.Classifiers {
@@ -266,6 +267,7 @@ detectOptimizations:
 				domains = append(domains, c.Domain)
 				allDomainIs = false    // Mixed operations
 				allDomainsFile = false // Mixed types
+				allDomainsIsOrFile = false
 			case config.ClassifierOpIs:
 				domains = append(domains, c.Domain)
 				allDomainEqual = false // Mixed operations
@@ -275,6 +277,7 @@ detectOptimizations:
 				allDomainEqual = false
 				allDomainIs = false
 				allDomainsFile = false
+				allDomainsIsOrFile = false
 				break detectOptimizations
 			}
 		case *config.ClassifierDomainsFile:
@@ -286,6 +289,7 @@ detectOptimizations:
 			allDomainEqual = false
 			allDomainIs = false
 			allDomainsFile = false
+			allDomainsIsOrFile = false
 			break detectOptimizations
 		}
 	}
@@ -341,6 +345,47 @@ detectOptimizations:
 		return &ClassifierOrDomainsFile{
 			Trie:       trie,
 			DomainList: combinedDomains,
+		}
+	}
+
+	// If all are domain/is classifiers and we have more than one, use optimized version
+	if allDomainsIsOrFile && (len(domains) > 1 || len(domainsFilePaths) > 1) {
+		// Load and combine all domain lists from the files
+		var combinedDomains []string
+		for _, filePath := range domainsFilePaths {
+			domainsFileClassifier, err := NewClassifierDomainsFile(filePath)
+			if err != nil {
+				logger.Error("Failed to load domains file for optimization: %v (file: %s)", err, filePath)
+				// Fall back to regular OR classifier if we can't load any file
+				return nil
+			}
+			combinedDomains = append(combinedDomains, domainsFileClassifier.DomainList...)
+		}
+
+		var trieDomainFiles *ahocorasick.Trie
+		if len(combinedDomains) > 0 {
+			trieDomainFiles = ahocorasick.NewTrieBuilder().AddStrings(combinedDomains).Build()
+			logger.Debug("Created optimized Aho-Corasick OR classifier with %d domains from %d files", len(combinedDomains), len(domainsFilePaths))
+		}
+
+		classifierOrDomainsFile := &ClassifierOrDomainsFile{
+			Trie:       trieDomainFiles,
+			DomainList: combinedDomains,
+		}
+
+		var trieDomains *ahocorasick.Trie
+		if len(domains) > 0 {
+			trieDomains = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
+			logger.Debug("Created optimized Aho-Corasick OR classifier with %d is domains", len(domains))
+		}
+
+		classifierOrDomains := &ClassifierOrDomainsIs{
+			Trie:       trieDomains,
+			DomainList: domains,
+		}
+
+		return &ClassifierOr{
+			Classifiers: []Classifier{classifierOrDomainsFile, classifierOrDomains},
 		}
 	}
 

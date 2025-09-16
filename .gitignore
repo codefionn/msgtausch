@@ -76,3 +76,5 @@ msgtausch_stats*.db-wal
 test_proxy_stats*.db
 test_proxy_stats*.db-shm
 test_proxy_stats*.db-wal
+
+/proxy-test

@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 	"golang.org/x/net/proxy"
 )
 
@@ -35,18 +36,22 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 		clientIP = ip
 	}
 
-	// Start tracking the connection
-	connectionID, startErr := p.StartConnection(ctx, clientIP, host, port, "tcp")
-	if startErr != nil {
-		// We can still proceed, but stats might be incomplete.
-		logger.Error("Failed to start connection tracking: %v", startErr)
+	// Start tracking the connection if a collector is available
+	var connectionID int64
+	if p.Collector != nil {
+		cid, startErr := p.StartConnection(ctx, clientIP, host, port, "tcp")
+		if startErr != nil {
+			// We can still proceed, but stats might be incomplete.
+			logger.Error("Failed to start connection tracking: %v", startErr)
+		}
+		connectionID = cid
 	}
 
 	// Defer a function to handle connection closure for error cases.
 	// A successful connection will be wrapped, and this defer will be disarmed.
 	var connErr error
 	defer func() {
-		if connErr != nil {
+		if connErr != nil && p.Collector != nil {
 			_ = p.RecordError(ctx, connectionID, "connection", connErr.Error())
 			_ = p.EndConnection(ctx, connectionID, 0, 0, 0, connErr.Error())
 		}
@@ -168,7 +173,16 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	// 3. Connection established, proceed with TCP tunnel
 	logger.Debug("Successfully established connection to %s (via %T)", addr, selectedForward)
 	connErr = nil // Disarm the defer
-	return newTrackedConn(ctx, targetConn, p, connectionID), nil
+
+	// Choose a safe collector for tracking to avoid nil-method panics
+	var collector stats.Collector
+	if p.Collector != nil {
+		collector = p
+	} else {
+		collector = stats.NewDummyCollector()
+	}
+
+	return newTrackedConn(ctx, targetConn, collector, connectionID), nil
 }
 
 // dialSocks5 establishes a connection to the target via a SOCKS5 proxy

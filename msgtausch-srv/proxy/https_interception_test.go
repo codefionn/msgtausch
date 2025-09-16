@@ -63,11 +63,13 @@ func TestHTTPSInterception(t *testing.T) {
 		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 		Interception: config.InterceptionConfig{
-			Enabled:   true,
-			HTTP:      true,
-			HTTPS:     true,
-			CAFile:    caCertPath,
-			CAKeyFile: caKeyPath,
+			Enabled: true,
+			HTTP:    true,
+			HTTPS:   true,
+			// Allow connecting to self-signed upstream in this test
+			InsecureSkipVerify: true,
+			CAFile:             caCertPath,
+			CAKeyFile:          caKeyPath,
 		},
 	}
 

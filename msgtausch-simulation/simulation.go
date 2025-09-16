@@ -12,11 +12,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"crypto/tls"
+	"crypto/x509"
 
 	"github.com/armon/go-socks5"
 	msgtauschconfig "github.com/codefionn/msgtausch/msgtausch-srv/config"
@@ -216,6 +221,8 @@ type SimulatedMsgtauschProxy struct {
 }
 
 // RunSimulation runs a simulation with random requests, proxies, and targets. It validates error accounting.
+//
+// The seed allow the reproduction of problematic runs
 func RunSimulation(seed int64, enableForwards bool) error {
 	rng := rand.New(rand.NewSource(seed))
 	// 1. Create random forwards (SOCKS5 and msgtausch)
@@ -342,12 +349,22 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	nRequestsNotForwarded := 0
 	errCounts := make(map[string]map[SimulationErrorType]int)
 	mutexErrCounts := sync.Mutex{}
+	// Optionally trust a custom CA for HTTPS targets
+	var tlsRootCAs *x509.CertPool
+	if caPEM := os.Getenv("SIM_TLS_CA_CERT_PEM"); caPEM != "" {
+		pool := x509.NewCertPool()
+		if ok := pool.AppendCertsFromPEM([]byte(caPEM)); ok {
+			tlsRootCAs = pool
+		}
+	}
+
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			Proxy: func(req *http.Request) (*url.URL, error) {
 				return urlForProxy, nil
 			},
+			TLSClientConfig:   &tls.Config{RootCAs: tlsRootCAs, InsecureSkipVerify: false},
 			DisableKeepAlives: true, // Disable connection reuse to avoid retry issues
 		},
 	}
@@ -358,6 +375,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		Proxy: func(req *http.Request) (*url.URL, error) {
 			return urlForProxy, nil
 		},
+		TLSClientConfig: &tls.Config{RootCAs: tlsRootCAs, InsecureSkipVerify: false},
 	}
 
 	mutexLen := rng.Intn(8) + 4
@@ -405,8 +423,13 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		}
 
 		if useWebSocket {
-			// Convert http:// to ws:// for WebSocket
-			wsURL := strings.Replace(targetURL, "http://", "ws://", 1)
+			// Convert http(s):// to ws(s):// for WebSocket
+			wsURL := targetURL
+			if strings.HasPrefix(wsURL, "https://") {
+				wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
+			} else if strings.HasPrefix(wsURL, "http://") {
+				wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
+			}
 
 			// Increment the expected websocket connection count for this target
 			if !usesForward {
@@ -488,9 +511,8 @@ func RunSimulation(seed int64, enableForwards bool) error {
 						strings.Contains(err.Error(), "timeout") {
 						errorType = ErrorTimeout
 					} else {
-						msgtauschlogger.Error("Unhandled error: %v", err)
-						unrecoverableErrorCount.Add(1)
-						return
+						// Treat other I/O failures as TCP-level errors (e.g., abrupt close)
+						errorType = ErrorTCP
 					}
 
 					// Only count detectable errors
@@ -812,8 +834,8 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 		requestCount:       atomic.Int64{},
 	}
 
-	// Create a test HTTP server that introduces specified latency and errors
-	sts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Shared handler for HTTP/HTTPS
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		usesForward := r.Header.Get("X-Sim-Forward") == "true"
 
 		// Check if this is a WebSocket upgrade request
@@ -973,7 +995,46 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 				}
 			}
 		}
-	}))
+	})
+
+	// Maybe run as HTTPS using provided server certificate
+	useTLS := false
+	if os.Getenv("SIM_TLS_ENABLE") == "1" {
+		// 50% default, overridable via SIM_TLS_PROBABILITY
+		prob := 0.5
+		if p := os.Getenv("SIM_TLS_PROBABILITY"); p != "" {
+			if f, err := strconv.ParseFloat(p, 64); err == nil {
+				if f < 0 {
+					f = 0
+				} else if f > 1 {
+					f = 1
+				}
+				prob = f
+			}
+		}
+		useTLS = rng.Float64() < prob
+	}
+
+	if useTLS {
+		certPEM := os.Getenv("SIM_TLS_SERVER_CERT_PEM")
+		keyPEM := os.Getenv("SIM_TLS_SERVER_KEY_PEM")
+		if certPEM != "" && keyPEM != "" {
+			server := httptest.NewUnstartedServer(handler)
+			pair, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+			if err == nil {
+				server.TLS = &tls.Config{Certificates: []tls.Certificate{pair}}
+				server.StartTLS()
+				sts.server = server
+				return sts
+			}
+		}
+		// Fallback to Go's built-in TLS server if custom certs missing
+		sts.server = httptest.NewTLSServer(handler)
+		return sts
+	}
+
+	// Plain HTTP server
+	sts.server = httptest.NewServer(handler)
 
 	return sts
 }

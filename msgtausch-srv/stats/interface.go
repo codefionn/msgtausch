@@ -9,6 +9,7 @@ import (
 type Collector interface {
 	// Connection tracking
 	StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error)
+	StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error)
 	EndConnection(ctx context.Context, connectionID int64, bytesSent, bytesReceived int64, duration time.Duration, closeReason string) error
 
 	// Request/Response tracking
@@ -50,9 +51,35 @@ type Collector interface {
 	Close() error
 }
 
+// StreamingRecorder is an optional extension that allows streaming request bodies
+// into persistent storage without buffering the entire payload in memory.
+// Implementations should create a parent request record first, then accept
+// incremental body parts linked to that record.
+type StreamingRecorder interface {
+	// BeginRecordedHTTPRequest creates a recorded_http_requests row without body
+	// and returns its ID for subsequent body part appends.
+	BeginRecordedHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+		requestHeaders map[string][]string, timestamp time.Time) (requestID int64, err error)
+
+	// AppendRecordedHTTPRequestBodyPart stores a body chunk for the given request record.
+	// Implementations may also update the parent request_body_size atomically.
+	AppendRecordedHTTPRequestBodyPart(ctx context.Context, requestID int64, seqNo int64, data []byte, timestamp time.Time) error
+
+	// FinishRecordedHTTPRequest finalizes any bookkeeping for the recorded request.
+	// Implementations may compute/validate total size, update timestamps, etc.
+	FinishRecordedHTTPRequest(ctx context.Context, requestID int64) error
+
+	// Response streaming
+	BeginRecordedHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+		responseHeaders map[string][]string, timestamp time.Time) (responseID int64, err error)
+	AppendRecordedHTTPResponseBodyPart(ctx context.Context, responseID int64, seqNo int64, data []byte, timestamp time.Time) error
+	FinishRecordedHTTPResponse(ctx context.Context, responseID int64) error
+}
+
 // ConnectionInfo holds information about a connection
 type ConnectionInfo struct {
 	ID            int64
+	UUID          string
 	ClientIP      string
 	TargetHost    string
 	TargetPort    int

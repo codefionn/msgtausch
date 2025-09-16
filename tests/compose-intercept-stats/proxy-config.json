@@ -16,7 +16,14 @@
     "ca-key-file": "/ca/test_ca.key"
   },
   "statistics": {
-    "enabled": false
+    "enabled": true,
+    "postgres": {
+      "host": "postgres",
+      "port": 5432,
+      "database": "msgtausch_stats",
+      "username": "postgres",
+      "password": "postgres"
+    }
   }
 }
 

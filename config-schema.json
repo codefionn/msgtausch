@@ -128,6 +128,11 @@
           "description": "Whether to intercept HTTPS traffic",
           "default": false
         },
+        "insecure-skip-verify": {
+          "type": "boolean",
+          "description": "Skip TLS verification for upstream connections (useful for interception with self-signed upstreams)",
+          "default": false
+        },
         "ca-file": {
           "type": "string",
           "description": "Path to CA certificate file (for HTTPS/QUIC interceptor)"

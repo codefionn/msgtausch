@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 )
 
 // HTTPInterceptor handles interception and modification of HTTP traffic.
@@ -183,14 +184,45 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 	// Check if request should be recorded
 	shouldRecord := h.shouldRecordRequest(req)
 	var requestBody []byte
+	var streamed bool
+	var requestRecordID int64
+	var seqNo int64
 	if shouldRecord && clonedReq.Body != nil {
-		// Read the request body for recording
-		requestBody, err = io.ReadAll(clonedReq.Body)
-		if err != nil {
-			logger.Error("Failed to read request body for recording: %v", err)
-		} else {
-			// Replace the body with a reader for the actual request
-			clonedReq.Body = io.NopCloser(bytes.NewReader(requestBody))
+		// If collector supports streaming, tee the body to DB while forwarding
+		if h.proxy != nil && h.proxy.Collector != nil {
+			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+				// Build headers snapshot for metadata
+				requestHeaders := make(map[string][]string)
+				for k, v := range req.Header {
+					requestHeaders[k] = v
+				}
+				rid, berr := sr.BeginRecordedHTTPRequest(req.Context(), 0, req.Method, fullURL, req.Host, req.UserAgent(), requestHeaders, time.Now())
+				if berr == nil {
+					streamed = true
+					requestRecordID = rid
+					seqNo = 0
+					orig := clonedReq.Body
+					clonedReq.Body = newTeeReadCloser(orig, func(chunk []byte) error {
+						seqNo++
+						// store copy to avoid reuse of buffer
+						if aerr := sr.AppendRecordedHTTPRequestBodyPart(req.Context(), requestRecordID, seqNo, append([]byte(nil), chunk...), time.Now()); aerr != nil {
+							logger.Error("Error appending request body part: %v", aerr)
+						}
+						return nil
+					})
+				} else {
+					logger.Error("Failed to begin streaming recorded request: %v", berr)
+				}
+			}
+		}
+		// Fallback: buffer body fully if streaming not used
+		if !streamed {
+			requestBody, err = io.ReadAll(clonedReq.Body)
+			if err != nil {
+				logger.Error("Failed to read request body for recording: %v", err)
+			} else {
+				clonedReq.Body = io.NopCloser(bytes.NewReader(requestBody))
+			}
 		}
 	}
 
@@ -245,6 +277,17 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		}
 	}()
 
+	// If we streamed, mark the request as finished
+	if streamed {
+		if h.proxy != nil && h.proxy.Collector != nil {
+			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+				if ferr := sr.FinishRecordedHTTPRequest(req.Context(), requestRecordID); ferr != nil {
+					logger.Error("Failed to finish streaming recorded request: %v", ferr)
+				}
+			}
+		}
+	}
+
 	// Apply response hooks
 	err = h.applyResponseHooks(resp)
 	if err != nil {
@@ -253,15 +296,45 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	// Read response body for recording if needed
+	// Read/stream response body for recording if needed
 	var responseBody []byte
+	var respStreamed bool
+	var responseRecordID int64
+	var respSeq int64
 	if shouldRecord {
-		responseBody, err = io.ReadAll(resp.Body)
-		if err != nil {
-			logger.Error("Failed to read response body for recording: %v", err)
-		} else {
-			// Replace the body with a reader for the actual response
-			resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+		if h.proxy != nil && h.proxy.Collector != nil {
+			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+				// Begin streaming response record
+				responseHeaders := make(map[string][]string)
+				for k, v := range resp.Header {
+					responseHeaders[k] = v
+				}
+				rid, berr := sr.BeginRecordedHTTPResponse(req.Context(), 0, resp.StatusCode, responseHeaders, time.Now())
+				if berr == nil {
+					respStreamed = true
+					responseRecordID = rid
+					respSeq = 0
+					orig := resp.Body
+					resp.Body = newTeeReadCloser(orig, func(chunk []byte) error {
+						respSeq++
+						if aerr := sr.AppendRecordedHTTPResponseBodyPart(req.Context(), responseRecordID, respSeq, append([]byte(nil), chunk...), time.Now()); aerr != nil {
+							logger.Error("Error appending response body part: %v", aerr)
+						}
+						return nil
+					})
+				} else {
+					logger.Error("Failed to begin streaming recorded response: %v", berr)
+				}
+			}
+		}
+		// Fallback to buffering if not streaming
+		if !respStreamed {
+			responseBody, err = io.ReadAll(resp.Body)
+			if err != nil {
+				logger.Error("Failed to read response body for recording: %v", err)
+			} else {
+				resp.Body = io.NopCloser(bytes.NewReader(responseBody))
+			}
 		}
 	}
 
@@ -282,6 +355,17 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	// Finish response streaming if used
+	if respStreamed {
+		if h.proxy != nil && h.proxy.Collector != nil {
+			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+				if ferr := sr.FinishRecordedHTTPResponse(req.Context(), responseRecordID); ferr != nil {
+					logger.Error("Failed to finish streaming recorded response: %v", ferr)
+				}
+			}
+		}
+	}
+
 	// Record the full request/response if needed
 	if shouldRecord && h.proxy.Collector != nil {
 		connectionID := int64(0) // TODO: Get actual connection ID from context
@@ -298,16 +382,20 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 			responseHeaders[key] = values
 		}
 
-		// Record request
-		if err := h.proxy.Collector.RecordFullHTTPRequest(req.Context(), connectionID,
-			req.Method, fullURL, req.Host, req.UserAgent(), requestHeaders, requestBody, timestamp); err != nil {
-			logger.Error("Failed to record full HTTP request: %v", err)
+		// Record request only if we didn't stream it
+		if !streamed {
+			if err := h.proxy.Collector.RecordFullHTTPRequest(req.Context(), connectionID,
+				req.Method, fullURL, req.Host, req.UserAgent(), requestHeaders, requestBody, timestamp); err != nil {
+				logger.Error("Failed to record full HTTP request: %v", err)
+			}
 		}
 
-		// Record response
-		if err := h.proxy.Collector.RecordFullHTTPResponse(req.Context(), connectionID,
-			resp.StatusCode, responseHeaders, responseBody, timestamp); err != nil {
-			logger.Error("Failed to record full HTTP response: %v", err)
+		// Record response only if we didn't stream it
+		if !respStreamed {
+			if err := h.proxy.Collector.RecordFullHTTPResponse(req.Context(), connectionID,
+				resp.StatusCode, responseHeaders, responseBody, timestamp); err != nil {
+				logger.Error("Failed to record full HTTP response: %v", err)
+			}
 		}
 	}
 
@@ -581,6 +669,29 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 				strings.ToLower(resp.Header.Get("Upgrade")) == "websocket" {
 				logger.Debug("Detected WebSocket upgrade response")
 				isWebSocket.Store(true)
+			}
+
+			// Detect Server-Sent Events (SSE) / streaming responses
+			contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+			isEventStream := strings.Contains(contentType, "text/event-stream")
+
+			if isEventStream {
+				// For event streams, stream directly without buffering to preserve latency
+				logger.Debug("Detected event-stream response; streaming without buffering (URL: %s)", fullURL)
+				// Clear deadlines to avoid cutting long-lived streams
+				// Note: in HTTP interceptor we do not manage deadlines here; streaming directly
+				if err := resp.Write(clientConn); err != nil {
+					if err != io.EOF && !isClosedConnError(err) {
+						logger.Error("Error streaming event-stream response: %v", err)
+					}
+					return
+				}
+				if resp.Body != nil {
+					if closeErr := resp.Body.Close(); closeErr != nil {
+						logger.Error("Error closing streaming response body: %v", closeErr)
+					}
+				}
+				continue
 			}
 
 			// Read and potentially modify the body

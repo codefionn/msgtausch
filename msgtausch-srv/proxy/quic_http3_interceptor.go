@@ -2,15 +2,19 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -25,6 +29,39 @@ type QUICHTTP3Interceptor struct {
 	proxy           *Proxy                                       // Reference to proxy for creating connections
 	requestHandler  func(*http.Request) (*http.Request, error)   // Optional request handler for modifying requests
 	responseHandler func(*http.Response) (*http.Response, error) // Optional response handler for modifying responses
+}
+
+// shouldRecordRequest determines if this request should be fully recorded based on recording classifier
+func (h *QUICHTTP3Interceptor) shouldRecordRequest(req *http.Request) bool {
+	if h.proxy == nil || h.proxy.config == nil || !h.proxy.config.Statistics.Enabled {
+		return false
+	}
+
+	// Use the proxy's recording classifier
+	if h.proxy.recordingClassifier == nil {
+		return false
+	}
+
+	input := ClassifierInput{
+		host:       req.Host,
+		remotePort: 443, // Default QUIC/HTTP3 port
+	}
+
+	// Extract port from Host header if present
+	if host, port, err := net.SplitHostPort(req.Host); err == nil {
+		input.host = host
+		if portInt, err := strconv.Atoi(port); err == nil {
+			input.remotePort = uint16(portInt)
+		}
+	}
+
+	matches, err := h.proxy.recordingClassifier.Classify(input)
+	if err != nil {
+		logger.Error("Error classifying request for recording: %v", err)
+		return false
+	}
+
+	return matches
 }
 
 // NewQUICHTTP3Interceptor creates a new QUICHTTP3Interceptor with the given CA cert and key.
@@ -103,6 +140,36 @@ func (h *QUICHTTP3Interceptor) HandleQUICIntercept(conn net.PacketConn, remoteAd
 func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req *http.Request, targetHost string) {
 	logger.Debug("Intercepted HTTP/3 request: %s %s", req.Method, req.URL.Path)
 
+	// Check if request should be recorded
+	shouldRecord := h.shouldRecordRequest(req)
+	var connectionID int64
+	var requestHeaders map[string][]string
+	var requestBodyData []byte
+	requestTimestamp := time.Now()
+
+	// Extract client IP from request (HTTP/3 context)
+	clientIP := ""
+	// For HTTP/3, we might not have direct access to client IP, use a placeholder or extract from context
+	// This would need to be enhanced based on how client IP is tracked in QUIC
+
+	// Start connection tracking if recording is enabled
+	if shouldRecord && h.proxy.Collector != nil {
+		hostname := targetHost
+		if strings.Contains(targetHost, ":") {
+			hostname, _, _ = net.SplitHostPort(targetHost)
+		}
+		portStr := "443"
+		if strings.Contains(targetHost, ":") {
+			_, portStr, _ = net.SplitHostPort(targetHost)
+		}
+		port, _ := strconv.Atoi(portStr)
+		var err error
+		connectionID, err = h.proxy.Collector.StartConnection(context.Background(), clientIP, hostname, port, "quic-http3")
+		if err != nil {
+			logger.Error("Error starting connection tracking: %v", err)
+		}
+	}
+
 	// Create a modified request to forward
 	outReq := new(http.Request)
 	*outReq = *req // shallow copy
@@ -114,11 +181,45 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 		outReq.Header[k] = v
 	}
 
-	// Read and potentially modify the request body
-	var reqBodyBytes []byte
-	if req.Body != nil {
+	// Derive recording host without port
+	recHost := targetHost
+	if strings.Contains(targetHost, ":") {
+		recHost, _, _ = net.SplitHostPort(targetHost)
+	}
+
+	// Prepare request body handling (streaming if supported)
+	var streamed bool
+	var requestRecordID int64
+	var seqNo int64
+	// Copy headers snapshot early
+	requestHeaders = make(map[string][]string)
+	for key, values := range req.Header {
+		requestHeaders[key] = values
+	}
+	if shouldRecord && h.proxy != nil && h.proxy.Collector != nil && req.Body != nil {
+		if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok && connectionID > 0 {
+			id, berr := sr.BeginRecordedHTTPRequest(req.Context(), connectionID, req.Method, req.URL.String(), recHost, req.Header.Get("User-Agent"), requestHeaders, requestTimestamp)
+			if berr == nil {
+				streamed = true
+				requestRecordID = id
+				seqNo = 0
+				outReq.Body = newTeeReadCloser(req.Body, func(chunk []byte) error {
+					seqNo++
+					if aerr := sr.AppendRecordedHTTPRequestBodyPart(req.Context(), requestRecordID, seqNo, append([]byte(nil), chunk...), time.Now()); aerr != nil {
+						logger.Error("Error appending HTTP/3 request body part: %v", aerr)
+					}
+					return nil
+				})
+				// Do not set Content-Length; transport will handle framing
+			} else {
+				logger.Error("Error beginning HTTP/3 recorded request: %v", berr)
+			}
+		}
+	}
+	// Fallback to buffering if not streamed
+	if !streamed && req.Body != nil {
 		var err error
-		reqBodyBytes, err = io.ReadAll(req.Body)
+		reqBodyBytes, err := io.ReadAll(req.Body)
 		if closeErr := req.Body.Close(); closeErr != nil {
 			logger.Error("Error closing HTTP/3 request body: %v", closeErr)
 		}
@@ -127,11 +228,12 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}
-
-		// Set the modified body
 		outReq.Body = io.NopCloser(bytes.NewReader(reqBodyBytes))
 		outReq.ContentLength = int64(len(reqBodyBytes))
 		outReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(reqBodyBytes)))
+		if shouldRecord {
+			requestBodyData = reqBodyBytes
+		}
 	}
 
 	// Apply request handler if configured
@@ -162,7 +264,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 	// Create HTTP/3 client transport
 	rt := &http3.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: h.proxy.config.Interception.InsecureSkipVerify, // #nosec G402 – configurable for interception/testing
 			NextProtos:         []string{"h3"},
 		},
 	}
@@ -190,12 +292,99 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 		}
 	}()
 
-	// Read and potentially modify the response body
-	respBodyBytes, err := io.ReadAll(resp.Body)
+	// Read and potentially modify the response body (with streaming to DB when enabled)
+	var respBodyBytes []byte
+	var respStreamed bool
+	var responseRecordID int64
+	var respSeq int64
+	if shouldRecord && h.proxy.Collector != nil && connectionID > 0 {
+		if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+			// Begin streaming response
+			responseHeaders := make(map[string][]string)
+			for k, v := range resp.Header {
+				responseHeaders[k] = v
+			}
+			rid, berr := sr.BeginRecordedHTTPResponse(context.Background(), connectionID, resp.StatusCode, responseHeaders, time.Now())
+			if berr == nil {
+				respStreamed = true
+				responseRecordID = rid
+				resp.Body = newTeeReadCloser(resp.Body, func(chunk []byte) error {
+					respSeq++
+					if aerr := sr.AppendRecordedHTTPResponseBodyPart(context.Background(), responseRecordID, respSeq, append([]byte(nil), chunk...), time.Now()); aerr != nil {
+						logger.Error("Error appending HTTP/3 response body part: %v", aerr)
+					}
+					return nil
+				})
+			} else {
+				logger.Error("Error beginning HTTP/3 recorded response: %v", berr)
+			}
+		}
+	}
+
+	respBodyBytes, err = io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Error("Error reading HTTP/3 response body: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
+	}
+	if respStreamed {
+		if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+			if ferr := sr.FinishRecordedHTTPResponse(context.Background(), responseRecordID); ferr != nil {
+				logger.Error("Error finishing HTTP/3 recorded response: %v", ferr)
+			}
+		}
+	}
+
+	// Record full request/response if enabled
+	if shouldRecord && h.proxy.Collector != nil && connectionID > 0 {
+		responseTimestamp := time.Now()
+
+		// Construct full URL for recording
+		fullURL := outReq.URL.String()
+		hostname := targetHost
+		if strings.Contains(targetHost, ":") {
+			hostname, _, _ = net.SplitHostPort(targetHost)
+		}
+
+		// Finish streaming and/or fallback record
+		if streamed {
+			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+				if ferr := sr.FinishRecordedHTTPRequest(context.Background(), requestRecordID); ferr != nil {
+					logger.Error("Error finishing HTTP/3 recorded request: %v", ferr)
+				}
+			}
+		} else {
+			if err := h.proxy.Collector.RecordFullHTTPRequest(
+				context.Background(),
+				connectionID,
+				outReq.Method,
+				fullURL,
+				hostname,
+				outReq.Header.Get("User-Agent"),
+				requestHeaders,
+				requestBodyData,
+				requestTimestamp,
+			); err != nil {
+				logger.Error("Error recording full HTTP/3 request: %v", err)
+			}
+		}
+
+		// Record response
+		responseHeaders := make(map[string][]string)
+		for key, values := range resp.Header {
+			responseHeaders[key] = values
+		}
+
+		if err := h.proxy.Collector.RecordFullHTTPResponse(
+			context.Background(),
+			connectionID,
+			resp.StatusCode,
+			responseHeaders,
+			respBodyBytes,
+			responseTimestamp,
+		); err != nil {
+			logger.Error("Error recording full HTTP/3 response: %v", err)
+		}
 	}
 
 	// Apply response handler if configured

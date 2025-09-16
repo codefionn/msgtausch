@@ -720,7 +720,7 @@ func TestLoadConfigJSON_ExcludeClassifier(t *testing.T) {
 				}
 			}`,
 			expectError:    true,
-			errorSubstring: "interception exclude-classifier must be a string",
+			errorSubstring: "interception exclude-classifier must be a classifier",
 		},
 	}
 

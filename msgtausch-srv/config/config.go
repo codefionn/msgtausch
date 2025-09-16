@@ -30,14 +30,15 @@ const (
 
 // InterceptionConfig defines settings for HTTP/HTTPS traffic interception
 type InterceptionConfig struct {
-	Enabled           bool       // Whether interception is enabled
-	HTTP              bool       // Whether to intercept HTTP traffic
-	HTTPS             bool       // Whether to intercept HTTPS traffic
-	HTTPSClassifier   Classifier // Optional classifier to determine if traffic should be treated as HTTPS
-	ExcludeClassifier Classifier // Optional classifier to exclude hosts from interception
-	CAFile            string     // Path to CA certificate file (for HTTPS/QUIC interceptor)
-	CAKeyFile         string     // Path to CA private key file (for HTTPS/QUIC interceptor)
-	CAKeyPasswd       string     // Optional password for encrypted CA private key file
+	Enabled            bool       // Whether interception is enabled
+	HTTP               bool       // Whether to intercept HTTP traffic
+	HTTPS              bool       // Whether to intercept HTTPS traffic
+	HTTPSClassifier    Classifier // Optional classifier to determine if traffic should be treated as HTTPS
+	ExcludeClassifier  Classifier // Optional classifier to exclude hosts from interception
+	CAFile             string     // Path to CA certificate file (for HTTPS/QUIC interceptor)
+	CAKeyFile          string     // Path to CA private key file (for HTTPS/QUIC interceptor)
+	CAKeyPasswd        string     // Optional password for encrypted CA private key file
+	InsecureSkipVerify bool       // Whether to skip TLS certificate verification for upstream connections
 }
 
 // PortalConfig defines settings for the admin portal
@@ -816,10 +817,32 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 
 		// Parse exclude-classifier
 		if excludeClassifierVal, exists := interceptionMap["exclude-classifier"]; exists {
-			if excludeClassifier, err := parseValue[string](excludeClassifierVal); err == nil {
-				cfg.Interception.ExcludeClassifier = &ClassifierRef{Id: *excludeClassifier}
-			} else {
-				return fmt.Errorf("interception exclude-classifier must be a string: %w", err)
+			switch v := excludeClassifierVal.(type) {
+			case map[string]any:
+				parsed, err := parseClassifier(v)
+				if err != nil {
+					return err
+				}
+				cfg.Interception.ExcludeClassifier = parsed
+			case string:
+				cfg.Interception.ExcludeClassifier = &ClassifierRef{Id: v}
+			default:
+				return fmt.Errorf("interception exclude-classifier must be a classifier")
+			}
+		}
+		// Parse exclude (alias for exclude-classifier)
+		if excludeClassifierVal, exists := interceptionMap["exclude"]; exists {
+			switch v := excludeClassifierVal.(type) {
+			case map[string]any:
+				parsed, err := parseClassifier(v)
+				if err != nil {
+					return err
+				}
+				cfg.Interception.ExcludeClassifier = parsed
+			case string:
+				cfg.Interception.ExcludeClassifier = &ClassifierRef{Id: v}
+			default:
+				return fmt.Errorf("interception exclude must be a classifier")
 			}
 		}
 
@@ -847,6 +870,15 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 				cfg.Interception.CAKeyPasswd = *caKeyPasswd
 			} else {
 				return fmt.Errorf("interception ca-key-passwd must be a string: %w", err)
+			}
+		}
+
+		// Parse insecure-skip-verify
+		if insecureSkipVerifyVal, exists := interceptionMap["insecure-skip-verify"]; exists {
+			if insecureSkipVerify, err := parseValue[bool](insecureSkipVerifyVal); err == nil {
+				cfg.Interception.InsecureSkipVerify = *insecureSkipVerify
+			} else {
+				return fmt.Errorf("interception insecure-skip-verify must be a boolean: %w", err)
 			}
 		}
 	}
@@ -1215,6 +1247,15 @@ func loadConfigFromEnv(cfg *Config) {
 	// Handle global CA key password setting
 	if caKeyPasswd := os.Getenv("MSGTAUSCH_CAKEYPASSWD"); caKeyPasswd != "" {
 		cfg.Interception.CAKeyPasswd = caKeyPasswd
+	}
+
+	// Handle global insecure-skip-verify setting
+	if insecureSkipVerify := os.Getenv("MSGTAUSCH_INSECURE_SKIP_VERIFY"); insecureSkipVerify != "" {
+		if val, err := strconv.ParseBool(insecureSkipVerify); err == nil {
+			cfg.Interception.InsecureSkipVerify = val
+		} else {
+			logger.Error("Invalid value for MSGTAUSCH_INSECURE_SKIP_VERIFY: %s (must be true or false)", insecureSkipVerify)
+		}
 	}
 
 	// Handle portal configuration from environment variables

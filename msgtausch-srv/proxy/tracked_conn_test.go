@@ -130,6 +130,11 @@ func (m *mockCollector) StartConnection(ctx context.Context, clientIP, targetHos
 	return args.Get(0).(int64), args.Error(1)
 }
 
+func (m *mockCollector) StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
+	args := m.Called(ctx, connectionUUID, clientIP, targetHost, targetPort, protocol)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 func (m *mockCollector) EndConnection(ctx context.Context, connectionID int64, bytesSent, bytesReceived int64, duration time.Duration, closeReason string) error {
 	args := m.Called(ctx, connectionID, bytesSent, bytesReceived, duration, closeReason)
 	return args.Error(0)

@@ -19,6 +19,7 @@ import (
 	"github.com/codefionn/msgtausch/msgtausch-srv/dashboard"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
 	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -29,6 +30,7 @@ type contextKey struct {
 
 var clientKey = &contextKey{name: "http-client"}
 var clientIPKey = &contextKey{name: "client-ip"}
+var connectionUUIDKey = &contextKey{name: "connection-uuid"}
 
 // PEM decryption helpers moved to pem_decrypt.go to keep this file focused
 
@@ -56,6 +58,19 @@ func ClientIPFromContext(ctx context.Context) (string, bool) {
 	}
 	clientIP, ok := clientIPVal.(string)
 	return clientIP, ok
+}
+
+func WithConnectionUUID(ctx context.Context, connUUID string) context.Context {
+	return context.WithValue(ctx, connectionUUIDKey, connUUID)
+}
+
+func ConnectionUUIDFromContext(ctx context.Context) (string, bool) {
+	connUUIDVal := ctx.Value(connectionUUIDKey)
+	if connUUIDVal == nil {
+		return "", false
+	}
+	connUUID, ok := connUUIDVal.(string)
+	return connUUID, ok
 }
 
 type Server struct {
@@ -344,12 +359,16 @@ func NewProxy(cfg *config.Config) *Proxy {
 
 		switch serverCfg.Type {
 		case config.ProxyTypeHTTPS:
+			// For HTTPS proxy type, prefer configured CA files if present.
+			// If not provided, still create the server and allow tests or callers
+			// to inject an interceptor later (avoids dropping the server entirely).
 			caFile := cfg.Interception.CAFile
 			caKeyFile := cfg.Interception.CAKeyFile
 
 			if caFile == "" || caKeyFile == "" {
 				logger.Error("HTTPS interceptor requires CA certificate and key files (server %s)", serverCfg.ListenAddress)
-				continue
+				// Do not 'continue' here; keep the server so an interceptor can be injected later.
+				break
 			}
 
 			cleanCACertPath := filepath.Clean(caFile)
@@ -357,14 +376,14 @@ func NewProxy(cfg *config.Config) *Proxy {
 				absPath, err := filepath.Abs(cleanCACertPath)
 				if err != nil {
 					logger.Error("Invalid CA certificate file path: %v", err)
-					continue
+					break
 				}
 				cleanCACertPath = absPath
 			}
 			caCert, err := os.ReadFile(cleanCACertPath)
 			if err != nil {
 				logger.Error("Failed to read CA certificate file '%s': %v", cleanCACertPath, err)
-				continue
+				break
 			}
 
 			cleanCAKeyPath := filepath.Clean(caKeyFile)
@@ -372,27 +391,27 @@ func NewProxy(cfg *config.Config) *Proxy {
 				absPath, err := filepath.Abs(cleanCAKeyPath)
 				if err != nil {
 					logger.Error("Invalid CA private key file path: %v", err)
-					continue
+					break
 				}
 				cleanCAKeyPath = absPath
 			}
 			caKeyPEM, err := os.ReadFile(cleanCAKeyPath)
 			if err != nil {
 				logger.Error("Failed to read CA private key file '%s': %v", cleanCAKeyPath, err)
-				continue
+				break
 			}
 
 			// Decrypt the private key if password is provided
 			decryptedCAKey, err := decryptPEMKey(caKeyPEM, cfg.Interception.CAKeyPasswd)
 			if err != nil {
 				logger.Error("Failed to decrypt CA private key: %v", err)
-				continue
+				break
 			}
 
 			httpsInterceptor, err := NewHTTPSInterceptor(caCert, decryptedCAKey, p, nil, nil)
 			if err != nil {
 				logger.Error("Failed to create HTTPS interceptor: %v", err)
-				continue
+				break
 			}
 			server.httpsInterceptor = httpsInterceptor
 
@@ -514,9 +533,17 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 		ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
 		WriteTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			// Generate UUID for this connection
+			connUUID := uuid.New().String()
+			ctx = WithConnectionUUID(ctx, connUUID)
+
 			transport := &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					logger.Debug("DialContext: network=%s addr=%s", network, addr)
+					if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
+						logger.Debug("[%s] DialContext: network=%s addr=%s", uuid, network, addr)
+					} else {
+						logger.Debug("DialContext: network=%s addr=%s", network, addr)
+					}
 					return p.createForwardTCPClient(ctx, addr)
 				},
 				DisableKeepAlives:     false,
@@ -550,9 +577,17 @@ func (p *Server) Start() error {
 			ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
 			WriteTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+				// Generate UUID for this connection
+				connUUID := uuid.New().String()
+				ctx = WithConnectionUUID(ctx, connUUID)
+
 				transport := &http.Transport{
 					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-						logger.Debug("DialContext: network=%s addr=%s", network, addr)
+						if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
+							logger.Debug("[%s] DialContext: network=%s addr=%s", uuid, network, addr)
+						} else {
+							logger.Debug("DialContext: network=%s addr=%s", network, addr)
+						}
 						return p.createForwardTCPClient(ctx, addr)
 					},
 					DisableKeepAlives:     false,
@@ -594,9 +629,17 @@ func (p *Server) Start() error {
 			ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
 			WriteTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+				// Generate UUID for this connection
+				connUUID := uuid.New().String()
+				ctx = WithConnectionUUID(ctx, connUUID)
+
 				transport := &http.Transport{
 					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-						logger.Debug("DialContext: network=%s addr=%s", network, addr)
+						if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
+							logger.Debug("[%s] DialContext: network=%s addr=%s", uuid, network, addr)
+						} else {
+							logger.Debug("DialContext: network=%s addr=%s", network, addr)
+						}
 						return p.createForwardTCPClient(ctx, addr)
 					},
 					DisableKeepAlives:     false,
@@ -772,8 +815,14 @@ func copyWithIdleTimeout(dst, src net.Conn, timeout time.Duration) error {
 
 func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Generate UUID for this proxy connection
+	connUUID := uuid.New().String()
+	ctx = WithConnectionUUID(ctx, connUUID)
+	r = r.WithContext(ctx)
+
 	targetAddr := r.Host
-	logger.Debug("%s request for %s", r.Method, targetAddr)
+	logger.Debug("[%s] %s request for %s", connUUID, r.Method, targetAddr)
 
 	if p.proxy.portal.IsPortalRequest(r) {
 		p.proxy.portal.ServeHTTP(w, r)
@@ -836,9 +885,16 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var startErr error
 
 	if p.proxy.Collector != nil {
-		connectionID, startErr = p.proxy.Collector.StartConnection(ctx, clientIP, hostname, int(remotePort), "http")
-		if startErr != nil {
-			logger.Error("Failed to record connection start: %v", err)
+		if connUUID, ok := ConnectionUUIDFromContext(ctx); ok {
+			connectionID, startErr = p.proxy.Collector.StartConnectionWithUUID(ctx, connUUID, clientIP, hostname, int(remotePort), "http")
+			if startErr != nil {
+				logger.Error("Failed to record connection start with UUID: %v", startErr)
+			}
+		} else {
+			connectionID, startErr = p.proxy.Collector.StartConnection(ctx, clientIP, hostname, int(remotePort), "http")
+			if startErr != nil {
+				logger.Error("Failed to record connection start: %v", startErr)
+			}
 		}
 	}
 
@@ -1242,10 +1298,18 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectionID int64, _, _ string, remotePort int) {
 	targetAddr := r.Host
 
-	logger.Debug("CONNECT request for %s", targetAddr)
+	if connUUID, ok := ConnectionUUIDFromContext(r.Context()); ok {
+		logger.Debug("[%s] CONNECT request for %s", connUUID, targetAddr)
+	} else {
+		logger.Debug("CONNECT request for %s", targetAddr)
+	}
 
 	if p.shouldInterceptTunnel(r) {
-		logger.Debug("Intercepting CONNECT request for %s", targetAddr)
+		if connUUID, ok := ConnectionUUIDFromContext(r.Context()); ok {
+			logger.Debug("[%s] Intercepting CONNECT request for %s", connUUID, targetAddr)
+		} else {
+			logger.Debug("Intercepting CONNECT request for %s", targetAddr)
+		}
 
 		// First use the default port-based detection
 		isHTTPS := strings.HasSuffix(targetAddr, ":443") ||
@@ -1361,7 +1425,8 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 		return
 	}
 
-	targetConn, err := p.proxy.createForwardTCPClient(r.Context(), targetAddr)
+	// Use the server helper which safely delegates to the proxy when available
+	targetConn, err := p.createForwardTCPClient(r.Context(), targetAddr)
 
 	if err != nil {
 		logger.Error("Failed to establish connection to target %s (via %s): %v", targetAddr, r.RemoteAddr, err)
@@ -1742,6 +1807,33 @@ func (p *Proxy) Stop() error {
 		if err != nil {
 			lastErr = err
 			logger.Error("Failed to stop proxy server on %s: %v", server.serverConfig.ListenAddress, err)
+		}
+	}
+
+	return lastErr
+}
+
+func (p *Proxy) Close() error {
+	var lastErr error
+
+	// Stop all servers first
+	if err := p.Stop(); err != nil {
+		lastErr = err
+	}
+
+	// Close dashboard portal if it exists
+	if p.portal != nil {
+		if err := p.portal.Close(); err != nil {
+			lastErr = err
+			logger.Error("Failed to close dashboard portal: %v", err)
+		}
+	}
+
+	// Close statistics collector if it exists
+	if p.Collector != nil {
+		if err := p.Collector.Close(); err != nil {
+			lastErr = err
+			logger.Error("Failed to close statistics collector: %v", err)
 		}
 	}
 

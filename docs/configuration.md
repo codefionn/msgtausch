@@ -69,6 +69,7 @@ The `interception` object controls traffic interception capabilities:
 | `enabled` | `bool` | `false` | Master switch for traffic interception |
 | `http` | `bool` | `false` | Enable HTTP traffic interception |
 | `https` | `bool` | `false` | Enable HTTPS traffic interception |
+| `insecure-skip-verify` | `bool` | `false` | Skip TLS verification for upstream connections during interception (useful for self-signed upstreams in tests/dev). Set to `true` to bypass upstream TLS verification. |
 | `ca-file` | `string` | `""` | Path to CA certificate file |
 | `ca-key-file` | `string` | `""` | Path to CA private key file |
 | `ca-key-passwd` | `string` | `""` | Optional password for encrypted CA private key file |
@@ -182,6 +183,7 @@ Configuration can be overridden using environment variables with the `MSGTAUSCH_
 | `MSGTAUSCH_INTERCEPTHTTPS` | Enable HTTPS traffic interception | bool |
 | `MSGTAUSCH_CAFILE` | Path to CA certificate file | string |
 | `MSGTAUSCH_CAKEYFILE` | Path to CA private key file | string |
+| `MSGTAUSCH_INSECURE_SKIP_VERIFY` | Skip upstream TLS verification (`true`/`false`) | bool |
 | `MSGTAUSCH_CAKEYPASSWD` | Password for encrypted CA private key file | string |
 | `MSGTAUSCH_STATISTICS_ENABLED` | Enable statistics collection | bool |
 | `MSGTAUSCH_STATISTICS_BACKEND` | Statistics backend type | string |

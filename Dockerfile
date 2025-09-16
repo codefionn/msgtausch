@@ -1,8 +1,20 @@
 # syntax=docker/dockerfile:1.4
 
 # Builder base with Go toolchain
-FROM --platform=${BUILDPLATFORM} docker.io/golang:1.24-alpine AS builder
-RUN apk add --no-cache git make gcc musl-dev sqlite-dev
+FROM --platform=${BUILDPLATFORM} docker.io/golang:1.24-bookworm AS builder
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y git make libsqlite3-dev
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        apt-get install -y gcc libc6-dev; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross; \
+    elif [ "$TARGETARCH" = "arm" ]; then \
+        apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross; \
+    elif [ "$TARGETARCH" = "riscv64" ]; then \
+        apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross; \
+    else \
+        apt-get install -y gcc libc6-dev; \
+    fi && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 ENV CGO_ENABLED=1
 COPY ./go.* ./
@@ -37,6 +49,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go run cmd/simulation/main.go -minutes 1
 
+# Proxy test stage
+FROM --platform=${BUILDPLATFORM} templ-generate AS proxy-test
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go run cmd/proxy-test/main.go -proxy 127.0.0.1:8080 -timeout 10 -verbose
+
 # Build stage for cross-compilation
 FROM --platform=${BUILDPLATFORM} templ-generate AS build-dev
 ARG TARGETOS
@@ -46,9 +64,27 @@ ENV GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT}
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     mkdir -p bin && \
-    CGO_ENABLED=0 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
-    -ldflags "-X main.version=${VERSION:-dev}" \
-    github.com/codefionn/msgtausch
+    if [ "$TARGETOS" = "darwin" ] || [ "$TARGETOS" = "windows" ]; then \
+        CGO_ENABLED=0 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev}" \
+        github.com/codefionn/msgtausch; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev}" \
+        github.com/codefionn/msgtausch; \
+    elif [ "$TARGETARCH" = "arm" ]; then \
+        CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev}" \
+        github.com/codefionn/msgtausch; \
+    elif [ "$TARGETARCH" = "riscv64" ]; then \
+        CC=riscv64-linux-gnu-gcc CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev}" \
+        github.com/codefionn/msgtausch; \
+    else \
+        CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev}" \
+        github.com/codefionn/msgtausch; \
+    fi
 
 FROM --platform=${BUILDPLATFORM} templ-generate AS build-release
 ARG TARGETOS
@@ -58,9 +94,27 @@ ENV GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT}
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     mkdir -p bin && \
-    CGO_ENABLED=0 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
-    -ldflags "-X main.version=${VERSION:-dev} -s -w" \
-    github.com/codefionn/msgtausch
+    if [ "$TARGETOS" = "darwin" ] || [ "$TARGETOS" = "windows" ]; then \
+        CGO_ENABLED=0 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev} -s -w" \
+        github.com/codefionn/msgtausch; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev} -s -w" \
+        github.com/codefionn/msgtausch; \
+    elif [ "$TARGETARCH" = "arm" ]; then \
+        CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev} -s -w" \
+        github.com/codefionn/msgtausch; \
+    elif [ "$TARGETARCH" = "riscv64" ]; then \
+        CC=riscv64-linux-gnu-gcc CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev} -s -w" \
+        github.com/codefionn/msgtausch; \
+    else \
+        CGO_ENABLED=1 go build -o bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} \
+        -ldflags "-X main.version=${VERSION:-dev} -s -w" \
+        github.com/codefionn/msgtausch; \
+    fi
 
 # Runtime stage
 FROM scratch AS runtime-dev

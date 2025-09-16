@@ -96,6 +96,19 @@ func (t *testStatsCollector) StartConnection(ctx context.Context, clientIP, targ
 	return connectionID, nil
 }
 
+func (t *testStatsCollector) StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
+	id, err := t.StartConnection(ctx, clientIP, targetHost, targetPort, protocol)
+	if err != nil {
+		return 0, err
+	}
+	t.mu.Lock()
+	if conn, ok := t.connections[id]; ok {
+		conn.UUID = connectionUUID
+	}
+	t.mu.Unlock()
+	return id, nil
+}
+
 func (t *testStatsCollector) EndConnection(ctx context.Context, connectionID int64, bytesSent, bytesReceived int64, duration time.Duration, closeReason string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

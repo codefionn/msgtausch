@@ -17,12 +17,14 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 )
 
 // HTTPSInterceptor handles MITM for HTTPS traffic via CONNECT method.
@@ -84,6 +86,9 @@ func NewHTTPSInterceptor(caCertPEM, caKeyPEM []byte, proxy *Proxy, requestHandle
 	} else {
 		caKey = pkcs1Key
 	}
+
+	logger.Debug("Successfully parsed private key")
+
 	return &HTTPSInterceptor{
 		CA:              ca,
 		caCert:          caCert,
@@ -94,6 +99,39 @@ func NewHTTPSInterceptor(caCertPEM, caKeyPEM []byte, proxy *Proxy, requestHandle
 		requestHandler:  requestHandler,
 		responseHandler: responseHandler,
 	}, nil
+}
+
+// shouldRecordRequest determines if this request should be fully recorded based on recording classifier
+func (h *HTTPSInterceptor) shouldRecordRequest(req *http.Request) bool {
+	if h.proxy == nil || h.proxy.config == nil || !h.proxy.config.Statistics.Enabled {
+		return false
+	}
+
+	// Use the proxy's recording classifier
+	if h.proxy.recordingClassifier == nil {
+		return false
+	}
+
+	input := ClassifierInput{
+		host:       req.Host,
+		remotePort: 443, // Default HTTPS port
+	}
+
+	// Extract port from Host header if present
+	if host, port, err := net.SplitHostPort(req.Host); err == nil {
+		input.host = host
+		if portInt, err := strconv.Atoi(port); err == nil {
+			input.remotePort = uint16(portInt)
+		}
+	}
+
+	matches, err := h.proxy.recordingClassifier.Classify(input)
+	if err != nil {
+		logger.Error("Error classifying request for recording: %v", err)
+		return false
+	}
+
+	return matches
 }
 
 // HandleHTTPSIntercept handles an incoming CONNECT request and intercepts HTTPS traffic.
@@ -371,8 +409,25 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 		return
 	}
 
-	// Establish TLS over the raw connection
-	upstreamConn := tls.Client(rawConn, &tls.Config{InsecureSkipVerify: true})
+	// Establish TLS over the raw connection with proper configuration
+	upstreamTLSConfig := &tls.Config{
+		InsecureSkipVerify: h.proxy.config.Interception.InsecureSkipVerify, // #nosec G402 – configurable for interception/testing
+		ServerName:         hostname,
+		MinVersion:         tls.VersionTLS12,
+		MaxVersion:         tls.VersionTLS13,
+		CipherSuites: []uint16{
+			tls.TLS_AES_128_GCM_SHA256,
+			tls.TLS_AES_256_GCM_SHA384,
+			tls.TLS_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+	}
+	upstreamConn := tls.Client(rawConn, upstreamTLSConfig)
 	if err := upstreamConn.Handshake(); err != nil {
 		logger.Error("HTTPS interception failed: TLS handshake with upstream failed: %v", err)
 		if closeErr := rawConn.Close(); closeErr != nil {
@@ -404,6 +459,18 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 	// Track if this is a WebSocket connection
 	var isWebSocket atomic.Bool
 	isWebSocket.Store(false)
+
+	// Channel to share recording data between goroutines
+	type recordingData struct {
+		shouldRecord     bool
+		connectionID     int64
+		requestHeaders   map[string][]string
+		requestBodyData  []byte
+		requestTimestamp time.Time
+		req              *http.Request
+		streamed         bool
+	}
+	recordingChan := make(chan recordingData, 1)
 
 	// Client -> Upstream
 	go func() {
@@ -479,6 +546,30 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 				return
 			}
 
+			// Check if request should be recorded
+			shouldRecord := h.shouldRecordRequest(req)
+			var connectionID int64
+			var requestHeaders map[string][]string
+			var requestBodyData []byte
+			var streamed bool
+			var requestRecordID int64
+			var seqNo int64
+			requestTimestamp := time.Now()
+
+			// Start connection tracking if recording is enabled
+			if shouldRecord && h.proxy.Collector != nil {
+				portStr := "443"
+				if strings.Contains(host, ":") {
+					_, portStr, _ = net.SplitHostPort(host)
+				}
+				port, _ := strconv.Atoi(portStr)
+				var err error
+				connectionID, err = h.proxy.Collector.StartConnection(context.Background(), clientIP, hostname, port, "https")
+				if err != nil {
+					logger.Error("Error starting connection tracking: %v", err)
+				}
+			}
+
 			// Check for WebSocket upgrade request
 			if strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
 				logger.Debug("Detected WebSocket upgrade request")
@@ -494,22 +585,55 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 					}
 				}
 			} else {
-				// Regular HTTP request - read and potentially modify the body
-				var bodyData []byte
-				if req.Body != nil {
-					bodyData, err = io.ReadAll(req.Body)
+				// Regular HTTP request - prepare for recording (streaming if supported)
+				if shouldRecord {
+					requestHeaders = make(map[string][]string)
+					for key, values := range req.Header {
+						requestHeaders[key] = values
+					}
+
+					// If the collector supports streaming, record body parts via tee while forwarding
+					if h.proxy.Collector != nil {
+						if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok && connectionID > 0 {
+							id, berr := sr.BeginRecordedHTTPRequest(req.Context(), connectionID, req.Method, req.URL.String(), hostname, req.Header.Get("User-Agent"), requestHeaders, requestTimestamp)
+							if berr != nil {
+								logger.Error("Error beginning recorded HTTP request: %v", berr)
+							} else if req.Body != nil {
+								streamed = true
+								requestRecordID = id
+								seqNo = 0
+								orig := req.Body
+								req.Body = newTeeReadCloser(orig, func(chunk []byte) error {
+									seqNo++
+									// Append body chunk; ignore minor failures to avoid breaking request forwarding
+									if aerr := sr.AppendRecordedHTTPRequestBodyPart(req.Context(), requestRecordID, seqNo, append([]byte(nil), chunk...), time.Now()); aerr != nil {
+										logger.Error("Error appending request body part: %v", aerr)
+										return nil
+									}
+									return nil
+								})
+							}
+						}
+					}
+				}
+
+				// If not streaming, read and potentially modify the body (legacy behavior)
+				if !streamed && req.Body != nil {
+					bodyData, rerr := io.ReadAll(req.Body)
 					if closeErr := req.Body.Close(); closeErr != nil {
 						logger.Error("Error closing request body: %v", closeErr)
 					}
-					if err != nil {
-						logger.Error("Error reading request body: %v", err)
+					if rerr != nil {
+						logger.Error("Error reading request body: %v", rerr)
 						return
 					}
-
-					// Replace the body with our processed version
+					// Replace the body with our processed version for forwarding
 					req.Body = io.NopCloser(bytes.NewReader(bodyData))
 					req.ContentLength = int64(len(bodyData))
 					req.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyData)))
+					if shouldRecord {
+						requestBodyData = bodyData
+					}
 				}
 
 				// Apply custom request handler if configured
@@ -521,8 +645,8 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 						req = modifiedReq
 						logger.Debug("Request modified by custom handler")
 					}
-				} else if req.Body != nil {
-					logger.Debug("Request body size: %d bytes", len(bodyData))
+				} else if req.Body != nil && !streamed {
+					logger.Debug("Request body present; Content-Length: %s", req.Header.Get("Content-Length"))
 				}
 			}
 
@@ -537,6 +661,30 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 			if err != nil {
 				logger.Error("Error writing request to upstream: %v", err)
 				return
+			}
+
+			// If we streamed, finish the recorded request now
+			if streamed {
+				if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
+					if ferr := sr.FinishRecordedHTTPRequest(req.Context(), requestRecordID); ferr != nil {
+						logger.Error("Error finishing recorded HTTP request: %v", ferr)
+					}
+				}
+			}
+
+			// Send recording data to response goroutine
+			select {
+			case recordingChan <- recordingData{
+				shouldRecord:     shouldRecord,
+				connectionID:     connectionID,
+				requestHeaders:   requestHeaders,
+				requestBodyData:  requestBodyData,
+				requestTimestamp: requestTimestamp,
+				req:              req,
+				streamed:         streamed,
+			}:
+			default:
+				// Channel is full, skip this recording
 			}
 
 			// For WebSocket connections, after sending the upgrade request,
@@ -604,22 +752,142 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 
 				// After sending the upgrade response, we'll handle WebSocket protocol in the next iteration
 			} else {
-				// Regular HTTP response - read and potentially modify the body
-				var bodyData []byte
-				if resp.Body != nil {
-					bodyData, err = io.ReadAll(resp.Body)
-					if closeErr := resp.Body.Close(); closeErr != nil {
-						logger.Error("Error closing response body: %v", closeErr)
-					}
-					if err != nil {
-						logger.Error("Error reading response body: %v", err)
+				// Detect Server-Sent Events (SSE) / streaming responses
+				contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+				isEventStream := strings.Contains(contentType, "text/event-stream")
+
+				if isEventStream {
+					// For event streams, do NOT buffer the whole body; stream directly
+					logger.Debug("Detected event-stream response; streaming without buffering")
+					// Clear deadlines to avoid cutting long-lived streams
+					_ = upstreamConn.SetDeadline(time.Time{})
+					_ = tlsClientConn.SetDeadline(time.Time{})
+
+					// Skip response handler for streaming to preserve chunking and latency
+					if err := resp.Write(tlsClientConn); err != nil {
+						if err != io.EOF && !isClosedConnError(err) {
+							logger.Error("Error streaming event-stream response: %v", err)
+						}
 						return
 					}
+					if resp.Body != nil {
+						if closeErr := resp.Body.Close(); closeErr != nil {
+							logger.Error("Error closing streaming response body: %v", closeErr)
+						}
+					}
+					return
+				}
 
-					// Replace the body with our processed version
-					resp.Body = io.NopCloser(bytes.NewReader(bodyData))
-					resp.ContentLength = int64(len(bodyData))
-					resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyData)))
+				// Prepare to stream or buffer response body after recording decision
+				var bodyData []byte
+				var respStreamed bool
+				var responseRecordID int64
+
+				// Record full request/response if enabled
+				select {
+				case recording := <-recordingChan:
+					if recording.shouldRecord && h.proxy.Collector != nil && recording.connectionID > 0 {
+						responseTimestamp := time.Now()
+
+						// Construct full URL for recording
+						fullURL := recording.req.URL.String()
+						if recording.req.URL.Host == "" && recording.req.Header.Get("Host") != "" {
+							scheme := "https"
+							fullURL = fmt.Sprintf("%s://%s%s", scheme, recording.req.Header.Get("Host"), recording.req.URL.Path)
+							if recording.req.URL.RawQuery != "" {
+								fullURL += "?" + recording.req.URL.RawQuery
+							}
+						} else if recording.req.URL.Host == "" && host != "" {
+							fullURL = fmt.Sprintf("https://%s%s", host, recording.req.URL.Path)
+							if recording.req.URL.RawQuery != "" {
+								fullURL += "?" + recording.req.URL.RawQuery
+							}
+						}
+
+						// Record request only if we didn't stream it
+						if !recording.streamed {
+							if err := h.proxy.Collector.RecordFullHTTPRequest(
+								context.Background(),
+								recording.connectionID,
+								recording.req.Method,
+								fullURL,
+								hostname,
+								recording.req.Header.Get("User-Agent"),
+								recording.requestHeaders,
+								recording.requestBodyData,
+								recording.requestTimestamp,
+							); err != nil {
+								logger.Error("Error recording full HTTP request: %v", err)
+							}
+						}
+
+						// Decide response body streaming and prepare bodyData for fallback
+						var respSeq int64
+						if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok && resp.Body != nil {
+							rid, berr := sr.BeginRecordedHTTPResponse(context.Background(), recording.connectionID, resp.StatusCode, map[string][]string{}, responseTimestamp)
+							if berr == nil {
+								respStreamed = true
+								responseRecordID = rid
+								resp.Body = newTeeReadCloser(resp.Body, func(chunk []byte) error {
+									respSeq++
+									if aerr := sr.AppendRecordedHTTPResponseBodyPart(context.Background(), responseRecordID, respSeq, append([]byte(nil), chunk...), time.Now()); aerr != nil {
+										logger.Error("Error appending HTTPS response body part: %v", aerr)
+									}
+									return nil
+								})
+								bodyData, err = io.ReadAll(resp.Body)
+								if closeErr := resp.Body.Close(); closeErr != nil {
+									logger.Error("Error closing response body: %v", closeErr)
+								}
+								if err != nil {
+									logger.Error("Error reading response body: %v", err)
+									return
+								}
+								resp.Body = io.NopCloser(bytes.NewReader(bodyData))
+								resp.ContentLength = int64(len(bodyData))
+								resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyData)))
+								if ferr := sr.FinishRecordedHTTPResponse(context.Background(), responseRecordID); ferr != nil {
+									logger.Error("Error finishing recorded HTTPS response: %v", ferr)
+								}
+							} else {
+								logger.Error("Error beginning recorded HTTPS response: %v", berr)
+							}
+						} else if resp.Body != nil {
+							// Fallback: buffer response body for recording and potential handler
+							bodyData, err = io.ReadAll(resp.Body)
+							if closeErr := resp.Body.Close(); closeErr != nil {
+								logger.Error("Error closing response body: %v", closeErr)
+							}
+							if err != nil {
+								logger.Error("Error reading response body: %v", err)
+								return
+							}
+							resp.Body = io.NopCloser(bytes.NewReader(bodyData))
+							resp.ContentLength = int64(len(bodyData))
+							resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyData)))
+						}
+
+						// Record response
+						responseHeaders := make(map[string][]string)
+						for key, values := range resp.Header {
+							responseHeaders[key] = values
+						}
+
+						if !respStreamed {
+							if err := h.proxy.Collector.RecordFullHTTPResponse(
+								context.Background(),
+								recording.connectionID,
+								resp.StatusCode,
+								responseHeaders,
+								bodyData,
+								responseTimestamp,
+							); err != nil {
+								logger.Error("Error recording full HTTP response: %v", err)
+							}
+						}
+					}
+				default:
+					// No recording data available
 				}
 
 				// Apply custom response handler if configured

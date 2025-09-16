@@ -48,6 +48,7 @@ func (p *PostgreSQLCollector) initSchema() error {
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS connections (
 			id SERIAL PRIMARY KEY,
+			connection_uuid TEXT,
 			client_ip INET NOT NULL,
 			target_host TEXT NOT NULL,
 			target_port INTEGER NOT NULL,
@@ -62,6 +63,7 @@ func (p *PostgreSQLCollector) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_connections_client_ip ON connections(client_ip)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_target_host ON connections(target_host)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_started_at ON connections(started_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_uuid ON connections(connection_uuid)`,
 
 		`CREATE TABLE IF NOT EXISTS http_requests (
 			id SERIAL PRIMARY KEY,
@@ -141,6 +143,30 @@ func (p *PostgreSQLCollector) initSchema() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_connection_id ON recorded_http_responses(connection_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_timestamp ON recorded_http_responses(timestamp)`,
+
+		// New: request body parts table for streaming
+		`CREATE TABLE IF NOT EXISTS recorded_http_request_body_parts (
+            id SERIAL PRIMARY KEY,
+            request_id INTEGER NOT NULL REFERENCES recorded_http_requests(id) ON DELETE CASCADE,
+            seq_no INTEGER NOT NULL,
+            data BYTEA,
+            part_size INTEGER DEFAULT 0,
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )`,
+		`CREATE INDEX IF NOT EXISTS idx_req_body_parts_request_id ON recorded_http_request_body_parts(request_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_req_body_parts_req_seq ON recorded_http_request_body_parts(request_id, seq_no)`,
+
+		// New: response body parts table for streaming
+		`CREATE TABLE IF NOT EXISTS recorded_http_response_body_parts (
+            id SERIAL PRIMARY KEY,
+            response_id INTEGER NOT NULL REFERENCES recorded_http_responses(id) ON DELETE CASCADE,
+            seq_no INTEGER NOT NULL,
+            data BYTEA,
+            part_size INTEGER DEFAULT 0,
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )`,
+		`CREATE INDEX IF NOT EXISTS idx_resp_body_parts_response_id ON recorded_http_response_body_parts(response_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_resp_body_parts_resp_seq ON recorded_http_response_body_parts(response_id, seq_no)`,
 	}
 
 	for _, query := range queries {
@@ -149,10 +175,13 @@ func (p *PostgreSQLCollector) initSchema() error {
 		}
 	}
 
+	// Add migration for existing tables to add connection_uuid column
+	_, _ = p.db.Exec(`ALTER TABLE connections ADD COLUMN connection_uuid TEXT`)
+
 	return nil
 }
 
-// StartConnection records the start of a connection
+// StartConnection records the start of a connection (legacy method for backward compatibility)
 func (p *PostgreSQLCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
 	var id int64
 
@@ -170,6 +199,29 @@ func (p *PostgreSQLCollector) StartConnection(ctx context.Context, clientIP, tar
 		clientIPParam, targetHost, targetPort, protocol).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to record connection start: %w", err)
+	}
+	return id, nil
+}
+
+// StartConnectionWithUUID records the start of a connection with a provided UUID
+func (p *PostgreSQLCollector) StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
+	var id int64
+
+	// Handle empty IP address by using NULL
+	var clientIPParam interface{}
+	if clientIP == "" {
+		clientIPParam = nil
+	} else {
+		clientIPParam = clientIP
+	}
+
+	err := p.db.QueryRowContext(ctx,
+		`INSERT INTO connections (connection_uuid, client_ip, target_host, target_port, protocol)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		connectionUUID, clientIPParam, targetHost, targetPort, protocol,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to record connection start with UUID: %w", err)
 	}
 	return id, nil
 }
@@ -676,5 +728,100 @@ func (p *PostgreSQLCollector) Close() error {
 	if p.db != nil {
 		return p.db.Close()
 	}
+	return nil
+}
+
+// BeginRecordedHTTPResponse implements StreamingRecorder for responses
+func (p *PostgreSQLCollector) BeginRecordedHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+	responseHeaders map[string][]string, timestamp time.Time) (int64, error) {
+	headersJSON, err := json.Marshal(responseHeaders)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode response headers: %w", err)
+	}
+	var id int64
+	err = p.db.QueryRowContext(ctx,
+		`INSERT INTO recorded_http_responses (connection_id, status_code, response_headers, response_body, response_body_size, timestamp)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		connectionID, statusCode, string(headersJSON), []byte(nil), 0, timestamp,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create recorded http response: %w", err)
+	}
+	return id, nil
+}
+
+// AppendRecordedHTTPResponseBodyPart stores a streamed response body chunk
+func (p *PostgreSQLCollector) AppendRecordedHTTPResponseBodyPart(ctx context.Context, responseID, seqNo int64, data []byte, timestamp time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO recorded_http_response_body_parts (response_id, seq_no, data, part_size, timestamp)
+         VALUES ($1, $2, $3, $4, $5)`, responseID, seqNo, data, len(data), timestamp); err != nil {
+		return fmt.Errorf("insert response body part failed: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE recorded_http_responses SET response_body_size = response_body_size + $1 WHERE id = $2`, len(data), responseID); err != nil {
+		return fmt.Errorf("update response parent size failed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit response body part failed: %w", err)
+	}
+	return nil
+}
+
+// FinishRecordedHTTPResponse finalizes streaming response (no-op)
+func (p *PostgreSQLCollector) FinishRecordedHTTPResponse(ctx context.Context, responseID int64) error {
+	return nil
+}
+
+// BeginRecordedHTTPRequest implements StreamingRecorder; creates a request row without body
+func (p *PostgreSQLCollector) BeginRecordedHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+	requestHeaders map[string][]string, timestamp time.Time) (int64, error) {
+	headersJSON, err := json.Marshal(requestHeaders)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode request headers: %w", err)
+	}
+
+	var id int64
+	err = p.db.QueryRowContext(ctx,
+		`INSERT INTO recorded_http_requests (connection_id, method, url, host, user_agent, request_headers, request_body, request_body_size, timestamp)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		connectionID, method, url, host, userAgent, string(headersJSON), []byte(nil), 0, timestamp,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create recorded http request: %w", err)
+	}
+	return id, nil
+}
+
+// AppendRecordedHTTPRequestBodyPart stores a streamed body chunk and updates parent size
+func (p *PostgreSQLCollector) AppendRecordedHTTPRequestBodyPart(ctx context.Context, requestID, seqNo int64, data []byte, timestamp time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO recorded_http_request_body_parts (request_id, seq_no, data, part_size, timestamp)
+         VALUES ($1, $2, $3, $4, $5)`, requestID, seqNo, data, len(data), timestamp); err != nil {
+		return fmt.Errorf("insert body part failed: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE recorded_http_requests SET request_body_size = request_body_size + $1 WHERE id = $2`, len(data), requestID); err != nil {
+		return fmt.Errorf("update parent size failed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit body part failed: %w", err)
+	}
+	return nil
+}
+
+// FinishRecordedHTTPRequest finalizes a streaming recorded request (no-op for PostgreSQL)
+func (p *PostgreSQLCollector) FinishRecordedHTTPRequest(ctx context.Context, requestID int64) error {
 	return nil
 }

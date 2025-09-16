@@ -19,6 +19,11 @@ func (d *DummyCollector) StartConnection(ctx context.Context, clientIP, targetHo
 	return 0, nil
 }
 
+// StartConnectionWithUUID records the start of a connection with UUID (no-op)
+func (d *DummyCollector) StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
+	return 0, nil
+}
+
 // EndConnection records the end of a connection (no-op)
 func (d *DummyCollector) EndConnection(ctx context.Context, connectionID, bytesSent, bytesReceived int64, duration time.Duration, closeReason string) error {
 	return nil

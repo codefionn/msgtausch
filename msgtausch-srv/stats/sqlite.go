@@ -52,6 +52,7 @@ func (s *SQLiteCollector) initSchema() error {
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS connections (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			connection_uuid TEXT,
 			client_ip TEXT NOT NULL,
 			target_host TEXT NOT NULL,
 			target_port INTEGER NOT NULL,
@@ -66,6 +67,7 @@ func (s *SQLiteCollector) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_connections_client_ip ON connections(client_ip)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_target_host ON connections(target_host)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_started_at ON connections(started_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_uuid ON connections(connection_uuid)`,
 
 		`CREATE TABLE IF NOT EXISTS http_requests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,6 +152,32 @@ func (s *SQLiteCollector) initSchema() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_connection_id ON recorded_http_responses(connection_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_timestamp ON recorded_http_responses(timestamp)`,
+
+		// New: request body parts table for streaming request recording
+		`CREATE TABLE IF NOT EXISTS recorded_http_request_body_parts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            seq_no INTEGER NOT NULL,
+            data BLOB,
+            part_size INTEGER DEFAULT 0,
+            timestamp DATETIME NOT NULL,
+            FOREIGN KEY (request_id) REFERENCES recorded_http_requests(id) ON DELETE CASCADE
+        )`,
+		`CREATE INDEX IF NOT EXISTS idx_req_body_parts_request_id ON recorded_http_request_body_parts(request_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_req_body_parts_req_seq ON recorded_http_request_body_parts(request_id, seq_no)`,
+
+		// New: response body parts table for streaming
+		`CREATE TABLE IF NOT EXISTS recorded_http_response_body_parts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            response_id INTEGER NOT NULL,
+            seq_no INTEGER NOT NULL,
+            data BLOB,
+            part_size INTEGER DEFAULT 0,
+            timestamp DATETIME NOT NULL,
+            FOREIGN KEY (response_id) REFERENCES recorded_http_responses(id) ON DELETE CASCADE
+        )`,
+		`CREATE INDEX IF NOT EXISTS idx_resp_body_parts_response_id ON recorded_http_response_body_parts(response_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_resp_body_parts_resp_seq ON recorded_http_response_body_parts(response_id, seq_no)`,
 	}
 
 	for _, query := range queries {
@@ -158,10 +186,13 @@ func (s *SQLiteCollector) initSchema() error {
 		}
 	}
 
+	// Add migration for existing tables to add connection_uuid column
+	_, _ = s.db.Exec(`ALTER TABLE connections ADD COLUMN connection_uuid TEXT`)
+
 	return nil
 }
 
-// StartConnection records the start of a connection
+// StartConnection records the start of a connection (legacy method for backward compatibility)
 func (s *SQLiteCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
 	result, err := s.db.ExecContext(ctx,
 		`INSERT INTO connections (client_ip, target_host, target_port, protocol, started_at)
@@ -169,6 +200,24 @@ func (s *SQLiteCollector) StartConnection(ctx context.Context, clientIP, targetH
 		clientIP, targetHost, targetPort, protocol, time.Now())
 	if err != nil {
 		return 0, fmt.Errorf("failed to record connection start: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get connection ID: %w", err)
+	}
+
+	return id, nil
+}
+
+// StartConnectionWithUUID records the start of a connection with UUID
+func (s *SQLiteCollector) StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`INSERT INTO connections (connection_uuid, client_ip, target_host, target_port, protocol, started_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		connectionUUID, clientIP, targetHost, targetPort, protocol, time.Now())
+	if err != nil {
+		return 0, fmt.Errorf("failed to record connection start with UUID: %w", err)
 	}
 
 	id, err := result.LastInsertId()
@@ -655,5 +704,108 @@ func (s *SQLiteCollector) Close() error {
 	if s.db != nil {
 		return s.db.Close()
 	}
+	return nil
+}
+
+// BeginRecordedHTTPRequest implements StreamingRecorder; creates a request row without body
+func (s *SQLiteCollector) BeginRecordedHTTPRequest(ctx context.Context, connectionID int64, method, url, host, userAgent string,
+	requestHeaders map[string][]string, timestamp time.Time) (int64, error) {
+	headersJSON, err := json.Marshal(requestHeaders)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode request headers: %w", err)
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO recorded_http_requests (connection_id, method, url, host, user_agent, request_headers, request_body, request_body_size, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		connectionID, method, url, host, userAgent, string(headersJSON), []byte(nil), 0, timestamp,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create recorded http request: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get recorded request id: %w", err)
+	}
+	return id, nil
+}
+
+// AppendRecordedHTTPRequestBodyPart stores a streamed body chunk and updates parent size
+func (s *SQLiteCollector) AppendRecordedHTTPRequestBodyPart(ctx context.Context, requestID, seqNo int64, data []byte, timestamp time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO recorded_http_request_body_parts (request_id, seq_no, data, part_size, timestamp)
+         VALUES (?, ?, ?, ?, ?)`, requestID, seqNo, data, len(data), timestamp); err != nil {
+		return fmt.Errorf("insert body part failed: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE recorded_http_requests SET request_body_size = request_body_size + ? WHERE id = ?`, len(data), requestID); err != nil {
+		return fmt.Errorf("update parent size failed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit body part failed: %w", err)
+	}
+	return nil
+}
+
+// FinishRecordedHTTPRequest finalizes a streaming recorded request (no-op for SQLite)
+func (s *SQLiteCollector) FinishRecordedHTTPRequest(ctx context.Context, requestID int64) error {
+	return nil
+}
+
+// BeginRecordedHTTPResponse implements StreamingRecorder for responses
+func (s *SQLiteCollector) BeginRecordedHTTPResponse(ctx context.Context, connectionID int64, statusCode int,
+	responseHeaders map[string][]string, timestamp time.Time) (int64, error) {
+	headersJSON, err := json.Marshal(responseHeaders)
+	if err != nil {
+		return 0, fmt.Errorf("failed to encode response headers: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO recorded_http_responses (connection_id, status_code, response_headers, response_body, response_body_size, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+		connectionID, statusCode, string(headersJSON), []byte(nil), 0, timestamp,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create recorded http response: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get recorded response id: %w", err)
+	}
+	return id, nil
+}
+
+// AppendRecordedHTTPResponseBodyPart stores a streamed response body chunk
+func (s *SQLiteCollector) AppendRecordedHTTPResponseBodyPart(ctx context.Context, responseID, seqNo int64, data []byte, timestamp time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO recorded_http_response_body_parts (response_id, seq_no, data, part_size, timestamp)
+         VALUES (?, ?, ?, ?, ?)`, responseID, seqNo, data, len(data), timestamp); err != nil {
+		return fmt.Errorf("insert response body part failed: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE recorded_http_responses SET response_body_size = response_body_size + ? WHERE id = ?`, len(data), responseID); err != nil {
+		return fmt.Errorf("update response parent size failed: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit response body part failed: %w", err)
+	}
+	return nil
+}
+
+// FinishRecordedHTTPResponse finalizes streaming response (no-op)
+func (s *SQLiteCollector) FinishRecordedHTTPResponse(ctx context.Context, responseID int64) error {
 	return nil
 }

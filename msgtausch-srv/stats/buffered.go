@@ -30,25 +30,27 @@ type BufferedCollector struct {
 }
 
 type connectionData struct {
-	clientIP   string
-	targetHost string
-	targetPort int
-	protocol   string
-	startedAt  time.Time
+	connectionUUID string
+	clientIP       string
+	targetHost     string
+	targetPort     int
+	protocol       string
+	startedAt      time.Time
 }
 
 type completedConnectionData struct {
-	connectionID  int64
-	clientIP      string
-	targetHost    string
-	targetPort    int
-	protocol      string
-	startedAt     time.Time
-	endedAt       time.Time
-	bytesSent     int64
-	bytesReceived int64
-	duration      time.Duration
-	closeReason   string
+	connectionID   int64
+	connectionUUID string
+	clientIP       string
+	targetHost     string
+	targetPort     int
+	protocol       string
+	startedAt      time.Time
+	endedAt        time.Time
+	bytesSent      int64
+	bytesReceived  int64
+	duration       time.Duration
+	closeReason    string
 }
 
 type httpRequestData struct {
@@ -158,11 +160,35 @@ func (b *BufferedCollector) StartConnection(ctx context.Context, clientIP, targe
 	defer b.buffer.mu.Unlock()
 
 	b.buffer.pendingConnections[connectionID] = &connectionData{
-		clientIP:   clientIP,
-		targetHost: targetHost,
-		targetPort: targetPort,
-		protocol:   protocol,
-		startedAt:  time.Now(),
+		connectionUUID: "",
+		clientIP:       clientIP,
+		targetHost:     targetHost,
+		targetPort:     targetPort,
+		protocol:       protocol,
+		startedAt:      time.Now(),
+	}
+
+	return connectionID, nil
+}
+
+// StartConnectionWithUUID records the start of a connection with a provided UUID
+func (b *BufferedCollector) StartConnectionWithUUID(ctx context.Context, connectionUUID, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
+	// Use the underlying collector to obtain a stable connection ID
+	connectionID, err := b.underlying.StartConnectionWithUUID(ctx, connectionUUID, clientIP, targetHost, targetPort, protocol)
+	if err != nil {
+		return 0, err
+	}
+
+	b.buffer.mu.Lock()
+	defer b.buffer.mu.Unlock()
+
+	b.buffer.pendingConnections[connectionID] = &connectionData{
+		connectionUUID: connectionUUID,
+		clientIP:       clientIP,
+		targetHost:     targetHost,
+		targetPort:     targetPort,
+		protocol:       protocol,
+		startedAt:      time.Now(),
 	}
 
 	return connectionID, nil
@@ -175,17 +201,18 @@ func (b *BufferedCollector) EndConnection(ctx context.Context, connectionID, byt
 
 	if conn, exists := b.buffer.pendingConnections[connectionID]; exists {
 		b.buffer.completedConnections = append(b.buffer.completedConnections, completedConnectionData{
-			connectionID:  connectionID,
-			clientIP:      conn.clientIP,
-			targetHost:    conn.targetHost,
-			targetPort:    conn.targetPort,
-			protocol:      conn.protocol,
-			startedAt:     conn.startedAt,
-			endedAt:       time.Now(),
-			bytesSent:     bytesSent,
-			bytesReceived: bytesReceived,
-			duration:      duration,
-			closeReason:   closeReason,
+			connectionID:   connectionID,
+			connectionUUID: conn.connectionUUID,
+			clientIP:       conn.clientIP,
+			targetHost:     conn.targetHost,
+			targetPort:     conn.targetPort,
+			protocol:       conn.protocol,
+			startedAt:      conn.startedAt,
+			endedAt:        time.Now(),
+			bytesSent:      bytesSent,
+			bytesReceived:  bytesReceived,
+			duration:       duration,
+			closeReason:    closeReason,
 		})
 		delete(b.buffer.pendingConnections, connectionID)
 	}

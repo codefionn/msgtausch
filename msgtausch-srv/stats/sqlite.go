@@ -49,148 +49,17 @@ func NewSQLiteCollector(dbPath string) (*SQLiteCollector, error) {
 
 // initSchema creates the necessary tables if they don't exist
 func (s *SQLiteCollector) initSchema() error {
-	queries := []string{
-		`CREATE TABLE IF NOT EXISTS connections (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_uuid TEXT,
-			client_ip TEXT NOT NULL,
-			target_host TEXT NOT NULL,
-			target_port INTEGER NOT NULL,
-			protocol TEXT NOT NULL,
-			started_at DATETIME NOT NULL,
-			ended_at DATETIME,
-			bytes_sent INTEGER DEFAULT 0,
-			bytes_received INTEGER DEFAULT 0,
-			duration_ms INTEGER,
-			close_reason TEXT
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_connections_client_ip ON connections(client_ip)`,
-		`CREATE INDEX IF NOT EXISTS idx_connections_target_host ON connections(target_host)`,
-		`CREATE INDEX IF NOT EXISTS idx_connections_started_at ON connections(started_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_connections_uuid ON connections(connection_uuid)`,
+	logger.Debug("Initializing SQLite schema using schema-driven approach")
+	initializer := NewSchemaInitializer(s.db, "sqlite3")
 
-		`CREATE TABLE IF NOT EXISTS http_requests (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id INTEGER NOT NULL,
-			method TEXT NOT NULL,
-			url TEXT NOT NULL,
-			host TEXT NOT NULL,
-			user_agent TEXT,
-			content_length INTEGER DEFAULT 0,
-			timestamp DATETIME NOT NULL,
-			FOREIGN KEY (connection_id) REFERENCES connections(id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_http_requests_connection_id ON http_requests(connection_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_http_requests_timestamp ON http_requests(timestamp)`,
-
-		`CREATE TABLE IF NOT EXISTS http_responses (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id INTEGER NOT NULL,
-			status_code INTEGER NOT NULL,
-			content_length INTEGER DEFAULT 0,
-			timestamp DATETIME NOT NULL,
-			FOREIGN KEY (connection_id) REFERENCES connections(id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_http_responses_connection_id ON http_responses(connection_id)`,
-
-		`CREATE TABLE IF NOT EXISTS errors (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id INTEGER,
-			error_type TEXT NOT NULL,
-			error_message TEXT NOT NULL,
-			timestamp DATETIME NOT NULL,
-			FOREIGN KEY (connection_id) REFERENCES connections(id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_errors_timestamp ON errors(timestamp)`,
-
-		`CREATE TABLE IF NOT EXISTS security_events (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			client_ip TEXT NOT NULL,
-			target_host TEXT NOT NULL,
-			event_type TEXT NOT NULL,
-			reason TEXT,
-			timestamp DATETIME NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_security_events_client_ip ON security_events(client_ip)`,
-		`CREATE INDEX IF NOT EXISTS idx_security_events_timestamp ON security_events(timestamp)`,
-
-		`CREATE TABLE IF NOT EXISTS data_transfers (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id INTEGER NOT NULL,
-			bytes_sent INTEGER DEFAULT 0,
-			bytes_received INTEGER DEFAULT 0,
-			timestamp DATETIME NOT NULL,
-			FOREIGN KEY (connection_id) REFERENCES connections(id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_data_transfers_connection_id ON data_transfers(connection_id)`,
-
-		`CREATE TABLE IF NOT EXISTS recorded_http_requests (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id INTEGER NOT NULL,
-			method TEXT NOT NULL,
-			url TEXT NOT NULL,
-			host TEXT NOT NULL,
-			user_agent TEXT,
-			request_headers TEXT, -- JSON encoded headers
-			request_body BLOB,
-			request_body_size INTEGER DEFAULT 0,
-			timestamp DATETIME NOT NULL,
-			FOREIGN KEY (connection_id) REFERENCES connections(id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_recorded_http_requests_connection_id ON recorded_http_requests(connection_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_recorded_http_requests_timestamp ON recorded_http_requests(timestamp)`,
-
-		`CREATE TABLE IF NOT EXISTS recorded_http_responses (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			connection_id INTEGER NOT NULL,
-			status_code INTEGER NOT NULL,
-			response_headers TEXT, -- JSON encoded headers
-			response_body BLOB,
-			response_body_size INTEGER DEFAULT 0,
-			timestamp DATETIME NOT NULL,
-			FOREIGN KEY (connection_id) REFERENCES connections(id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_connection_id ON recorded_http_responses(connection_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_recorded_http_responses_timestamp ON recorded_http_responses(timestamp)`,
-
-		// New: request body parts table for streaming request recording
-		`CREATE TABLE IF NOT EXISTS recorded_http_request_body_parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            request_id INTEGER NOT NULL,
-            seq_no INTEGER NOT NULL,
-            data BLOB,
-            part_size INTEGER DEFAULT 0,
-            timestamp DATETIME NOT NULL,
-            FOREIGN KEY (request_id) REFERENCES recorded_http_requests(id) ON DELETE CASCADE
-        )`,
-		`CREATE INDEX IF NOT EXISTS idx_req_body_parts_request_id ON recorded_http_request_body_parts(request_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_req_body_parts_req_seq ON recorded_http_request_body_parts(request_id, seq_no)`,
-
-		// New: response body parts table for streaming
-		`CREATE TABLE IF NOT EXISTS recorded_http_response_body_parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            response_id INTEGER NOT NULL,
-            seq_no INTEGER NOT NULL,
-            data BLOB,
-            part_size INTEGER DEFAULT 0,
-            timestamp DATETIME NOT NULL,
-            FOREIGN KEY (response_id) REFERENCES recorded_http_responses(id) ON DELETE CASCADE
-        )`,
-		`CREATE INDEX IF NOT EXISTS idx_resp_body_parts_response_id ON recorded_http_response_body_parts(response_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_resp_body_parts_resp_seq ON recorded_http_response_body_parts(response_id, seq_no)`,
+	if err := initializer.ValidateAndInitialize(); err != nil {
+		return fmt.Errorf("schema initialization failed: %w", err)
 	}
 
-	for _, query := range queries {
-		if _, err := s.db.Exec(query); err != nil {
-			return fmt.Errorf("failed to execute schema query: %w", err)
-		}
-	}
-
-	// Add migration for existing tables to add connection_uuid column
-	_, _ = s.db.Exec(`ALTER TABLE connections ADD COLUMN connection_uuid TEXT`)
-
+	logger.Info("Schema initialization completed using new schema-driven approach")
 	return nil
 }
+
 
 // StartConnection records the start of a connection (legacy method for backward compatibility)
 func (s *SQLiteCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {

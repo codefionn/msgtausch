@@ -65,7 +65,7 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	var targetConn net.Conn
 	var selectedForward config.Forward = nil // Track the selected forward rule
 
-	logger.Debug("Classifying forward for %s (host=%s, port=%d)", addr, host, remotePort)
+	logger.DebugCtx(ctx, "Classifying forward for %s (host=%s, port=%d)", addr, host, remotePort)
 
 	// 1. Iterate through precompiled forwards and evaluate classifiers
 	for i, cf := range p.compiledForwards {
@@ -81,9 +81,9 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 			// For now, continue, but this could be a point to return ErrCodeForwardRuleError
 			continue // Or return immediately: return nil, err
 		}
-		logger.Debug("Forward[%d] classifier result: %t for target %s", i, matched, addr)
+		logger.DebugCtx(ctx, "Forward[%d] classifier result: %t for target %s", i, matched, addr)
 		if matched {
-			logger.Debug("Matched forward[%d] type %T for %s", i, cf.fwd, addr)
+			logger.DebugCtx(ctx, "Matched forward[%d] type %T for %s", i, cf.fwd, addr)
 			selectedForward = cf.fwd
 			break
 		}
@@ -91,7 +91,7 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 
 	// Log the final forward selection result
 	if selectedForward != nil {
-		logger.Debug("Selected forward for %s: %T", addr, selectedForward)
+		logger.DebugCtx(ctx, "Selected forward for %s: %T", addr, selectedForward)
 	} else {
 		logger.Debug("No forward rule matched for %s, using direct connection", addr)
 	}
@@ -129,7 +129,7 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	if selectedForward != nil {
 		switch fwd := selectedForward.(type) {
 		case *config.ForwardDefaultNetwork:
-			logger.Debug("Using default network forward for %s", addr)
+			logger.DebugCtx(ctx, "Using default network forward for %s", addr)
 			network := "tcp"
 			if fwd.ForceIPv4 {
 				network = "tcp4"
@@ -171,7 +171,7 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	}
 
 	// 3. Connection established, proceed with TCP tunnel
-	logger.Debug("Successfully established connection to %s (via %T)", addr, selectedForward)
+	logger.DebugCtx(ctx, "Successfully established connection to %s (via %T)", addr, selectedForward)
 	connErr = nil // Disarm the defer
 
 	// Choose a safe collector for tracking to avoid nil-method panics
@@ -260,7 +260,7 @@ func (p *Proxy) dialSocks5(ctx context.Context, dialerCtx *net.Dialer, fwd *conf
 
 // dialHttpProxy establishes a connection to the target via an HTTP/S proxy using CONNECT
 func (p *Proxy) dialHttpProxy(ctx context.Context, dialerCtx *net.Dialer, fwd *config.ForwardProxy, targetHostPort string) (net.Conn, error) {
-	logger.Debug("Dialing HTTP proxy %s to reach %s", fwd.Address, targetHostPort)
+	logger.DebugCtx(ctx, "Dialing HTTP proxy %s to reach %s", fwd.Address, targetHostPort)
 
 	// 1. Dial the proxy server itself
 	network := "tcp"

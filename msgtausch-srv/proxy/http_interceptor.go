@@ -161,7 +161,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 			fullURL += "?" + req.URL.RawQuery
 		}
 	}
-	logger.Debug("HTTP interceptor handling request to %s (URL: %s)", req.URL.String(), fullURL)
+	logger.DebugCtx(req.Context(), "HTTP interceptor handling request to %s (URL: %s)", req.URL.String(), fullURL)
 
 	// Reject CONNECT requests to prevent tunneling bypasses
 	if req.Method == http.MethodConnect {
@@ -399,7 +399,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		}
 	}
 
-	logger.Debug("HTTP interceptor completed request to %s with status %d (URL: %s)", req.URL.String(), resp.StatusCode, fullURL)
+	logger.DebugCtx(req.Context(), "HTTP interceptor completed request to %s with status %d (URL: %s)", req.URL.String(), resp.StatusCode, fullURL)
 }
 
 // HandleTCPConnection handles a raw TCP connection for HTTP interception
@@ -561,7 +561,7 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			}
 			// Store URL for response logging
 			currentURL.Store(fullURL)
-			logger.Debug("Intercepted HTTP request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
+			logger.DebugCtx(req.Context(), "Intercepted HTTP request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 
 			// Check for WebSocket upgrade request
 			if strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
@@ -737,6 +737,265 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 	// Wait for both operations to complete
 	wg.Wait()
 	logger.Debug("HTTP interceptor tunnel closed for %s", host)
+}
+
+// HandleTCPConnectionWithContext handles a raw TCP connection for HTTP interception with context for UUID logging
+func (h *HTTPInterceptor) HandleTCPConnectionWithContext(ctx context.Context, clientConn net.Conn, host string) {
+	logger.DebugCtx(ctx, "HTTP interceptor handling direct TCP connection to %s", host)
+
+	// For cleanliness, ensure we close the connection when done
+	defer func() {
+		if err := clientConn.Close(); err != nil {
+			logger.Error("Failed to close client connection: %v", err)
+		}
+	}()
+
+	// Track processed requests for debugging
+	processedRequests := 0
+
+	// Connect to the upstream server
+	upstreamConn, err := h.proxy.createForwardTCPClient(ctx, host)
+	if err != nil {
+		logger.Error("Failed to connect to upstream server %s: %v", host, err)
+		return
+	}
+	defer func() {
+		if closeErr := upstreamConn.Close(); closeErr != nil {
+			logger.Error("Failed to close upstream connection: %v", closeErr)
+		}
+	}()
+
+	logger.DebugCtx(ctx, "HTTP interceptor established connection to upstream server %s", host)
+
+	// Create atomic value to track WebSocket upgrade status
+	var isWebSocket atomic.Bool
+	var currentURL atomic.Value // Store the current request URL for response logging
+
+	// Interceptor function for request traffic
+	intercept := func(clientReader *bufio.Reader, upstreamWriter io.Writer) {
+		for {
+			// Read HTTP request
+			var req *http.Request
+			if processedRequests == 0 {
+				// For the first request, we might have TLS Client Hello
+				// Try to read a line to detect if it's an HTTP request
+				firstLine, _, err := clientReader.ReadLine()
+				if err != nil {
+					if err != io.EOF {
+						logger.Error("Error reading first line: %v", err)
+					}
+					return
+				}
+
+				// Check if it's an HTTP request line
+				firstLineStr := string(firstLine)
+				if strings.HasPrefix(firstLineStr, "GET ") ||
+					strings.HasPrefix(firstLineStr, "POST ") ||
+					strings.HasPrefix(firstLineStr, "PUT ") ||
+					strings.HasPrefix(firstLineStr, "DELETE ") ||
+					strings.HasPrefix(firstLineStr, "HEAD ") ||
+					strings.HasPrefix(firstLineStr, "OPTIONS ") ||
+					strings.HasPrefix(firstLineStr, "PATCH ") ||
+					strings.HasPrefix(firstLineStr, "CONNECT ") {
+					// It's an HTTP request, reconstruct the request
+					reqBytes := make([]byte, len(firstLine)+2)
+					copy(reqBytes, firstLine)
+					reqBytes[len(firstLine)] = '\r'
+					reqBytes[len(firstLine)+1] = '\n'
+					remainingReq := &bytes.Buffer{}
+					remainingReq.Write(reqBytes)
+
+					// Read the rest of the headers
+					for {
+						line, _, err := clientReader.ReadLine()
+						if err != nil {
+							logger.Error("Error reading request headers: %v", err)
+							return
+						}
+						remainingReq.Write(line)
+						remainingReq.WriteString("\r\n")
+						if len(line) == 0 {
+							break // End of headers
+						}
+					}
+
+					// Parse the HTTP request
+					req, err = http.ReadRequest(bufio.NewReader(remainingReq))
+					if err != nil {
+						logger.Error("Error parsing HTTP request: %v", err)
+						return
+					}
+				} else {
+					// Not an HTTP request, pass through directly
+					logger.DebugCtx(ctx, "Non-HTTP traffic detected, switching to raw tunnel mode")
+					if _, err := upstreamWriter.Write(firstLine); err != nil {
+						logger.Error("Error writing to upstream: %v", err)
+					}
+					return
+				}
+			} else {
+				// For HTTP traffic, parse the request
+				var err error
+				req, err = http.ReadRequest(clientReader)
+				if err != nil {
+					if err != io.EOF && !isClosedConnError(err) {
+						logger.Error("Error reading HTTP request: %v", err)
+					}
+					return
+				}
+			}
+
+			processedRequests++
+
+			// Construct full URL for logging
+			fullURL := req.URL.String()
+			if req.URL.Host == "" && req.Header.Get("Host") != "" {
+				scheme := "http"
+				fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
+				if req.URL.RawQuery != "" {
+					fullURL += "?" + req.URL.RawQuery
+				}
+			}
+			// Store URL for response logging
+			currentURL.Store(fullURL)
+			logger.DebugCtx(ctx, "Intercepted HTTP request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
+
+			// Check for WebSocket upgrade request
+			if strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
+				logger.DebugCtx(ctx, "Detected WebSocket upgrade request")
+				isWebSocket.Store(true)
+			}
+
+			// Apply request hooks
+			h.hookMutex.RLock()
+			for hookID, hook := range h.requestHooks {
+				if err := hook(req); err != nil {
+					logger.Error("Request hook %s failed: %v", hookID, err)
+				}
+			}
+			h.hookMutex.RUnlock()
+
+			// Forward the request to upstream
+			if err := req.Write(upstreamWriter); err != nil {
+				logger.Error("Error writing request to upstream: %v", err)
+				return
+			}
+
+			// If this is a WebSocket upgrade request, switch to raw tunneling
+			if isWebSocket.Load() {
+				logger.DebugCtx(ctx, "Switching to raw tunnel mode for WebSocket connection")
+				return
+			}
+		}
+	}
+
+	// Interceptor function for response traffic
+	interceptResponse := func(upstreamReader *bufio.Reader, clientWriter io.Writer) {
+		for {
+			// If we're in WebSocket mode, don't parse HTTP responses
+			if isWebSocket.Load() {
+				logger.DebugCtx(ctx, "In WebSocket mode, skipping HTTP response parsing")
+				return
+			}
+
+			// Read HTTP response
+			resp, err := http.ReadResponse(upstreamReader, nil)
+			if err != nil {
+				if err != io.EOF && !isClosedConnError(err) {
+					logger.Error("Error reading HTTP response: %v", err)
+				}
+				return
+			}
+
+			// Log response with URL context
+			fullURL := "unknown"
+			if storedURL := currentURL.Load(); storedURL != nil {
+				fullURL = storedURL.(string)
+			}
+			logger.DebugCtx(ctx, "Intercepted HTTP response with status: %s (URL: %s)", resp.Status, fullURL)
+
+			// Check for WebSocket upgrade response
+			if resp.StatusCode == http.StatusSwitchingProtocols &&
+				strings.ToLower(resp.Header.Get("Upgrade")) == "websocket" {
+				logger.DebugCtx(ctx, "Detected WebSocket upgrade response, switching to raw tunnel mode")
+				isWebSocket.Store(true)
+			}
+
+			// Apply response hooks
+			h.hookMutex.RLock()
+			for hookID, hook := range h.responseHooks {
+				if err := hook(resp); err != nil {
+					logger.Error("Response hook %s failed: %v", hookID, err)
+				}
+			}
+			h.hookMutex.RUnlock()
+
+			// Forward the response to client
+			if err := resp.Write(clientWriter); err != nil {
+				resp.Body.Close()
+				logger.Error("Error writing response to client: %v", err)
+				return
+			}
+
+			// Close the response body after writing
+			resp.Body.Close()
+
+			// If this is a WebSocket upgrade response, switch to raw tunneling
+			if isWebSocket.Load() {
+				logger.DebugCtx(ctx, "Switching to raw tunnel mode after WebSocket upgrade response")
+				return
+			}
+		}
+	}
+
+	// Start the bidirectional data flow
+	var wg sync.WaitGroup
+
+	// Handle client to upstream (requests)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("Panic in request interceptor: %v", r)
+			}
+		}()
+
+		clientReader := bufio.NewReader(clientConn)
+
+		// Start request interception
+		intercept(clientReader, upstreamConn)
+
+		// After interception ends, continue with raw tunneling if needed
+		if _, err := io.Copy(upstreamConn, clientReader); err != nil && !isClosedConnError(err) {
+			logger.Error("Error copying client to upstream: %v", err)
+		}
+	}()
+
+	// Handle upstream to client (responses)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("Panic in response interceptor: %v", r)
+			}
+		}()
+
+		upstreamReader := bufio.NewReader(upstreamConn)
+
+		// Start response interception
+		interceptResponse(upstreamReader, clientConn)
+
+		// After interception ends, continue with raw tunneling if needed
+		if _, err := io.Copy(clientConn, upstreamReader); err != nil && !isClosedConnError(err) {
+			logger.Error("Error copying upstream to client: %v", err)
+		}
+	}()
+
+	// Wait for both operations to complete
+	wg.Wait()
+	logger.DebugCtx(ctx, "HTTP interceptor tunnel closed for %s", host)
 }
 
 // removeHopByHopHeaders removes hop-by-hop headers according to RFC 2616

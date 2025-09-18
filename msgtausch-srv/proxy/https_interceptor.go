@@ -523,7 +523,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 				} else if req.URL.Host == "" && host != "" {
 					fullURL = fmt.Sprintf("https://%s%s", host, req.URL.Path)
 				}
-				logger.Debug("Intercepted HTTPS request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
+				logger.DebugCtx(req.Context(), "Intercepted HTTPS request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 			}
 
 			// Reject CONNECT requests to prevent tunneling bypasses

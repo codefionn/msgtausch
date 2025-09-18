@@ -257,6 +257,9 @@ func NewProxy(cfg *config.Config) *Proxy {
 		servers: make([]*Server, 0, len(cfg.Servers)),
 	}
 
+	// Set up logger to extract connection UUIDs from context
+	logger.ConnectionUUIDExtractor = ConnectionUUIDFromContext
+
 	p.CompileClassifiers()
 
 	if cfg.Statistics.Enabled {
@@ -822,7 +825,7 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 
 	targetAddr := r.Host
-	logger.Debug("[%s] %s request for %s", connUUID, r.Method, targetAddr)
+	logger.DebugCtx(ctx, "%s request for %s", r.Method, targetAddr)
 
 	if p.proxy.portal.IsPortalRequest(r) {
 		p.proxy.portal.ServeHTTP(w, r)
@@ -838,7 +841,7 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 
 	if isWebSocketUpgrade {
-		logger.Debug("WebSocket upgrade detected for %s", host)
+		logger.DebugCtx(ctx, "WebSocket upgrade detected for %s", host)
 	}
 
 	var remotePort uint16
@@ -846,11 +849,11 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// If parsing fails, use the original host as hostname (it might not have a port)
 		hostname = host
-		logger.Debug("No port found in host, using default: %s", host)
+		logger.DebugCtx(ctx, "No port found in host, using default: %s", host)
 	} else {
 		port, err := strconv.ParseUint(portStr, 10, 16)
 		if err != nil {
-			logger.Error("Error parsing port: %v", err)
+			logger.ErrorCtx(ctx, "Error parsing port: %v", err)
 		} else {
 			remotePort = uint16(port)
 		}
@@ -899,10 +902,10 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !p.isHostAllowed(hostname, clientIP, remotePort) {
-		logger.Warn("Host not allowed: %s", host)
+		logger.WarnCtx(ctx, "Host not allowed: %s", host)
 		if p.proxy.Collector != nil {
 			if err := p.proxy.Collector.RecordBlockedRequest(ctx, clientIP, hostname, "host_not_allowed"); err != nil {
-				logger.Error("Failed to record blocked request: %v", err)
+				logger.ErrorCtx(ctx, "Failed to record blocked request: %v", err)
 			}
 		}
 		http.Error(w, "Host not allowed", http.StatusForbidden)
@@ -914,7 +917,7 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	if p.proxy.Collector != nil {
 		if err := p.proxy.Collector.RecordAllowedRequest(ctx, clientIP, hostname); err != nil {
-			logger.Error("Failed to record allowed request: %v", err)
+			logger.ErrorCtx(ctx, "Failed to record allowed request: %v", err)
 		}
 	}
 
@@ -925,7 +928,7 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	client, ok := ClientFromContext(r.Context())
 	if !ok || client == nil {
-		logger.Error("No http.Client found in request context")
+		logger.ErrorCtx(ctx, "No http.Client found in request context")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -959,13 +962,13 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
 		isWebSocketRequest = true
-		logger.Debug("Detected WebSocket upgrade request to %s", targetURL)
+		logger.DebugCtx(ctx, "Detected WebSocket upgrade request to %s", targetURL)
 	}
 
 	isProxiedWebSocket := false
 	if r.Header.Get("Sec-WebSocket-Key") != "" && r.Header.Get("Sec-WebSocket-Version") != "" {
 		isProxiedWebSocket = true
-		logger.Debug("Detected proxied WebSocket request to %s", targetURL)
+		logger.DebugCtx(ctx, "Detected proxied WebSocket request to %s", targetURL)
 	}
 
 	skip := map[string]struct{}{
@@ -1037,7 +1040,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	if p.isHTTPInterceptionEnabled() && p.httpInterceptor != nil {
 		err := p.httpInterceptor.applyRequestHooks(req)
 		if err != nil {
-			logger.Error("Failed to apply HTTP request hooks: %v", err)
+			logger.ErrorCtx(ctx, "Failed to apply HTTP request hooks: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1045,7 +1048,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Error("Failed to forward request to %s: %v", targetHost, err)
+		logger.ErrorCtx(ctx, "Failed to forward request to %s: %v", targetHost, err)
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 			http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 		} else {
@@ -1058,14 +1061,14 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			logger.Error("Error closing response body: %v", closeErr)
+			logger.ErrorCtx(ctx, "Error closing response body: %v", closeErr)
 		}
 	}()
 
 	if p.isHTTPInterceptionEnabled() && p.httpInterceptor != nil {
 		err := p.httpInterceptor.applyResponseHooks(resp)
 		if err != nil {
-			logger.Error("Failed to apply HTTP response hooks: %v", err)
+			logger.ErrorCtx(ctx, "Failed to apply HTTP response hooks: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1098,7 +1101,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 
 	if p.proxy.Collector != nil && connectionID > 0 {
 		responseHeaderSize := estimateHTTPResponseHeaderSize(resp)
-		logger.Debug("Recording HTTP response for connectionID=%d status=%d", connectionID, resp.StatusCode)
+		logger.DebugCtx(r.Context(), "Recording HTTP response for connectionID=%d status=%d", connectionID, resp.StatusCode)
 		if err := p.proxy.Collector.RecordHTTPResponseWithHeaders(r.Context(), connectionID, resp.StatusCode, resp.ContentLength, responseHeaderSize); err != nil {
 			logger.Error("Failed to record HTTP response: %v", err)
 		}
@@ -1110,7 +1113,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 			contentLength = 0
 		}
 		requestHeaderSize := estimateHTTPRequestHeaderSize(r)
-		logger.Debug("Recording HTTP request for connectionID=%d method=%s url=%s", connectionID, r.Method, targetURL)
+		logger.DebugCtx(ctx, "Recording HTTP request for connectionID=%d method=%s url=%s", connectionID, r.Method, targetURL)
 		if err := p.proxy.Collector.RecordHTTPRequestWithHeaders(ctx, connectionID, r.Method, targetURL, targetHost, r.UserAgent(), contentLength, requestHeaderSize); err != nil {
 			logger.Error("Failed to record HTTP request: %v", err)
 		}
@@ -1297,19 +1300,12 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 
 func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectionID int64, _, _ string, remotePort int) {
 	targetAddr := r.Host
+	ctx := r.Context()
 
-	if connUUID, ok := ConnectionUUIDFromContext(r.Context()); ok {
-		logger.Debug("[%s] CONNECT request for %s", connUUID, targetAddr)
-	} else {
-		logger.Debug("CONNECT request for %s", targetAddr)
-	}
+	logger.DebugCtx(ctx, "CONNECT request for %s", targetAddr)
 
 	if p.shouldInterceptTunnel(r) {
-		if connUUID, ok := ConnectionUUIDFromContext(r.Context()); ok {
-			logger.Debug("[%s] Intercepting CONNECT request for %s", connUUID, targetAddr)
-		} else {
-			logger.Debug("Intercepting CONNECT request for %s", targetAddr)
-		}
+		logger.DebugCtx(ctx, "Intercepting CONNECT request for %s", targetAddr)
 
 		// First use the default port-based detection
 		isHTTPS := strings.HasSuffix(targetAddr, ":443") ||
@@ -1331,32 +1327,32 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 
 			classifierResult, err := p.httpsClassifier.Classify(classifierInput)
 			if err != nil {
-				logger.Warn("Error evaluating HTTPS classifier for %s: %v, falling back to default detection", targetAddr, err)
+				logger.WarnCtx(ctx, "Error evaluating HTTPS classifier for %s: %v, falling back to default detection", targetAddr, err)
 			} else {
-				logger.Debug("HTTPS classifier result for %s: %v (default detection: %v)", targetAddr, classifierResult, isHTTPS)
+				logger.DebugCtx(ctx, "HTTPS classifier result for %s: %v (default detection: %v)", targetAddr, classifierResult, isHTTPS)
 				isHTTPS = classifierResult
 			}
 		}
 
-		logger.Debug("Protocol detection: isHTTPS=%v, targetAddr=%s, URL=%s, Scheme=%s",
+		logger.DebugCtx(ctx, "Protocol detection: isHTTPS=%v, targetAddr=%s, URL=%s, Scheme=%s",
 			isHTTPS, targetAddr, r.URL.String(), r.URL.Scheme)
 
-		logger.Debug("HTTPS interception enabled: %v, interceptor: %v",
+		logger.DebugCtx(ctx, "HTTPS interception enabled: %v, interceptor: %v",
 			p.isHTTPSInterceptionEnabled(), p.httpsInterceptor != nil)
 
 		// If the target is HTTPS but HTTPS interception is disabled/not available,
 		// do NOT pass the tunnel to the HTTP interceptor. Fall through to raw tunneling.
 		if isHTTPS {
 			if p.isHTTPSInterceptionEnabled() {
-				logger.Debug("HTTPS interception for address: %s", targetAddr)
+				logger.DebugCtx(ctx, "HTTPS interception for address: %s", targetAddr)
 				if p.httpsInterceptor != nil {
-					logger.Debug("Calling HTTPS interceptor for %s", targetAddr)
+					logger.DebugCtx(ctx, "Calling HTTPS interceptor for %s", targetAddr)
 					p.httpsInterceptor.HandleHTTPSIntercept(w, r)
 					return
 				}
 				logger.Error("HTTPS interception requested but interceptor not initialized")
 			} else {
-				logger.Debug("HTTPS detected for %s but HTTPS interception disabled; using raw CONNECT tunnel", targetAddr)
+				logger.DebugCtx(ctx, "HTTPS detected for %s but HTTPS interception disabled; using raw CONNECT tunnel", targetAddr)
 			}
 		} else if p.isHTTPInterceptionEnabled() {
 			hj, ok := w.(http.Hijacker)
@@ -1399,7 +1395,7 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 			}
 
 			if p.httpInterceptor != nil {
-				p.httpInterceptor.HandleTCPConnection(clientConn, targetAddr)
+				p.httpInterceptor.HandleTCPConnectionWithContext(ctx, clientConn, targetAddr)
 				return
 			} else {
 				logger.Error("HTTP interception requested but interceptor not initialized")
@@ -1628,7 +1624,7 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 
 func (p *Server) shouldInterceptTunnel(r *http.Request) bool {
 	if p.httpsInterceptor == nil && p.httpInterceptor == nil {
-		logger.Debug("No interceptors configured")
+		logger.DebugCtx(r.Context(), "No interceptors configured")
 		return false
 	}
 

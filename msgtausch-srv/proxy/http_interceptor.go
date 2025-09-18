@@ -1004,14 +1004,12 @@ func removeHopByHopHeaders(header http.Header) {
 	// Check if this is a WebSocket upgrade request
 	isWebSocketUpgrade := strings.ToLower(header.Get("Upgrade")) == "websocket"
 
-	// List of hop-by-hop headers from RFC 2616
+	// According to RFC 7230, only proxy-specific headers should be removed
+	// We preserve Transfer-Encoding, TE, Trailer, and Keep-Alive for proper HTTP semantics
 	hopByHopHeaders := []string{
-		"Keep-Alive",
 		"Proxy-Authenticate",
 		"Proxy-Authorization",
-		"TE",
-		"Trailers",
-		"Transfer-Encoding",
+		// Note: Keep-Alive, TE, Trailers, and Transfer-Encoding are preserved
 	}
 
 	// For WebSocket upgrades, preserve Connection and Upgrade headers

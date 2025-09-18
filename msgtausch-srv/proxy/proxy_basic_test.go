@@ -409,16 +409,15 @@ func TestHTTP2ViaConnect(t *testing.T) {
 // TestForwardRequestHeaderSkipping verifies that hop-by-hop and proxy-specific headers
 // are correctly skipped when forwarding requests.
 func TestForwardRequestHeaderSkipping(t *testing.T) {
+	// Only proxy-specific headers should be skipped, per RFC 7230
+	// Transfer-Encoding, TE, Trailer, and Keep-Alive are preserved for proper HTTP semantics
 	skippedHeaders := map[string]struct{}{
 		"Proxy-Connection":    {},
 		"Connection":          {},
-		"Keep-Alive":          {},
 		"Proxy-Authenticate":  {},
 		"Proxy-Authorization": {},
-		"Te":                  {},
-		"Trailer":             {},
-		"Transfer-Encoding":   {},
 		"Upgrade":             {},
+		// Note: Keep-Alive, TE, Trailer, and Transfer-Encoding are no longer skipped
 	}
 
 	// Create a test HTTP server that echoes received headers

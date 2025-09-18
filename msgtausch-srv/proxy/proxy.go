@@ -971,14 +971,14 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		logger.DebugCtx(ctx, "Detected proxied WebSocket request to %s", targetURL)
 	}
 
+	// According to RFC 7230, proxy-specific headers should be removed,
+	// but we preserve Transfer-Encoding, TE, Trailer, and Keep-Alive for proper HTTP semantics
 	skip := map[string]struct{}{
 		"Proxy-Connection":    {},
-		"Keep-Alive":          {},
 		"Proxy-Authenticate":  {},
 		"Proxy-Authorization": {},
-		"Te":                  {},
-		"Trailer":             {},
-		"Transfer-Encoding":   {},
+		// Note: Keep-Alive, TE, Trailer, and Transfer-Encoding are preserved
+		// to maintain proper HTTP/1.1 connection and transfer semantics
 	}
 
 	isWebSocketConnection := isWebSocketRequest || isProxiedWebSocket

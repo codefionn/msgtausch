@@ -191,8 +191,9 @@ func TestHTTPInterceptor(t *testing.T) {
 		assert.Equal(t, "dGhlIHNhbXBsZSBub25jZQ==", headers.Get("Sec-WebSocket-Key"))
 		assert.Equal(t, "13", headers.Get("Sec-WebSocket-Version"))
 
-		// Verify hop-by-hop headers are removed
-		assert.Empty(t, headers.Get("Keep-Alive"))
+		// Verify only proxy-specific headers are removed
+		// Keep-Alive should be preserved for proper HTTP semantics
+		assert.Equal(t, "timeout=5", headers.Get("Keep-Alive"))
 		assert.Empty(t, headers.Get("Proxy-Authorization"))
 	})
 
@@ -210,7 +211,8 @@ func TestHTTPInterceptor(t *testing.T) {
 		// Verify non-WebSocket upgrade headers are removed
 		assert.Empty(t, headers.Get("Upgrade"))
 		assert.Empty(t, headers.Get("Connection"))
-		assert.Empty(t, headers.Get("Keep-Alive"))
+		// Keep-Alive should be preserved per RFC 7230
+		assert.Equal(t, "timeout=5", headers.Get("Keep-Alive"))
 
 		// Verify regular headers are preserved
 		assert.Equal(t, "example.com", headers.Get("Host"))

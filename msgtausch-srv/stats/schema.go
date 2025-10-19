@@ -11,34 +11,34 @@ import (
 type ColumnType string
 
 const (
-	ColumnTypeSerial    ColumnType = "SERIAL"      // PostgreSQL auto-increment
-	ColumnTypeInt       ColumnType = "INT"         // Generic integer type
-	ColumnTypeInteger   ColumnType = "INTEGER"     // SQLite/PostgreSQL integer
-	ColumnTypeText      ColumnType = "TEXT"        // Text/VARCHAR
-	ColumnTypeBigint    ColumnType = "BIGINT"      // Large integers
-	ColumnTypeTimestamp ColumnType = "TIMESTAMP"   // Timestamp with timezone
-	ColumnTypeDateTime  ColumnType = "DATETIME"    // SQLite datetime
-	ColumnTypeBytea     ColumnType = "BYTEA"       // PostgreSQL binary data
-	ColumnTypeBlob      ColumnType = "BLOB"        // SQLite binary data
-	ColumnTypeInet      ColumnType = "INET"        // PostgreSQL IP address
-	ColumnTypeJsonb     ColumnType = "JSONB"       // PostgreSQL JSON binary
+	ColumnTypeSerial    ColumnType = "SERIAL"    // PostgreSQL auto-increment
+	ColumnTypeInt       ColumnType = "INT"       // Generic integer type
+	ColumnTypeInteger   ColumnType = "INTEGER"   // SQLite/PostgreSQL integer
+	ColumnTypeText      ColumnType = "TEXT"      // Text/VARCHAR
+	ColumnTypeBigint    ColumnType = "BIGINT"    // Large integers
+	ColumnTypeTimestamp ColumnType = "TIMESTAMP" // Timestamp with timezone
+	ColumnTypeDateTime  ColumnType = "DATETIME"  // SQLite datetime
+	ColumnTypeBytea     ColumnType = "BYTEA"     // PostgreSQL binary data
+	ColumnTypeBlob      ColumnType = "BLOB"      // SQLite binary data
+	ColumnTypeInet      ColumnType = "INET"      // PostgreSQL IP address
+	ColumnTypeJsonb     ColumnType = "JSONB"     // PostgreSQL JSON binary
 )
 
 // ColumnDefinition defines a database column
 type ColumnDefinition struct {
-	Name         string
-	Type         ColumnType
-	NotNull      bool
-	PrimaryKey   bool
+	Name          string
+	Type          ColumnType
+	NotNull       bool
+	PrimaryKey    bool
 	AutoIncrement bool
-	DefaultValue *string
-	References   *ForeignKey
+	DefaultValue  *string
+	References    *ForeignKey
 }
 
 // ForeignKey defines a foreign key relationship
 type ForeignKey struct {
-	Table  string
-	Column string
+	Table    string
+	Column   string
 	OnDelete string // CASCADE, SET NULL, etc.
 }
 
@@ -82,14 +82,14 @@ func NewSchemaValidator(db *sql.DB, schema *DatabaseSchema, driver string) *Sche
 
 // ValidationResult contains the results of schema validation
 type ValidationResult struct {
-	Valid              bool
-	MissingTables      []string
-	MissingColumns     []TableColumnMismatch
-	MissingIndexes     []string
-	ExtraColumns       []TableColumnMismatch
-	TypeMismatches     []ColumnTypeMismatch
-	ConstraintIssues   []ConstraintIssue
-	Errors             []error
+	Valid            bool
+	MissingTables    []string
+	MissingColumns   []TableColumnMismatch
+	MissingIndexes   []string
+	ExtraColumns     []TableColumnMismatch
+	TypeMismatches   []ColumnTypeMismatch
+	ConstraintIssues []ConstraintIssue
+	Errors           []error
 }
 
 // TableColumnMismatch represents a missing or extra column
@@ -109,10 +109,10 @@ type ColumnTypeMismatch struct {
 
 // ConstraintIssue represents a constraint problem
 type ConstraintIssue struct {
-	Table       string
-	Column      string
-	Constraint  string
-	Issue       string
+	Table      string
+	Column     string
+	Constraint string
+	Issue      string
 }
 
 // GetExpectedSchema returns the expected database schema
@@ -356,7 +356,7 @@ func GetExpectedSchema() *DatabaseSchema {
 // ValidateSchema validates the current database schema against the expected schema
 func (sv *SchemaValidator) ValidateSchema() (*ValidationResult, error) {
 	result := &ValidationResult{
-		Valid: true,
+		Valid:            true,
 		MissingTables:    []string{},
 		MissingColumns:   []TableColumnMismatch{},
 		MissingIndexes:   []string{},
@@ -477,10 +477,10 @@ func (sv *SchemaValidator) validateTableColumns(table TableDefinition, result *V
 
 // ActualColumn represents a column as it exists in the database
 type ActualColumn struct {
-	Name        string
-	Type        ColumnType
-	TypeDetails string
-	NotNull     bool
+	Name         string
+	Type         ColumnType
+	TypeDetails  string
+	NotNull      bool
 	DefaultValue *string
 }
 
@@ -516,10 +516,10 @@ func (sv *SchemaValidator) getTableColumns(tableName string) ([]ActualColumn, er
 			}
 
 			columns = append(columns, ActualColumn{
-				Name:        name,
-				Type:        sv.mapSQLiteType(dataType),
-				TypeDetails: dataType,
-				NotNull:     notNull == 1,
+				Name:         name,
+				Type:         sv.mapSQLiteType(dataType),
+				TypeDetails:  dataType,
+				NotNull:      notNull == 1,
 				DefaultValue: defVal,
 			})
 		}
@@ -552,10 +552,10 @@ func (sv *SchemaValidator) getTableColumns(tableName string) ([]ActualColumn, er
 			}
 
 			columns = append(columns, ActualColumn{
-				Name:        name,
-				Type:        sv.mapPostgresType(dataType),
-				TypeDetails: dataType,
-				NotNull:     nullable == "NO",
+				Name:         name,
+				Type:         sv.mapPostgresType(dataType),
+				TypeDetails:  dataType,
+				NotNull:      nullable == "NO",
 				DefaultValue: defVal,
 			})
 		}
@@ -654,7 +654,7 @@ func (sv *SchemaValidator) getTableIndexes(tableName string) ([]string, error) {
 }
 
 // isTypeCompatible checks if two column types are compatible
-func (sv *SchemaValidator) isTypeCompatible(expected ColumnType, actual ColumnType, actualDetails string) bool {
+func (sv *SchemaValidator) isTypeCompatible(expected, actual ColumnType, actualDetails string) bool {
 	// Direct match
 	if expected == actual {
 		return true
@@ -743,9 +743,9 @@ func (sv *SchemaValidator) isPostgresTypeCompatible(expected ColumnType, actualD
 		return actualDetails == "bigint" || actualDetails == "integer" // PostgreSQL integer can be used for expected bigint
 	case ColumnTypeText:
 		return actualDetails == "text" ||
-			   strings.HasPrefix(actualDetails, "character varying") ||
-			   actualDetails == "inet" || // INET is compatible with TEXT for IP addresses
-			   actualDetails == "jsonb"    // JSONB is compatible with TEXT for JSON data
+			strings.HasPrefix(actualDetails, "character varying") ||
+			actualDetails == "inet" || // INET is compatible with TEXT for IP addresses
+			actualDetails == "jsonb" // JSONB is compatible with TEXT for JSON data
 	case ColumnTypeTimestamp:
 		return strings.Contains(actualDetails, "timestamp")
 	case ColumnTypeBytea:

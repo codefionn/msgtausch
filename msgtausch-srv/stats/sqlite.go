@@ -60,7 +60,6 @@ func (s *SQLiteCollector) initSchema() error {
 	return nil
 }
 
-
 // StartConnection records the start of a connection (legacy method for backward compatibility)
 func (s *SQLiteCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
 	result, err := s.db.ExecContext(ctx,

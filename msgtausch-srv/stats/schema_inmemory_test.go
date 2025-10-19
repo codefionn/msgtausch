@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // TestInMemoryDatabaseInitialization tests full database initialization with in-memory SQLite

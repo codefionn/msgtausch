@@ -6,8 +6,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
+	"unsafe"
 
 	ahocorasick "github.com/BobuSumisu/aho-corasick"
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
@@ -19,6 +21,82 @@ type ClassifierInput struct {
 	host       string
 	remoteIP   string
 	remotePort uint16
+}
+
+// estimateTrieMemorySize estimates the memory usage of an Aho-Corasick trie
+// by calculating the approximate size of the structure and its contents.
+func estimateTrieMemorySize(trie *ahocorasick.Trie, domainCount int) int64 {
+	if trie == nil {
+		return 0
+	}
+
+	// Base estimate: the trie structure itself
+	baseSize := int64(unsafe.Sizeof(*trie))
+
+	// Get the value using reflection to access internal structure
+	trieValue := reflect.ValueOf(trie).Elem()
+
+	// Try to estimate internal data structures
+	// The trie typically contains:
+	// - States/nodes (each state has goto functions, failure links, outputs)
+	// - Pattern strings
+	var totalSize int64 = baseSize
+
+	// Iterate through fields if accessible
+	for i := 0; i < trieValue.NumField(); i++ {
+		field := trieValue.Field(i)
+		if field.CanInterface() {
+			switch field.Kind() {
+			case reflect.Slice, reflect.Array:
+				// Estimate slice/array size
+				elemSize := field.Type().Elem().Size()
+				totalSize += int64(field.Len()) * int64(elemSize)
+			case reflect.Map:
+				// Estimate map size (rough approximation)
+				totalSize += int64(field.Len()) * 48 // rough estimate per entry
+			case reflect.String:
+				totalSize += int64(field.Len())
+			case reflect.Ptr:
+				if !field.IsNil() {
+					totalSize += int64(unsafe.Sizeof(field.Interface()))
+				}
+			}
+		}
+	}
+
+	// Add estimate for stored patterns (domain strings)
+	// Rough estimate: average domain length * number of domains
+	const avgDomainLength = 20
+	totalSize += int64(domainCount * avgDomainLength)
+
+	// Add estimate for trie nodes (rough approximation)
+	// Typically, the number of nodes is roughly proportional to total pattern length
+	// Each node might have: goto map, fail link, output list
+	estimatedNodes := domainCount * avgDomainLength / 4
+	const nodeOverhead = 64 // rough estimate per node
+	totalSize += int64(estimatedNodes * nodeOverhead)
+
+	return totalSize
+}
+
+// formatMemorySize formats a byte count into a human-readable string
+func formatMemorySize(bytes int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d bytes", bytes)
+	}
 }
 
 // Classifier defines the interface for all traffic classifiers.
@@ -299,7 +377,8 @@ detectOptimizations:
 		var trie *ahocorasick.Trie
 		if len(domains) > 0 {
 			trie = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
-			logger.Debug("Created optimized Aho-Corasick OR classifier with %d equal domains", len(domains))
+			memSize := estimateTrieMemorySize(trie, len(domains))
+			logger.Info("Created optimized Aho-Corasick OR classifier with %d equal domains (memory: %s)", len(domains), formatMemorySize(memSize))
 		}
 
 		return &ClassifierOrDomains{
@@ -313,7 +392,8 @@ detectOptimizations:
 		var trie *ahocorasick.Trie
 		if len(domains) > 0 {
 			trie = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
-			logger.Debug("Created optimized Aho-Corasick OR classifier with %d is domains", len(domains))
+			memSize := estimateTrieMemorySize(trie, len(domains))
+			logger.Info("Created optimized Aho-Corasick OR classifier with %d is domains (memory: %s)", len(domains), formatMemorySize(memSize))
 		}
 
 		return &ClassifierOrDomainsIs{
@@ -339,7 +419,8 @@ detectOptimizations:
 		var trie *ahocorasick.Trie
 		if len(combinedDomains) > 0 {
 			trie = ahocorasick.NewTrieBuilder().AddStrings(combinedDomains).Build()
-			logger.Debug("Created optimized Aho-Corasick OR classifier with %d domains from %d files", len(combinedDomains), len(domainsFilePaths))
+			memSize := estimateTrieMemorySize(trie, len(combinedDomains))
+			logger.Info("Created optimized Aho-Corasick OR classifier with %d domains from %d files (memory: %s)", len(combinedDomains), len(domainsFilePaths), formatMemorySize(memSize))
 		}
 
 		return &ClassifierOrDomainsFile{
@@ -365,7 +446,8 @@ detectOptimizations:
 		var trieDomainFiles *ahocorasick.Trie
 		if len(combinedDomains) > 0 {
 			trieDomainFiles = ahocorasick.NewTrieBuilder().AddStrings(combinedDomains).Build()
-			logger.Debug("Created optimized Aho-Corasick OR classifier with %d domains from %d files", len(combinedDomains), len(domainsFilePaths))
+			memSize := estimateTrieMemorySize(trieDomainFiles, len(combinedDomains))
+			logger.Info("Created optimized Aho-Corasick OR classifier with %d domains from %d files (memory: %s)", len(combinedDomains), len(domainsFilePaths), formatMemorySize(memSize))
 		}
 
 		classifierOrDomainsFile := &ClassifierOrDomainsFile{
@@ -376,7 +458,8 @@ detectOptimizations:
 		var trieDomains *ahocorasick.Trie
 		if len(domains) > 0 {
 			trieDomains = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
-			logger.Debug("Created optimized Aho-Corasick OR classifier with %d is domains", len(domains))
+			memSize := estimateTrieMemorySize(trieDomains, len(domains))
+			logger.Info("Created optimized Aho-Corasick OR classifier with %d is domains (memory: %s)", len(domains), formatMemorySize(memSize))
 		}
 
 		classifierOrDomains := &ClassifierOrDomainsIs{
@@ -606,6 +689,7 @@ var rgSplitDomains = regexp.MustCompile(`[ \t\v]+`)
 // NewClassifierDomainsFile loads domains from the given file path and creates
 // an Aho-Corasick trie for efficient pattern matching.
 func NewClassifierDomainsFile(filePath string) (*ClassifierDomainsFile, error) {
+	logger.Debug("NewClassifierDomainsFile called with path: %s", filePath)
 	// Validate file path to prevent directory traversal
 	cleanPath := filepath.Clean(filePath)
 	if !filepath.IsAbs(cleanPath) {
@@ -662,7 +746,8 @@ func NewClassifierDomainsFile(filePath string) (*ClassifierDomainsFile, error) {
 	if len(domainList) > 0 {
 		// Create Aho-Corasick trie for efficient pattern matching
 		trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
-		logger.Debug("Created Aho-Corasick trie with %d domains from file: %s", len(domainList), filePath)
+		memSize := estimateTrieMemorySize(trie, len(domainList))
+		logger.Info("Created Aho-Corasick trie with %d domains from file: %s (memory: %s)", len(domainList), filePath, formatMemorySize(memSize))
 	} else {
 		logger.Warn("No domains found in file: %s", filePath)
 	}

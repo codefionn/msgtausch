@@ -56,8 +56,6 @@ func (p *PostgreSQLCollector) initSchema() error {
 	return nil
 }
 
-
-
 // StartConnection records the start of a connection (legacy method for backward compatibility)
 func (p *PostgreSQLCollector) StartConnection(ctx context.Context, clientIP, targetHost string, targetPort int, protocol string) (int64, error) {
 	var id int64

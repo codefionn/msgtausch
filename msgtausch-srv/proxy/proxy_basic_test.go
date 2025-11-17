@@ -59,7 +59,6 @@ func TestProxyIntegration(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 
@@ -198,7 +197,6 @@ func TestConnectMethod(t *testing.T) {
 				},
 			},
 			TimeoutSeconds:           5,
-			MaxConcurrentConnections: 100,
 			Classifiers:              make(map[string]config.Classifier),
 		}
 
@@ -292,7 +290,6 @@ func TestHttpThenConnectRequest(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxy := NewProxy(cfg)
@@ -369,7 +366,6 @@ func TestHTTP2ViaConnect(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxy := NewProxy(cfg)
@@ -441,7 +437,6 @@ func TestForwardRequestHeaderSkipping(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -563,7 +558,6 @@ func TestKeepAlive(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxy := NewProxy(cfg)

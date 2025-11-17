@@ -3,13 +3,10 @@
         {
             "type": "standard",
             "listen-address": "127.0.0.1:8080",
-            "enabled": true,
-            "max-connections": 100,
-            "connections-per-client": 10
+            "enabled": true
         }
     ],
     "timeout-seconds": 60,
-    "max-concurrent-connections": 200,
     "portal": {
         "username": "admin",
         "password": "secure-admin-password"

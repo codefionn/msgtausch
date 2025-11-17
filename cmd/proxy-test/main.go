@@ -64,12 +64,9 @@ func main() {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        *proxyAddr,
 					InterceptorName:      "",
-					MaxConnections:       16,
-					ConnectionsPerClient: 16,
 				},
 			},
 			TimeoutSeconds:           2 * *timeout,
-			MaxConcurrentConnections: 16,
 			Classifiers:              map[string]config.Classifier{},
 			Forwards:                 []config.Forward{},
 			Interception: config.InterceptionConfig{

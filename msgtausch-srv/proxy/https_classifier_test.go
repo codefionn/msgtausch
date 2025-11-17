@@ -35,7 +35,6 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 				Type:           config.ProxyTypeStandard,
 				ListenAddress:  "127.0.0.1:8080",
 				Enabled:        true,
-				MaxConnections: 100,
 			}
 
 			// Compile HTTPS classifier directly for testing
@@ -175,7 +174,6 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 			Type:           config.ProxyTypeStandard,
 			ListenAddress:  "127.0.0.1:8080",
 			Enabled:        true,
-			MaxConnections: 100,
 		}
 
 		server := &Server{
@@ -222,7 +220,6 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 			Type:           config.ProxyTypeStandard,
 			ListenAddress:  "127.0.0.1:8080",
 			Enabled:        true,
-			MaxConnections: 100,
 		}
 
 		// The server creation should handle the missing classifier gracefully

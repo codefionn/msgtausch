@@ -149,11 +149,9 @@ func (p *Proxy) GetServerInfo() []dashboard.ServerInfo {
 	info := make([]dashboard.ServerInfo, 0, len(p.servers))
 	for _, server := range p.servers {
 		info = append(info, dashboard.ServerInfo{
-			Type:                 string(server.serverConfig.Type),
-			ListenAddress:        server.serverConfig.ListenAddress,
-			Enabled:              server.serverConfig.Enabled,
-			MaxConnections:       server.serverConfig.MaxConnections,
-			ConnectionsPerClient: server.serverConfig.ConnectionsPerClient,
+			Type:          string(server.serverConfig.Type),
+			ListenAddress: server.serverConfig.ListenAddress,
+			Enabled:       server.serverConfig.Enabled,
 		})
 	}
 	return info

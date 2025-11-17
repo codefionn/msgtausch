@@ -121,8 +121,6 @@ func TestHasChanged(t *testing.T) {
 			&Config{TimeoutSeconds: 1}, &Config{TimeoutSeconds: 2}, true,
 		},
 		{
-			"different MaxConcurrentConnections",
-			&Config{MaxConcurrentConnections: 1}, &Config{MaxConcurrentConnections: 2}, true,
 		},
 		{
 			"different Classifiers map",

@@ -60,7 +60,6 @@ func TestHTTPSInterception(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 		Interception: config.InterceptionConfig{
 			Enabled: true,

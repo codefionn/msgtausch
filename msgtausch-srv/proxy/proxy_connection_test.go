@@ -66,7 +66,6 @@ func TestConnectionKeepaliveMultipleRequests(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 
@@ -265,7 +264,6 @@ func TestHTTPConnectionPersistence(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 

@@ -7,7 +7,6 @@
     }
   ],
   "timeout-seconds": 30,
-  "max-concurrent-connections": 100,
   "interception": {
     "enabled": true,
     "http": true,

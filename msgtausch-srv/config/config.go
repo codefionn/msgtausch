@@ -49,26 +49,23 @@ type PortalConfig struct {
 
 // ServerConfig defines configuration for a single proxy server instance
 type ServerConfig struct {
-	Type                 ProxyType // Type of proxy server (standard, http, https)
-	ListenAddress        string    // Address to listen on (e.g., 127.0.0.1:8080)
-	Enabled              bool      // Whether this server is enabled
-	InterceptorName      string    // Identifier for this interceptor (optional)
-	MaxConnections       int       // Maximum connections for this server instance
-	ConnectionsPerClient int       // Maximum connections per client IP
+	Type            ProxyType // Type of proxy server (standard, http, https)
+	ListenAddress   string    // Address to listen on (e.g., 127.0.0.1:8080)
+	Enabled         bool      // Whether this server is enabled
+	InterceptorName string    // Identifier for this interceptor (optional)
 }
 
 // Config represents the main configuration structure for the proxy server.
 type Config struct {
-	Servers                  []ServerConfig // List of proxy server configurations
-	TimeoutSeconds           int            // Global timeout for all connections
-	MaxConcurrentConnections int            // Global max concurrent connections
-	Classifiers              map[string]Classifier
-	Forwards                 []Forward
-	Allowlist                Classifier         // Optional host allowlist using classifier
-	Blocklist                Classifier         // Optional host blocklist using classifier
-	Interception             InterceptionConfig // Global settings for traffic interception
-	Statistics               StatisticsConfig   // Statistics collection configuration
-	Portal                   PortalConfig       // Portal authentication configuration
+	Servers      []ServerConfig // List of proxy server configurations
+	TimeoutSeconds int          // Global timeout for all connections
+	Classifiers  map[string]Classifier
+	Forwards     []Forward
+	Allowlist    Classifier         // Optional host allowlist using classifier
+	Blocklist    Classifier         // Optional host blocklist using classifier
+	Interception InterceptionConfig // Global settings for traffic interception
+	Statistics   StatisticsConfig   // Statistics collection configuration
+	Portal       PortalConfig       // Portal authentication configuration
 }
 
 // ForwardType defines the type of forwarding rule.
@@ -161,15 +158,12 @@ func LoadConfig(configPath string) (*Config, error) {
 	cfg := &Config{
 		Servers: []ServerConfig{
 			{
-				Type:                 ProxyTypeStandard,
-				ListenAddress:        "127.0.0.1:8080",
-				Enabled:              true,
-				MaxConnections:       100,
-				ConnectionsPerClient: 10,
+				Type:          ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:8080",
+				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
+		TimeoutSeconds: 30,
 	}
 
 	// If config file exists, load it first
@@ -510,10 +504,8 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 			}
 
 			server := ServerConfig{
-				Type:                 ProxyTypeStandard,
-				Enabled:              true,
-				MaxConnections:       100,
-				ConnectionsPerClient: 10,
+				Type:    ProxyTypeStandard,
+				Enabled: true,
 			}
 
 			// Parse server type
@@ -565,24 +557,6 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 				server.InterceptorName = *ptr
 			}
 
-			// Parse max connections
-			if maxConnsVal, exists := serverMap["max-connections"]; exists {
-				ptr, err := parseValue[int](maxConnsVal)
-				if err != nil {
-					return fmt.Errorf("max-connections at index %d must be an integer: %w", i, err)
-				}
-				server.MaxConnections = *ptr
-			}
-
-			// Parse connections per client
-			if clientConnsVal, exists := serverMap["connections-per-client"]; exists {
-				ptr, err := parseValue[int](clientConnsVal)
-				if err != nil {
-					return fmt.Errorf("connections-per-client at index %d must be an integer: %w", i, err)
-				}
-				server.ConnectionsPerClient = *ptr
-			}
-
 			cfg.Servers = append(cfg.Servers, server)
 		}
 	}
@@ -600,11 +574,9 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 		// Create a standard proxy server with the specified address
 		cfg.Servers = []ServerConfig{
 			{
-				Type:                 ProxyTypeStandard,
-				ListenAddress:        *ptr,
-				Enabled:              true,
-				MaxConnections:       100,
-				ConnectionsPerClient: 10,
+				Type:          ProxyTypeStandard,
+				ListenAddress: *ptr,
+				Enabled:       true,
 			},
 		}
 	}
@@ -618,17 +590,6 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 			return fmt.Errorf("timeout-seconds must be a number")
 		}
 		cfg.TimeoutSeconds = *ptr
-	}
-
-	if val, exists := data["max-concurrent-connections"]; exists {
-		ptr, err := parseValue[int](val)
-		if err != nil {
-			if strings.Contains(err.Error(), "secret") {
-				return err
-			}
-			return fmt.Errorf("max-concurrent-connections must be a number")
-		}
-		cfg.MaxConcurrentConnections = *ptr
 	}
 
 	// Clear existing classifiers
@@ -1200,16 +1161,6 @@ func loadConfigFromEnv(cfg *Config) {
 		}
 	}
 
-	// Handle global max connections setting
-	if maxConnStr := os.Getenv("MSGTAUSCH_MAXCONCURRENTCONNECTIONS"); maxConnStr != "" {
-		if maxConn, err := strconv.Atoi(maxConnStr); err == nil {
-			cfg.MaxConcurrentConnections = maxConn
-		} else {
-			// Handle error: maybe log a warning?
-			fmt.Fprintf(os.Stderr, "Warning: Invalid format for MSGTAUSCH_MAXCONCURRENTCONNECTIONS: %s\n", maxConnStr)
-		}
-	}
-
 	// Handle global interception enabled setting
 	if interceptEnabled := os.Getenv("MSGTAUSCH_INTERCEPT"); interceptEnabled != "" {
 		cfg.Interception.Enabled = strings.EqualFold(interceptEnabled, "true") || interceptEnabled == "1"
@@ -1275,11 +1226,9 @@ func loadConfigFromEnv(cfg *Config) {
 			// Create a standard proxy server with the address from env var
 			cfg.Servers = []ServerConfig{
 				{
-					Type:                 ProxyTypeStandard,
-					ListenAddress:        addr,
-					Enabled:              true,
-					MaxConnections:       100,
-					ConnectionsPerClient: 10,
+					Type:          ProxyTypeStandard,
+					ListenAddress: addr,
+					Enabled:       true,
 				},
 			}
 		} else {
@@ -1298,8 +1247,6 @@ func loadConfigFromEnv(cfg *Config) {
 		enabledVar := prefix + "ENABLED"
 		caFileVar := prefix + "CAFILE"
 		caKeyFileVar := prefix + "CAKEYFILE"
-		maxConnsVar := prefix + "MAXCONNECTIONS"
-		clientConnsVar := prefix + "CONNECTIONSPCLIENT"
 
 		// Check if this server config exists by looking for the address
 		addr := os.Getenv(addrVar)
@@ -1316,10 +1263,8 @@ func loadConfigFromEnv(cfg *Config) {
 		} else {
 			// Create new server config with defaults
 			server = ServerConfig{
-				Type:                 ProxyTypeStandard,
-				Enabled:              true,
-				MaxConnections:       100,
-				ConnectionsPerClient: 10,
+				Type:    ProxyTypeStandard,
+				Enabled: true,
 			}
 		}
 
@@ -1348,24 +1293,6 @@ func loadConfigFromEnv(cfg *Config) {
 		// Set global CA key file if specified via server-specific env var and global is not set
 		if caKeyFile := os.Getenv(caKeyFileVar); caKeyFile != "" && cfg.Interception.CAKeyFile == "" {
 			cfg.Interception.CAKeyFile = caKeyFile
-		}
-
-		// Set max connections if specified
-		if maxConnsStr := os.Getenv(maxConnsVar); maxConnsStr != "" {
-			if maxConns, err := strconv.Atoi(maxConnsStr); err == nil {
-				server.MaxConnections = maxConns
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: Invalid format for %s: %s\n", maxConnsVar, maxConnsStr)
-			}
-		}
-
-		// Set client connections if specified
-		if clientConnsStr := os.Getenv(clientConnsVar); clientConnsStr != "" {
-			if clientConns, err := strconv.Atoi(clientConnsStr); err == nil {
-				server.ConnectionsPerClient = clientConns
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: Invalid format for %s: %s\n", clientConnsVar, clientConnsStr)
-			}
 		}
 
 		// Update or add the server config

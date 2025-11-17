@@ -22,16 +22,11 @@ func HasChanged(a, b *Config) bool {
 		if a.Servers[i].Type != b.Servers[i].Type ||
 			a.Servers[i].ListenAddress != b.Servers[i].ListenAddress ||
 			a.Servers[i].Enabled != b.Servers[i].Enabled ||
-			a.Servers[i].InterceptorName != b.Servers[i].InterceptorName ||
-			a.Servers[i].MaxConnections != b.Servers[i].MaxConnections ||
-			a.Servers[i].ConnectionsPerClient != b.Servers[i].ConnectionsPerClient {
+			a.Servers[i].InterceptorName != b.Servers[i].InterceptorName {
 			return true
 		}
 	}
 	if a.TimeoutSeconds != b.TimeoutSeconds {
-		return true
-	}
-	if a.MaxConcurrentConnections != b.MaxConcurrentConnections {
 		return true
 	}
 	if !classifiersMapEqual(a.Classifiers, b.Classifiers) {

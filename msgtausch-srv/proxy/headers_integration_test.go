@@ -61,7 +61,6 @@ func TestTransferEncodingChunked(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -139,7 +138,6 @@ func TestTEHeader(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -246,7 +244,6 @@ func TestTrailerHeader(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -356,7 +353,6 @@ func TestChunkedEncodingWithTrailers(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -430,7 +426,6 @@ func TestKeepAliveHeader(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -498,7 +493,6 @@ func TestHopByHopHeadersExcluded(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
@@ -582,7 +576,6 @@ func TestMultipleTransferEncodingValues(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 10,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)

@@ -316,7 +316,6 @@ func RunSimulation(seed int64, enableForwards bool) error {
 			},
 		},
 		TimeoutSeconds:           60,
-		MaxConcurrentConnections: 200,
 		Classifiers:              make(map[string]msgtauschconfig.Classifier),
 		Forwards:                 forwards,
 		// Initialize with nil allowlist/blocklist - this prevents the NewProxy function
@@ -737,7 +736,6 @@ func CreateRandomMsgtauschProxies(seed int64) []*SimulatedMsgtauschProxy {
 				},
 			},
 			TimeoutSeconds:           10 + rng.Intn(50),  // 10-59s
-			MaxConcurrentConnections: 10 + rng.Intn(100), // 10-109
 			Classifiers:              make(map[string]msgtauschconfig.Classifier),
 			Forwards:                 nil, // No forwards for basic simulation
 			Allowlist:                nil, // Explicitly set to nil to avoid compilation errors

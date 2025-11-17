@@ -4,12 +4,9 @@
       "type": "http",
       "listen-address": "127.0.0.1:8080",
       "enabled": true,
-      "max-connections": 1000,
-      "connections-per-client": 100
     }
   ],
   "timeout-seconds": 30,
-  "max-concurrent-connections": 1000,
   "portal": {
     "username": "admin",
     "password": "your-secure-password"

@@ -20,8 +20,6 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0", // Use port 0 for auto-assignment
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -115,8 +113,6 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -166,8 +162,6 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -252,8 +246,6 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -294,8 +286,6 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -341,8 +331,6 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -372,8 +360,6 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -412,8 +398,6 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -438,8 +422,6 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -471,15 +453,11 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 				{
 					Type:                 config.ProxyTypeHTTP,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -523,8 +501,6 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 					Type:                 config.ProxyTypeStandard,
 					ListenAddress:        "127.0.0.1:0",
 					Enabled:              true,
-					MaxConnections:       10,
-					ConnectionsPerClient: 5,
 				},
 			},
 			Interception: config.InterceptionConfig{

@@ -154,12 +154,9 @@ func TestLoadConfigJSON(t *testing.T) {
 						Type:                 ProxyTypeStandard,
 						ListenAddress:        "localhost:8000",
 						Enabled:              true,
-						MaxConnections:       100,
-						ConnectionsPerClient: 10,
 					},
 				},
 				TimeoutSeconds:           60,
-				MaxConcurrentConnections: 200,
 				Classifiers: map[string]Classifier{
 					"ip1": &ClassifierIP{
 						IP: "192.168.1.1",
@@ -260,9 +257,6 @@ func TestLoadConfigJSON_Secrets(t *testing.T) {
 	if cfg.TimeoutSeconds != 45 {
 		t.Errorf("Expected TimeoutSeconds 45, got %d", cfg.TimeoutSeconds)
 	}
-	if cfg.MaxConcurrentConnections != 150 {
-		t.Errorf("Expected MaxConcurrentConnections 150, got %d", cfg.MaxConcurrentConnections)
-	}
 }
 
 func TestLoadConfigJSON_SecretMissing(t *testing.T) {
@@ -336,12 +330,9 @@ func TestParseConfigData(t *testing.T) {
 						Type:                 ProxyTypeStandard,
 						ListenAddress:        "127.0.0.1:8080",
 						Enabled:              true,
-						MaxConnections:       100,
-						ConnectionsPerClient: 10,
 					},
 				},
 				TimeoutSeconds:           30,
-				MaxConcurrentConnections: 100,
 			}
 
 			err := parseConfigData(tc.data, cfg)

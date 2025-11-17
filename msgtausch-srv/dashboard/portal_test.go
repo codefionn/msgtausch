@@ -58,7 +58,6 @@ func createTestConfig() *config.Config {
 			},
 		},
 		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
 		Classifiers:              map[string]config.Classifier{},
 		Forwards:                 []config.Forward{},
 		Interception: config.InterceptionConfig{
@@ -87,7 +86,6 @@ func createTestConfigWithAuth() *config.Config {
 			},
 		},
 		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
 		Classifiers:              map[string]config.Classifier{},
 		Forwards:                 []config.Forward{},
 		Interception: config.InterceptionConfig{

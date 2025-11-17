@@ -72,7 +72,6 @@ func TestConnectionCloseHandling(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 
@@ -179,7 +178,6 @@ func TestConnectionCloseHTTPS(t *testing.T) {
 			},
 		},
 		TimeoutSeconds:           30,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 	}
 

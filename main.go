@@ -90,7 +90,6 @@ func parseFlagsAndConfig() (cfg *config.Config, configPaths []string) {
 		logger.Debug("No servers configured")
 	}
 	logger.Debug("Timeout: %d seconds", cfg.TimeoutSeconds)
-	logger.Debug("Max connections: %d", cfg.MaxConcurrentConnections)
 
 	return cfg, configs
 }

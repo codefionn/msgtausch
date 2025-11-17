@@ -50,9 +50,6 @@ classifiers = {
 	if cfg.TimeoutSeconds != 60 {
 		t.Errorf("Expected timeout 60, got %d", cfg.TimeoutSeconds)
 	}
-	if cfg.MaxConcurrentConnections != 200 {
-		t.Errorf("Expected max connections 200, got %d", cfg.MaxConcurrentConnections)
-	}
 
 	// Verify classifier
 	c, ok := cfg.Classifiers["port1"].(*ClassifierPort)
@@ -163,9 +160,6 @@ forwards = [
 	}
 	if httpsServer.InterceptorName != "ssl-interceptor" {
 		t.Errorf("Expected interceptor name ssl-interceptor, got %s", httpsServer.InterceptorName)
-	}
-	if httpsServer.MaxConnections != 150 {
-		t.Errorf("Expected max connections 150, got %d", httpsServer.MaxConnections)
 	}
 
 	// Verify classifiers
@@ -387,9 +381,6 @@ forwards = [
 	// Compare basic settings
 	if jsonCfg.TimeoutSeconds != hclCfg.TimeoutSeconds {
 		t.Errorf("TimeoutSeconds mismatch: JSON=%d, HCL=%d", jsonCfg.TimeoutSeconds, hclCfg.TimeoutSeconds)
-	}
-	if jsonCfg.MaxConcurrentConnections != hclCfg.MaxConcurrentConnections {
-		t.Errorf("MaxConcurrentConnections mismatch: JSON=%d, HCL=%d", jsonCfg.MaxConcurrentConnections, hclCfg.MaxConcurrentConnections)
 	}
 
 	// Compare servers

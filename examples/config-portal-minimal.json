@@ -7,7 +7,6 @@
     }
   ],
   "timeout-seconds": 30,
-  "max-concurrent-connections": 100,
   "portal": {
     "username": "admin",
     "password": "your-secure-password"

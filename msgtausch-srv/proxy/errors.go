@@ -121,7 +121,6 @@ const (
 	ErrCodeResponseModifyFailed    = "E8007"
 
 	// Resource and Limit Errors (E9000-E9999)
-	ErrCodeConnectionLimitExceeded = "E9001"
 	ErrCodeMemoryLimitExceeded     = "E9002"
 	ErrCodeTimeoutExceeded         = "E9003"
 	ErrCodeBufferOverflow          = "E9004"
@@ -223,7 +222,6 @@ var ErrorDescriptions = map[string]string{
 	ErrCodeResponseModifyFailed:    "Failed to modify response",
 
 	// Resource and Limit Errors
-	ErrCodeConnectionLimitExceeded: "Maximum connection limit exceeded",
 	ErrCodeMemoryLimitExceeded:     "Memory limit exceeded",
 	ErrCodeTimeoutExceeded:         "Operation timeout exceeded",
 	ErrCodeBufferOverflow:          "Buffer overflow detected",

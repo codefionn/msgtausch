@@ -372,7 +372,6 @@ func createProxyWithStatsCollector(collector stats.Collector) (*Proxy, string, f
 			},
 		},
 		TimeoutSeconds:           5,
-		MaxConcurrentConnections: 100,
 		Classifiers:              make(map[string]config.Classifier),
 		Statistics: config.StatisticsConfig{
 			Enabled:    true,        // Enable stats collection

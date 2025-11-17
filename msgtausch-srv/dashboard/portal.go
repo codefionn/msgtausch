@@ -48,11 +48,9 @@ type ProxyInterface interface {
 
 // ServerInfo provides information about a server
 type ServerInfo struct {
-	Type                 string
-	ListenAddress        string
-	Enabled              bool
-	MaxConnections       int
-	ConnectionsPerClient int
+	Type          string
+	ListenAddress string
+	Enabled       bool
 }
 
 // JWTClaims represents the claims in a JWT token

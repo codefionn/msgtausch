@@ -41,6 +41,16 @@ type latencyRecorder struct {
 	values []time.Duration
 }
 
+type categoryStats struct {
+	rec   latencyRecorder
+	count atomic.Int64
+}
+
+func (cs *categoryStats) add(d time.Duration) {
+	cs.count.Add(1)
+	cs.rec.add(d)
+}
+
 func (lr *latencyRecorder) add(d time.Duration) {
 	lr.mu.Lock()
 	lr.values = append(lr.values, d)
@@ -156,6 +166,13 @@ func run() error {
 	totalRequests := int64(*connections * *requestsPerConn)
 	errCh := make(chan error, *connections)
 
+	categories := map[string]*categoryStats{
+		"small/reused": {},
+		"small/reopen": {},
+		"large/reused": {},
+		"large/reopen": {},
+	}
+
 	smallPayload := []byte("ping\n")
 	largePayload := buildPayload(*largePayloadSize)
 
@@ -166,7 +183,7 @@ func run() error {
 		go func() {
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-			if err := runClient(ctx, proxyLn.Addr().String(), serverLn.Addr().String(), smallPayload, largePayload, rng, &results, &reopenCount); err != nil {
+			if err := runClient(ctx, proxyLn.Addr().String(), serverLn.Addr().String(), smallPayload, largePayload, rng, &results, &reopenCount, categories); err != nil {
 				select {
 				case errCh <- err:
 				default:
@@ -193,10 +210,22 @@ func run() error {
 	fmt.Printf("Latency p99.9: %s\n", p999)
 	fmt.Printf("Latency p99.99: %s\n", p9999)
 
+	fmt.Println("Category breakdown (count, p99.9, p99.99):")
+	for _, name := range []string{"small/reused", "small/reopen", "large/reused", "large/reopen"} {
+		cs := categories[name]
+		if cs == nil {
+			continue
+		}
+		if c := cs.count.Load(); c > 0 {
+			fmt.Printf("  %-13s count=%d p99.9=%s p99.99=%s\n",
+				name, c, cs.rec.percentile(0.999), cs.rec.percentile(0.9999))
+		}
+	}
+
 	return nil
 }
 
-func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, largePayload []byte, rng *rand.Rand, lr *latencyRecorder, reopenCount *atomic.Int64) error {
+func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, largePayload []byte, rng *rand.Rand, lr *latencyRecorder, reopenCount *atomic.Int64, categories map[string]*categoryStats) error {
 	conn, rw, err := connectThroughProxy(ctx, proxyAddr, targetAddr)
 	if err != nil {
 		return err
@@ -209,6 +238,7 @@ func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, 
 			return nil
 		}
 
+		reopened := false
 		if rng.Float64() < *reopenProbability {
 			conn.Close()
 			conn, rw, err = connectThroughProxy(ctx, proxyAddr, targetAddr)
@@ -216,11 +246,14 @@ func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, 
 				return fmt.Errorf("reconnect: %w", err)
 			}
 			reopenCount.Add(1)
+			reopened = true
 		}
 
 		payload := smallPayload
+		isLarge := false
 		if rng.Float64() < *largePayloadChance {
 			payload = largePayload
+			isLarge = true
 		}
 
 		if len(readBuf) < len(payload) {
@@ -234,7 +267,19 @@ func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, 
 		if err := readEcho(ctx, conn, rw.Reader, readBuf[:len(payload)]); err != nil {
 			return err
 		}
-		lr.add(time.Since(start))
+		elapsed := time.Since(start)
+		lr.add(elapsed)
+
+		switch {
+		case isLarge && reopened:
+			categories["large/reopen"].add(elapsed)
+		case isLarge && !reopened:
+			categories["large/reused"].add(elapsed)
+		case !isLarge && reopened:
+			categories["small/reopen"].add(elapsed)
+		default:
+			categories["small/reused"].add(elapsed)
+		}
 	}
 
 	return nil

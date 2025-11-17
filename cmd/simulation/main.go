@@ -220,6 +220,20 @@ func printDetailedStats(stats *msgtausch_simulation.SimulationStats) {
 	fmt.Printf("WebSocket Connections: %d (Expected: %d)\n", stats.WebSocketConnections, stats.ExpectedWebSocketConns)
 	fmt.Printf("Unrecoverable Errors: %d\n", stats.UnrecoverableErrors)
 
+	// Print response time statistics
+	if len(stats.ResponseTimes) > 0 {
+		fmt.Printf("\n--- Response Time Statistics ---\n")
+		fmt.Printf("Samples: %d\n", len(stats.ResponseTimes))
+		fmt.Printf("Min: %v\n", stats.MinResponseTime)
+		fmt.Printf("Avg: %v\n", stats.AvgResponseTime)
+		fmt.Printf("Max: %v\n", stats.MaxResponseTime)
+		fmt.Printf("P50:    %v\n", stats.P50)
+		fmt.Printf("P95:    %v\n", stats.P95)
+		fmt.Printf("P99:    %v\n", stats.P99)
+		fmt.Printf("P99.9:  %v\n", stats.P99_9)
+		fmt.Printf("P99.99: %v\n", stats.P99_99)
+	}
+
 	if len(stats.TargetServerStats) > 0 {
 		fmt.Printf("\n--- Target Server Statistics ---\n")
 		for i, target := range stats.TargetServerStats {

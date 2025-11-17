@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,15 @@ type SimulationStats struct {
 	TargetServerStats      []TargetServerStats                    `json:"target_server_stats"`
 	ErrorCountsByTarget    map[string]map[SimulationErrorType]int `json:"error_counts_by_target"`
 	ProxyChainLength       int                                    `json:"proxy_chain_length"`
+	ResponseTimes          []time.Duration                        `json:"-"` // Response times for percentile calculation
+	P50                    time.Duration                          `json:"p50_ms"`
+	P95                    time.Duration                          `json:"p95_ms"`
+	P99                    time.Duration                          `json:"p99_ms"`
+	P99_9                  time.Duration                          `json:"p99_9_ms"`
+	P99_99                 time.Duration                          `json:"p99_99_ms"`
+	MinResponseTime        time.Duration                          `json:"min_response_time_ms"`
+	MaxResponseTime        time.Duration                          `json:"max_response_time_ms"`
+	AvgResponseTime        time.Duration                          `json:"avg_response_time_ms"`
 }
 
 // TargetServerStats contains statistics for a single target server
@@ -348,6 +358,9 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	nRequestsNotForwarded := 0
 	errCounts := make(map[string]map[SimulationErrorType]int)
 	mutexErrCounts := sync.Mutex{}
+	// Track response times for percentile calculation
+	responseTimes := make([]time.Duration, 0, nRequests)
+	mutexResponseTimes := sync.Mutex{}
 	// Optionally trust a custom CA for HTTPS targets
 	var tlsRootCAs *x509.CertPool
 	if caPEM := os.Getenv("SIM_TLS_CA_CERT_PEM"); caPEM != "" {
@@ -495,12 +508,21 @@ func RunSimulation(seed int64, enableForwards bool) error {
 					wg.Done()
 				}()
 
+				startTime := time.Now()
 				resp, err := client.Do(req)
+				elapsed := time.Since(startTime)
 				defer func() {
 					if resp != nil {
 						_ = resp.Body.Close()
 					}
 				}()
+
+				// Record response time for successful requests (including error responses)
+				if err == nil {
+					mutexResponseTimes.Lock()
+					responseTimes = append(responseTimes, elapsed)
+					mutexResponseTimes.Unlock()
+				}
 
 				if err != nil {
 					var errorType SimulationErrorType
@@ -630,7 +652,72 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	lastSimulationStats.WebSocketConnections = totalWebSockets
 	lastSimulationStats.ExpectedWebSocketConns = expectedWebSocketTotal
 
+	// Calculate percentiles from response times
+	lastSimulationStats.ResponseTimes = responseTimes
+	calculatePercentiles(lastSimulationStats)
+
 	return err
+}
+
+// calculatePercentiles calculates percentile statistics from response times
+func calculatePercentiles(stats *SimulationStats) {
+	if len(stats.ResponseTimes) == 0 {
+		return
+	}
+
+	// Sort response times
+	sort.Slice(stats.ResponseTimes, func(i, j int) bool {
+		return stats.ResponseTimes[i] < stats.ResponseTimes[j]
+	})
+
+	n := len(stats.ResponseTimes)
+
+	// Calculate percentiles
+	stats.P50 = percentile(stats.ResponseTimes, 50.0)
+	stats.P95 = percentile(stats.ResponseTimes, 95.0)
+	stats.P99 = percentile(stats.ResponseTimes, 99.0)
+	stats.P99_9 = percentile(stats.ResponseTimes, 99.9)
+	stats.P99_99 = percentile(stats.ResponseTimes, 99.99)
+
+	// Calculate min, max, avg
+	stats.MinResponseTime = stats.ResponseTimes[0]
+	stats.MaxResponseTime = stats.ResponseTimes[n-1]
+
+	var sum time.Duration
+	for _, rt := range stats.ResponseTimes {
+		sum += rt
+	}
+	stats.AvgResponseTime = sum / time.Duration(n)
+}
+
+// percentile calculates the p-th percentile from a sorted slice of durations
+func percentile(sorted []time.Duration, p float64) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 100 {
+		return sorted[len(sorted)-1]
+	}
+
+	// Use linear interpolation
+	index := (p / 100.0) * float64(len(sorted)-1)
+	lower := int(index)
+	upper := lower + 1
+
+	if upper >= len(sorted) {
+		return sorted[len(sorted)-1]
+	}
+
+	// Interpolate between lower and upper
+	fraction := index - float64(lower)
+	lowerVal := float64(sorted[lower])
+	upperVal := float64(sorted[upper])
+	result := lowerVal + fraction*(upperVal-lowerVal)
+
+	return time.Duration(result)
 }
 
 // RunSimulationWithStats runs a simulation and returns detailed statistics along with any error

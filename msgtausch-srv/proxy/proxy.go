@@ -548,8 +548,8 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 					return p.createForwardTCPClient(ctx, addr)
 				},
 				DisableKeepAlives:     false,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   10,
+				MaxIdleConns:          p.config.MaxIdleConns,
+				MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
 				IdleConnTimeout:       90 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 			}
@@ -592,8 +592,8 @@ func (p *Server) Start() error {
 						return p.createForwardTCPClient(ctx, addr)
 					},
 					DisableKeepAlives:     false,
-					MaxIdleConns:          100,
-					MaxIdleConnsPerHost:   10,
+					MaxIdleConns:          p.config.MaxIdleConns,
+					MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
 					IdleConnTimeout:       90 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
 				}
@@ -644,8 +644,8 @@ func (p *Server) Start() error {
 						return p.createForwardTCPClient(ctx, addr)
 					},
 					DisableKeepAlives:     false,
-					MaxIdleConns:          100,
-					MaxIdleConnsPerHost:   10,
+					MaxIdleConns:          p.config.MaxIdleConns,
+					MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
 					IdleConnTimeout:       90 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
 				}
@@ -1428,8 +1428,6 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		logger.Error("HTTP server does not support hijacking")
@@ -1441,6 +1439,19 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 	if err != nil {
 		logger.Error("Failed to hijack connection: %v", err)
 		http.Error(w, fmt.Sprintf("Hijack error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Send HTTP 200 Connection Established response before starting tunnel
+	_, err = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+	if err != nil {
+		logger.Error("Failed to send 200 Connection Established: %v", err)
+		if closeErr := clientConn.Close(); closeErr != nil {
+			logger.Error("Error closing client connection: %v", closeErr)
+		}
+		if closeErr := targetConn.Close(); closeErr != nil {
+			logger.Error("Error closing target connection: %v", closeErr)
+		}
 		return
 	}
 

@@ -13,7 +13,6 @@ import (
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
-	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 	"golang.org/x/net/proxy"
 )
 
@@ -174,15 +173,14 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	logger.DebugCtx(ctx, "Successfully established connection to %s (via %T)", addr, selectedForward)
 	connErr = nil // Disarm the defer
 
-	// Choose a safe collector for tracking to avoid nil-method panics
-	var collector stats.Collector
+	// Only wrap connection with tracking if statistics collection is enabled
+	// to avoid mutex overhead on every Read/Write operation
 	if p.Collector != nil {
-		collector = p
-	} else {
-		collector = stats.NewDummyCollector()
+		return newTrackedConn(ctx, targetConn, p, connectionID), nil
 	}
 
-	return newTrackedConn(ctx, targetConn, collector, connectionID), nil
+	// Return unwrapped connection when stats are disabled for maximum performance
+	return targetConn, nil
 }
 
 // dialSocks5 establishes a connection to the target via a SOCKS5 proxy

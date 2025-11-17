@@ -57,15 +57,17 @@ type ServerConfig struct {
 
 // Config represents the main configuration structure for the proxy server.
 type Config struct {
-	Servers      []ServerConfig // List of proxy server configurations
-	TimeoutSeconds int          // Global timeout for all connections
-	Classifiers  map[string]Classifier
-	Forwards     []Forward
-	Allowlist    Classifier         // Optional host allowlist using classifier
-	Blocklist    Classifier         // Optional host blocklist using classifier
-	Interception InterceptionConfig // Global settings for traffic interception
-	Statistics   StatisticsConfig   // Statistics collection configuration
-	Portal       PortalConfig       // Portal authentication configuration
+	Servers            []ServerConfig // List of proxy server configurations
+	TimeoutSeconds     int            // Global timeout for all connections
+	MaxIdleConns       int            // Maximum idle connections across all hosts (default: 2048)
+	MaxIdleConnsPerHost int           // Maximum idle connections per host (default: 256)
+	Classifiers        map[string]Classifier
+	Forwards           []Forward
+	Allowlist          Classifier         // Optional host allowlist using classifier
+	Blocklist          Classifier         // Optional host blocklist using classifier
+	Interception       InterceptionConfig // Global settings for traffic interception
+	Statistics         StatisticsConfig   // Statistics collection configuration
+	Portal             PortalConfig       // Portal authentication configuration
 }
 
 // ForwardType defines the type of forwarding rule.
@@ -163,7 +165,9 @@ func LoadConfig(configPath string) (*Config, error) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds: 30,
+		TimeoutSeconds:     30,
+		MaxIdleConns:       2048,
+		MaxIdleConnsPerHost: 256,
 	}
 
 	// If config file exists, load it first
@@ -1158,6 +1162,23 @@ func loadConfigFromEnv(cfg *Config) {
 		} else {
 			// Handle error: maybe log a warning?
 			fmt.Fprintf(os.Stderr, "Warning: Invalid format for MSGTAUSCH_TIMEOUTSECONDS: %s\n", timeoutStr)
+		}
+	}
+
+	// Handle connection pool settings
+	if maxIdleConnsStr := os.Getenv("MSGTAUSCH_MAXIDLECONNS"); maxIdleConnsStr != "" {
+		if maxIdleConns, err := strconv.Atoi(maxIdleConnsStr); err == nil {
+			cfg.MaxIdleConns = maxIdleConns
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: Invalid format for MSGTAUSCH_MAXIDLECONNS: %s\n", maxIdleConnsStr)
+		}
+	}
+
+	if maxIdleConnsPerHostStr := os.Getenv("MSGTAUSCH_MAXIDLECONNSPERHOST"); maxIdleConnsPerHostStr != "" {
+		if maxIdleConnsPerHost, err := strconv.Atoi(maxIdleConnsPerHostStr); err == nil {
+			cfg.MaxIdleConnsPerHost = maxIdleConnsPerHost
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: Invalid format for MSGTAUSCH_MAXIDLECONNSPERHOST: %s\n", maxIdleConnsPerHostStr)
 		}
 	}
 

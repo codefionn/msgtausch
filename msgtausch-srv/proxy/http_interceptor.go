@@ -251,8 +251,8 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 				return h.proxy.createForwardTCPClient(ctx, addr)
 			},
 			DisableKeepAlives:     false,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
+			MaxIdleConns:          h.proxy.config.MaxIdleConns,
+			MaxIdleConnsPerHost:   h.proxy.config.MaxIdleConnsPerHost,
 			IdleConnTimeout:       90 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},

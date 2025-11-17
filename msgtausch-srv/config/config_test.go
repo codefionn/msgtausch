@@ -157,6 +157,8 @@ func TestLoadConfigJSON(t *testing.T) {
 					},
 				},
 				TimeoutSeconds:           60,
+				MaxIdleConns:             2048,
+				MaxIdleConnsPerHost:      256,
 				Classifiers: map[string]Classifier{
 					"ip1": &ClassifierIP{
 						IP: "192.168.1.1",

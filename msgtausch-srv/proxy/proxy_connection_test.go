@@ -486,6 +486,230 @@ func TestHTTPConnectionPersistence(t *testing.T) {
 	})
 }
 
+// TestClientSwitchingTargetHost tests that a client can switch between different
+// target hosts using regular HTTP proxy requests (without CONNECT).
+// This verifies the proxy correctly handles requests to different backends in sequence
+// without issues with connection reuse or routing.
+func TestClientSwitchingTargetHost(t *testing.T) {
+	// Create two test servers on different ports
+	server1Content := "Response from server 1"
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Server-ID", "server1")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(server1Content))
+	}))
+	defer server1.Close()
+
+	server2Content := "Response from server 2"
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Server-ID", "server2")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(server2Content))
+	}))
+	defer server2.Close()
+
+	// Create proxy configuration
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{
+				Type:          config.ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:0",
+				Enabled:       true,
+			},
+		},
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
+	}
+
+	proxy := NewProxy(cfg)
+	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
+	if err != nil {
+		t.Fatalf("Failed to create listener: %v", err)
+	}
+	proxyAddr := listener.Addr().String()
+
+	go func() {
+		if err := proxy.StartWithListener(listener); err != http.ErrServerClosed && err != nil {
+			t.Errorf("Proxy server error: %v", err)
+		}
+	}()
+	defer proxy.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	proxyURL, err := url.Parse(fmt.Sprintf("http://%s", proxyAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create HTTP client that uses the proxy
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			// Enable connection reuse to make the test more realistic
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 5,
+			IdleConnTimeout:     30 * time.Second,
+			DisableKeepAlives:   false,
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	t.Run("switch between two servers multiple times", func(t *testing.T) {
+		// Make alternating requests to both servers to verify the proxy
+		// correctly routes each request to the appropriate backend
+		requests := []struct {
+			url            string
+			expectedBody   string
+			expectedHeader string
+		}{
+			{server1.URL, server1Content, "server1"},
+			{server2.URL, server2Content, "server2"},
+			{server1.URL, server1Content, "server1"},
+			{server2.URL, server2Content, "server2"},
+			{server1.URL, server1Content, "server1"},
+			{server2.URL, server2Content, "server2"},
+		}
+
+		for i, req := range requests {
+			resp, err := client.Get(req.url)
+			if err != nil {
+				t.Fatalf("Request %d to %s failed: %v", i+1, req.url, err)
+			}
+
+			// Verify status code
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Request %d: expected status %d, got %d", i+1, http.StatusOK, resp.StatusCode)
+			}
+
+			// Verify we reached the correct server
+			if resp.Header.Get("X-Server-ID") != req.expectedHeader {
+				t.Errorf("Request %d: expected server %s, got %s",
+					i+1, req.expectedHeader, resp.Header.Get("X-Server-ID"))
+			}
+
+			// Verify response body
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("Request %d: failed to read response body: %v", i+1, err)
+			}
+			resp.Body.Close()
+
+			if string(body) != req.expectedBody {
+				t.Errorf("Request %d: expected body %q, got %q", i+1, req.expectedBody, string(body))
+			}
+
+			t.Logf("Request %d: successfully reached %s", i+1, req.expectedHeader)
+
+			// Small delay between requests to simulate realistic usage
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("rapid switching between servers", func(t *testing.T) {
+		// Test rapid switching to ensure there are no connection or routing issues
+		const numIterations = 10
+
+		for i := 0; i < numIterations; i++ {
+			// Request to server 1
+			resp1, err := client.Get(server1.URL)
+			if err != nil {
+				t.Fatalf("Iteration %d: request to server1 failed: %v", i+1, err)
+			}
+			if resp1.Header.Get("X-Server-ID") != "server1" {
+				t.Errorf("Iteration %d: expected server1, got %s", i+1, resp1.Header.Get("X-Server-ID"))
+			}
+			body1, _ := io.ReadAll(resp1.Body)
+			resp1.Body.Close()
+			if string(body1) != server1Content {
+				t.Errorf("Iteration %d: wrong content from server1", i+1)
+			}
+
+			// Immediately switch to server 2
+			resp2, err := client.Get(server2.URL)
+			if err != nil {
+				t.Fatalf("Iteration %d: request to server2 failed: %v", i+1, err)
+			}
+			if resp2.Header.Get("X-Server-ID") != "server2" {
+				t.Errorf("Iteration %d: expected server2, got %s", i+1, resp2.Header.Get("X-Server-ID"))
+			}
+			body2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+			if string(body2) != server2Content {
+				t.Errorf("Iteration %d: wrong content from server2", i+1)
+			}
+		}
+
+		t.Logf("Successfully completed %d rapid switches between servers", numIterations)
+	})
+
+	t.Run("concurrent requests to different servers", func(t *testing.T) {
+		// Test concurrent requests to different servers through the same proxy
+		var wg sync.WaitGroup
+		const numConcurrent = 5
+
+		errors := make(chan error, numConcurrent*2)
+
+		// Launch concurrent requests to server 1
+		for i := 0; i < numConcurrent; i++ {
+			wg.Add(1)
+			go func(reqNum int) {
+				defer wg.Done()
+				resp, err := client.Get(server1.URL)
+				if err != nil {
+					errors <- fmt.Errorf("server1 request %d failed: %w", reqNum, err)
+					return
+				}
+				defer resp.Body.Close()
+
+				if resp.Header.Get("X-Server-ID") != "server1" {
+					errors <- fmt.Errorf("server1 request %d: wrong server", reqNum)
+					return
+				}
+
+				body, _ := io.ReadAll(resp.Body)
+				if string(body) != server1Content {
+					errors <- fmt.Errorf("server1 request %d: wrong content", reqNum)
+				}
+			}(i)
+		}
+
+		// Launch concurrent requests to server 2
+		for i := 0; i < numConcurrent; i++ {
+			wg.Add(1)
+			go func(reqNum int) {
+				defer wg.Done()
+				resp, err := client.Get(server2.URL)
+				if err != nil {
+					errors <- fmt.Errorf("server2 request %d failed: %w", reqNum, err)
+					return
+				}
+				defer resp.Body.Close()
+
+				if resp.Header.Get("X-Server-ID") != "server2" {
+					errors <- fmt.Errorf("server2 request %d: wrong server", reqNum)
+					return
+				}
+
+				body, _ := io.ReadAll(resp.Body)
+				if string(body) != server2Content {
+					errors <- fmt.Errorf("server2 request %d: wrong content", reqNum)
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(errors)
+
+		// Check for any errors
+		for err := range errors {
+			t.Error(err)
+		}
+
+		t.Logf("Successfully completed %d concurrent requests to each server", numConcurrent)
+	})
+}
+
 // connectionTrackingListener wraps a net.Listener to track connection count
 type connectionTrackingListener struct {
 	net.Listener

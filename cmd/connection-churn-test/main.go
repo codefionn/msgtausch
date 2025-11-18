@@ -104,12 +104,55 @@ func main() {
 }
 
 func run() error {
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel := setupContext()
 	defer cancel()
+
+	serverLn, proxyLn, err := prepareListeners()
+	if err != nil {
+		return err
+	}
+	defer serverLn.Close()
+	defer proxyLn.Close()
+
+	go runEchoServer(ctx, serverLn)
+
+	cfg := proxyConfig(proxyLn.Addr().String())
+	p, proxyErr := startProxy(cfg, proxyLn)
+	defer p.Close()
+
+	if err := waitForProxyStart(proxyErr); err != nil {
+		return err
+	}
+
+	results := latencyRecorder{}
+	var reopenCount atomic.Int64
+	categories := initCategories()
+
+	smallPayload := []byte("ping\n")
+	largePayload := buildPayload(*largePayloadSize)
+
+	start := time.Now()
+	errCh := runClients(ctx, cancel, proxyLn.Addr().String(), serverLn.Addr().String(), smallPayload, largePayload, &results, &reopenCount, categories)
+	if err := waitForFirstError(errCh); err != nil {
+		return err
+	}
+	elapsed := time.Since(start)
+
+	printReport(results, reopenCount.Load(), elapsed, categories)
+	return nil
+}
+
+func setupContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
+
+	stop := func() {
+		signal.Stop(sigCh)
+		cancel()
+	}
+
 	go func() {
 		select {
 		case <-sigCh:
@@ -118,41 +161,50 @@ func run() error {
 		}
 	}()
 
+	return ctx, stop
+}
+
+func prepareListeners() (net.Listener, net.Listener, error) {
 	serverLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return fmt.Errorf("start server: %w", err)
+		return nil, nil, fmt.Errorf("start server: %w", err)
 	}
-	defer serverLn.Close()
-
-	go runEchoServer(ctx, serverLn)
 
 	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return fmt.Errorf("start proxy listener: %w", err)
+		_ = serverLn.Close()
+		return nil, nil, fmt.Errorf("start proxy listener: %w", err)
 	}
-	defer proxyLn.Close()
 
-	cfg := &config.Config{
+	return serverLn, proxyLn, nil
+}
+
+func proxyConfig(proxyAddr string) *config.Config {
+	return &config.Config{
 		Servers: []config.ServerConfig{
 			{
 				Type:          config.ProxyTypeStandard,
-				ListenAddress: proxyLn.Addr().String(),
+				ListenAddress: proxyAddr,
 				Enabled:       true,
 			},
 		},
 		TimeoutSeconds: timeoutSeconds(*timeout),
 	}
+}
 
+func startProxy(cfg *config.Config, ln net.Listener) (*proxy.Proxy, <-chan error) {
 	p := proxy.NewProxy(cfg)
-	defer p.Close()
 	proxyErr := make(chan error, 1)
 	go func() {
-		if err := p.StartWithListener(proxyLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := p.StartWithListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			proxyErr <- err
 		}
 		close(proxyErr)
 	}()
+	return p, proxyErr
+}
 
+func waitForProxyStart(proxyErr <-chan error) error {
 	select {
 	case err := <-proxyErr:
 		if err != nil {
@@ -160,30 +212,28 @@ func run() error {
 		}
 	case <-time.After(200 * time.Millisecond):
 	}
+	return nil
+}
 
-	results := latencyRecorder{}
-	var reopenCount atomic.Int64
-	totalRequests := int64(*connections * *requestsPerConn)
-	errCh := make(chan error, *connections)
-
-	categories := map[string]*categoryStats{
+func initCategories() map[string]*categoryStats {
+	return map[string]*categoryStats{
 		"small/reused": {},
 		"small/reopen": {},
 		"large/reused": {},
 		"large/reopen": {},
 	}
+}
 
-	smallPayload := []byte("ping\n")
-	largePayload := buildPayload(*largePayloadSize)
-
+func runClients(ctx context.Context, cancel context.CancelFunc, proxyAddr, targetAddr string, smallPayload, largePayload []byte, lr *latencyRecorder, reopenCount *atomic.Int64, categories map[string]*categoryStats) <-chan error {
+	errCh := make(chan error, *connections)
 	var wg sync.WaitGroup
-	start := time.Now()
+
 	for i := 0; i < *connections; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-			if err := runClient(ctx, proxyLn.Addr().String(), serverLn.Addr().String(), smallPayload, largePayload, rng, &results, &reopenCount, categories); err != nil {
+			rng := newTestRand()
+			if err := runClient(ctx, proxyAddr, targetAddr, smallPayload, largePayload, rng, lr, reopenCount, categories); err != nil {
 				select {
 				case errCh <- err:
 				default:
@@ -193,19 +243,30 @@ func run() error {
 		}()
 	}
 
-	wg.Wait()
-	close(errCh)
-	if err := <-errCh; err != nil {
-		return err
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	return errCh
+}
+
+func waitForFirstError(errCh <-chan error) error {
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	elapsed := time.Since(start)
-
+func printReport(results latencyRecorder, reopenCount int64, elapsed time.Duration, categories map[string]*categoryStats) {
+	totalRequests := int64(*connections * *requestsPerConn)
 	p999 := results.percentile(0.999)
 	p9999 := results.percentile(0.9999)
 
 	fmt.Printf("Connections: %d, Requests per connection: %d (total %d)\n", *connections, *requestsPerConn, totalRequests)
-	fmt.Printf("Reopened connections: %d\n", reopenCount.Load())
+	fmt.Printf("Reopened connections: %d\n", reopenCount)
 	fmt.Printf("Duration: %s, Samples: %d\n", elapsed, results.count())
 	fmt.Printf("Latency p99.9: %s\n", p999)
 	fmt.Printf("Latency p99.99: %s\n", p9999)
@@ -221,12 +282,10 @@ func run() error {
 				name, c, cs.rec.percentile(0.999), cs.rec.percentile(0.9999))
 		}
 	}
-
-	return nil
 }
 
 func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, largePayload []byte, rng *rand.Rand, lr *latencyRecorder, reopenCount *atomic.Int64, categories map[string]*categoryStats) error {
-	conn, rw, err := connectThroughProxy(ctx, proxyAddr, targetAddr)
+	conn, rw, err := connectThroughProxy(proxyAddr, targetAddr)
 	if err != nil {
 		return err
 	}
@@ -238,61 +297,33 @@ func runClient(ctx context.Context, proxyAddr, targetAddr string, smallPayload, 
 			return nil
 		}
 
-		reopened := false
-		if rng.Float64() < *reopenProbability {
-			conn.Close()
-			conn, rw, err = connectThroughProxy(ctx, proxyAddr, targetAddr)
-			if err != nil {
-				return fmt.Errorf("reconnect: %w", err)
-			}
-			reopenCount.Add(1)
-			reopened = true
-		}
-
-		payload := smallPayload
-		isLarge := false
-		if rng.Float64() < *largePayloadChance {
-			payload = largePayload
-			isLarge = true
-		}
-
-		if len(readBuf) < len(payload) {
-			readBuf = make([]byte, len(payload))
-		}
-
-		start := time.Now()
-		if err := writePayload(ctx, conn, rw, payload); err != nil {
+		conn, rw, reopened, err := maybeReconnect(conn, rw, rng, proxyAddr, targetAddr, reopenCount)
+		if err != nil {
 			return err
 		}
-		if err := readEcho(ctx, conn, rw.Reader, readBuf[:len(payload)]); err != nil {
+
+		payload, isLarge := selectPayload(rng, smallPayload, largePayload)
+		readBuf = ensureBufSize(readBuf, len(payload))
+
+		elapsed, err := measureRoundTrip(conn, rw, payload, readBuf[:len(payload)])
+		if err != nil {
 			return err
 		}
-		elapsed := time.Since(start)
 		lr.add(elapsed)
-
-		switch {
-		case isLarge && reopened:
-			categories["large/reopen"].add(elapsed)
-		case isLarge && !reopened:
-			categories["large/reused"].add(elapsed)
-		case !isLarge && reopened:
-			categories["small/reopen"].add(elapsed)
-		default:
-			categories["small/reused"].add(elapsed)
-		}
+		recordCategory(isLarge, reopened, elapsed, categories)
 	}
 
 	return nil
 }
 
-func connectThroughProxy(ctx context.Context, proxyAddr, targetAddr string) (net.Conn, *bufio.ReadWriter, error) {
+func connectThroughProxy(proxyAddr, targetAddr string) (net.Conn, *bufio.ReadWriter, error) {
 	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial proxy: %w", err)
 	}
 
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-	if err := sendConnect(ctx, conn, rw, targetAddr); err != nil {
+	if err := sendConnect(conn, rw, targetAddr); err != nil {
 		_ = conn.Close()
 		return nil, nil, err
 	}
@@ -300,7 +331,7 @@ func connectThroughProxy(ctx context.Context, proxyAddr, targetAddr string) (net
 	return conn, rw, nil
 }
 
-func sendConnect(ctx context.Context, conn net.Conn, rw *bufio.ReadWriter, targetAddr string) error {
+func sendConnect(conn net.Conn, rw *bufio.ReadWriter, targetAddr string) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return err
 	}
@@ -333,7 +364,7 @@ func sendConnect(ctx context.Context, conn net.Conn, rw *bufio.ReadWriter, targe
 	return nil
 }
 
-func writePayload(ctx context.Context, conn net.Conn, rw *bufio.ReadWriter, payload []byte) error {
+func writePayload(conn net.Conn, rw *bufio.ReadWriter, payload []byte) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(*writeDeadline)); err != nil {
 		return err
 	}
@@ -346,12 +377,70 @@ func writePayload(ctx context.Context, conn net.Conn, rw *bufio.ReadWriter, payl
 	return nil
 }
 
-func readEcho(ctx context.Context, conn net.Conn, reader *bufio.Reader, buf []byte) error {
+func readEcho(conn net.Conn, reader *bufio.Reader, buf []byte) error {
 	if err := conn.SetReadDeadline(time.Now().Add(*readDeadline)); err != nil {
 		return err
 	}
 	_, err := io.ReadFull(reader, buf)
 	return err
+}
+
+func maybeReconnect(conn net.Conn, rw *bufio.ReadWriter, rng *rand.Rand, proxyAddr, targetAddr string, reopenCount *atomic.Int64) (net.Conn, *bufio.ReadWriter, bool, error) {
+	if rng.Float64() >= *reopenProbability {
+		return conn, rw, false, nil
+	}
+
+	conn.Close()
+	newConn, newRW, err := connectThroughProxy(proxyAddr, targetAddr)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("reconnect: %w", err)
+	}
+
+	reopenCount.Add(1)
+	return newConn, newRW, true, nil
+}
+
+func selectPayload(rng *rand.Rand, smallPayload, largePayload []byte) ([]byte, bool) {
+	if rng.Float64() < *largePayloadChance {
+		return largePayload, true
+	}
+	return smallPayload, false
+}
+
+func ensureBufSize(buf []byte, size int) []byte {
+	if len(buf) < size {
+		return make([]byte, size)
+	}
+	return buf
+}
+
+func measureRoundTrip(conn net.Conn, rw *bufio.ReadWriter, payload []byte, readBuf []byte) (time.Duration, error) {
+	start := time.Now()
+	if err := writePayload(conn, rw, payload); err != nil {
+		return 0, err
+	}
+	if err := readEcho(conn, rw.Reader, readBuf); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
+}
+
+func recordCategory(isLarge, reopened bool, elapsed time.Duration, categories map[string]*categoryStats) {
+	switch {
+	case isLarge && reopened:
+		categories["large/reopen"].add(elapsed)
+	case isLarge && !reopened:
+		categories["large/reused"].add(elapsed)
+	case !isLarge && reopened:
+		categories["small/reopen"].add(elapsed)
+	default:
+		categories["small/reused"].add(elapsed)
+	}
+}
+
+func newTestRand() *rand.Rand {
+	// Pseudo-random is sufficient for steering test traffic; cryptographic strength is not required.
+	return rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec
 }
 
 func runEchoServer(ctx context.Context, ln net.Listener) {

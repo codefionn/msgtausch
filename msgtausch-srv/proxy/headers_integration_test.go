@@ -60,8 +60,8 @@ func TestTransferEncodingChunked(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -137,8 +137,8 @@ func TestTEHeader(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -243,8 +243,8 @@ func TestTrailerHeader(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -352,8 +352,8 @@ func TestChunkedEncodingWithTrailers(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	proxyListener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -425,8 +425,8 @@ func TestKeepAliveHeader(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -492,8 +492,8 @@ func TestHopByHopHeadersExcluded(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -575,8 +575,8 @@ func TestMultipleTransferEncodingValues(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)

@@ -60,15 +60,15 @@ func main() {
 		return &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Enabled:              true,
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        *proxyAddr,
-					InterceptorName:      "",
+					Enabled:         true,
+					Type:            config.ProxyTypeStandard,
+					ListenAddress:   *proxyAddr,
+					InterceptorName: "",
 				},
 			},
-			TimeoutSeconds:           2 * *timeout,
-			Classifiers:              map[string]config.Classifier{},
-			Forwards:                 []config.Forward{},
+			TimeoutSeconds: 2 * *timeout,
+			Classifiers:    map[string]config.Classifier{},
+			Forwards:       []config.Forward{},
 			Interception: config.InterceptionConfig{
 				Enabled:   interception,
 				HTTP:      interception,

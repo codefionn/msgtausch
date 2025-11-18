@@ -17,9 +17,9 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0", // Use port 0 for auto-assignment
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0", // Use port 0 for auto-assignment
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -110,9 +110,9 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -159,9 +159,9 @@ func TestHTTPSClassifierEndToEnd(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -243,9 +243,9 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -283,9 +283,9 @@ func TestHTTPSClassifierReferences(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -328,9 +328,9 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -357,9 +357,9 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -395,9 +395,9 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -419,9 +419,9 @@ func TestHTTPSClassifierErrorHandling(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -450,14 +450,14 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 				{
-					Type:                 config.ProxyTypeHTTP,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeHTTP,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{
@@ -498,9 +498,9 @@ func TestHTTPSClassifierPerformance(t *testing.T) {
 		cfg := &config.Config{
 			Servers: []config.ServerConfig{
 				{
-					Type:                 config.ProxyTypeStandard,
-					ListenAddress:        "127.0.0.1:0",
-					Enabled:              true,
+					Type:          config.ProxyTypeStandard,
+					ListenAddress: "127.0.0.1:0",
+					Enabled:       true,
 				},
 			},
 			Interception: config.InterceptionConfig{

@@ -325,9 +325,9 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           60,
-		Classifiers:              make(map[string]msgtauschconfig.Classifier),
-		Forwards:                 forwards,
+		TimeoutSeconds: 60,
+		Classifiers:    make(map[string]msgtauschconfig.Classifier),
+		Forwards:       forwards,
 		// Initialize with nil allowlist/blocklist - this prevents the NewProxy function
 		// from trying to compile non-existent classifiers
 		Allowlist: nil,
@@ -398,6 +398,10 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	wg.Add(nRequests)
 
 	unrecoverableErrorCount := atomic.Int64{}
+	httpAttempts := atomic.Int64{}
+	httpAccounted := atomic.Int64{}
+	wsAttempts := atomic.Int64{}
+	inFlight := atomic.Int64{}
 
 	for i := range nRequests {
 		initialWait := time.Duration(10+rng.Intn(40)) * time.Millisecond
@@ -435,6 +439,8 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		}
 
 		if useWebSocket {
+			wsAttempts.Add(1)
+			inFlight.Add(1)
 			// Convert http(s):// to ws(s):// for WebSocket
 			wsURL := targetURL
 			if strings.HasPrefix(wsURL, "https://") {
@@ -455,6 +461,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 
 				defer func() {
 					mutexTarget.Unlock()
+					inFlight.Add(-1)
 					wg.Done()
 				}()
 
@@ -490,12 +497,21 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				}
 
 				// Read response
-				_, _, err = conn.ReadMessage()
+				_, respMsg, err := conn.ReadMessage()
 				if err != nil {
 					msgtauschlogger.Error("Error reading WebSocket message: %v", err)
+					unrecoverableErrorCount.Add(1)
+					return
+				}
+
+				if !bytes.Equal(respMsg, []byte(message)) {
+					msgtauschlogger.Error("WebSocket echo mismatch for request %d: want %q, got %q", reqIndex, message, string(respMsg))
+					unrecoverableErrorCount.Add(1)
 				}
 			}(wsURL, usesForward, i, initialWait, mutexTarget)
 		} else {
+			httpAttempts.Add(1)
+			inFlight.Add(1)
 			// Build HTTP request
 			req, _ := http.NewRequest("GET", targetURL, http.NoBody)
 			setHeader(req.Header)
@@ -505,9 +521,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 
 				defer func() {
 					mutexTarget.Unlock()
+					inFlight.Add(-1)
 					wg.Done()
 				}()
 
+				accounted := false
 				startTime := time.Now()
 				resp, err := client.Do(req)
 				elapsed := time.Since(startTime)
@@ -545,6 +563,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 						}
 						errCounts[targetURL][errorType]++
 					}
+					accounted = true
 				} else if resp.StatusCode != http.StatusOK {
 					body, _ := io.ReadAll(resp.Body)
 					msgtauschlogger.Debug("Received non-200 status code in %s: %d (%s)", targetURL, resp.StatusCode, strings.ReplaceAll(string(body), "\n", ""))
@@ -579,6 +598,13 @@ func RunSimulation(seed int64, enableForwards bool) error {
 							errCounts[targetURL][errorType]++
 						}
 					}
+					accounted = true
+				} else {
+					accounted = true
+				}
+
+				if accounted {
+					httpAccounted.Add(1)
 				}
 			}(req, usesForward, targetURL, initialWait, mutexTarget)
 		}
@@ -586,13 +612,14 @@ func RunSimulation(seed int64, enableForwards bool) error {
 
 	wg.Wait()
 
-	// This is a hack, because I didn't discover why wg.Wait() doesn't wait for completion
-	time.Sleep(5 * time.Second)
+	if inFlight.Load() != 0 {
+		return fmt.Errorf("in-flight goroutines remaining after wait: %d", inFlight.Load())
+	}
 
 	msgtauschlogger.Info("Simulation completed with %d requests (%d forwards used)", nRequests, usedForwards)
 
 	if unrecoverableErrorCount.Load() > 0 {
-		msgtauschlogger.Error("%d unrecoverable errors occurred", unrecoverableErrorCount.Load())
+		return fmt.Errorf("%d unrecoverable errors occurred", unrecoverableErrorCount.Load())
 	}
 
 	// Verify websocket connection counts
@@ -609,6 +636,9 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		return err
 	}
 	err = validateErrorCounts(errCounts, targets, len(forwards))
+	if err != nil {
+		return err
+	}
 
 	// Store simulation metadata in a global for stats collection
 	lastSimulationStats = &SimulationStats{
@@ -655,6 +685,29 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	// Calculate percentiles from response times
 	lastSimulationStats.ResponseTimes = responseTimes
 	calculatePercentiles(lastSimulationStats)
+
+	if httpAccounted.Load() != httpAttempts.Load() {
+		return fmt.Errorf("http accounting mismatch: attempts %d accounted %d", httpAttempts.Load(), httpAccounted.Load())
+	}
+	if httpAttempts.Load()+wsAttempts.Load() != int64(nRequests) {
+		return fmt.Errorf("request mix mismatch: http %d + ws %d != total %d", httpAttempts.Load(), wsAttempts.Load(), nRequests)
+	}
+
+	// Additional invariants on collected stats
+	var sumRequests int64
+	for _, tss := range lastSimulationStats.TargetServerStats {
+		sumRequests += tss.RequestCount
+		var sumErrors int
+		for _, c := range tss.ErrorCounts {
+			sumErrors += c
+		}
+		if int64(sumErrors) > tss.RequestCount {
+			return fmt.Errorf("error/request mismatch for %s: errors %d exceed requests %d", tss.URL, sumErrors, tss.RequestCount)
+		}
+	}
+	if sumRequests != int64(nRequestsNotForwarded) {
+		return fmt.Errorf("request tally mismatch: targets saw %d non-forwarded vs expected %d", sumRequests, nRequestsNotForwarded)
+	}
 
 	return err
 }
@@ -822,11 +875,11 @@ func CreateRandomMsgtauschProxies(seed int64) []*SimulatedMsgtauschProxy {
 					Enabled:       true,
 				},
 			},
-			TimeoutSeconds:           10 + rng.Intn(50),  // 10-59s
-			Classifiers:              make(map[string]msgtauschconfig.Classifier),
-			Forwards:                 nil, // No forwards for basic simulation
-			Allowlist:                nil, // Explicitly set to nil to avoid compilation errors
-			Blocklist:                nil, // Explicitly set to nil to avoid compilation errors
+			TimeoutSeconds: 10 + rng.Intn(50), // 10-59s
+			Classifiers:    make(map[string]msgtauschconfig.Classifier),
+			Forwards:       nil, // No forwards for basic simulation
+			Allowlist:      nil, // Explicitly set to nil to avoid compilation errors
+			Blocklist:      nil, // Explicitly set to nil to avoid compilation errors
 		}
 
 		listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)

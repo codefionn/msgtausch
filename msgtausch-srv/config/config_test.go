@@ -151,14 +151,14 @@ func TestLoadConfigJSON(t *testing.T) {
 			expectedCfg: &Config{
 				Servers: []ServerConfig{
 					{
-						Type:                 ProxyTypeStandard,
-						ListenAddress:        "localhost:8000",
-						Enabled:              true,
+						Type:          ProxyTypeStandard,
+						ListenAddress: "localhost:8000",
+						Enabled:       true,
 					},
 				},
-				TimeoutSeconds:           60,
-				MaxIdleConns:             2048,
-				MaxIdleConnsPerHost:      256,
+				TimeoutSeconds:      60,
+				MaxIdleConns:        2048,
+				MaxIdleConnsPerHost: 256,
 				Classifiers: map[string]Classifier{
 					"ip1": &ClassifierIP{
 						IP: "192.168.1.1",
@@ -329,12 +329,12 @@ func TestParseConfigData(t *testing.T) {
 			cfg := &Config{
 				Servers: []ServerConfig{
 					{
-						Type:                 ProxyTypeStandard,
-						ListenAddress:        "127.0.0.1:8080",
-						Enabled:              true,
+						Type:          ProxyTypeStandard,
+						ListenAddress: "127.0.0.1:8080",
+						Enabled:       true,
 					},
 				},
-				TimeoutSeconds:           30,
+				TimeoutSeconds: 30,
 			}
 
 			err := parseConfigData(tc.data, cfg)

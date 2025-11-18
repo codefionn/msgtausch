@@ -58,8 +58,8 @@ func TestProxyIntegration(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 
 	proxy := NewProxy(cfg)
@@ -196,8 +196,8 @@ func TestConnectMethod(t *testing.T) {
 					Enabled:       true,
 				},
 			},
-			TimeoutSeconds:           5,
-			Classifiers:              make(map[string]config.Classifier),
+			TimeoutSeconds: 5,
+			Classifiers:    make(map[string]config.Classifier),
 		}
 
 		proxy := NewProxy(cfg)
@@ -289,8 +289,8 @@ func TestHttpThenConnectRequest(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxy := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -365,8 +365,8 @@ func TestHTTP2ViaConnect(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxy := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -436,8 +436,8 @@ func TestForwardRequestHeaderSkipping(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxyInstance := NewProxy(cfg)
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
@@ -557,8 +557,8 @@ func TestKeepAlive(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 	proxy := NewProxy(cfg)
 	pln, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)

@@ -465,7 +465,7 @@ func TestComplexCompressionScenario(t *testing.T) {
 	assert.Equal(t, testContent, string(body))
 
 	// Check for trailer (if supported by client/proxy)
-	if resp.Trailer != nil && len(resp.Trailer) > 0 {
+	if len(resp.Trailer) > 0 {
 		t.Logf("Trailers received in complex scenario: %v", resp.Trailer)
 	}
 }

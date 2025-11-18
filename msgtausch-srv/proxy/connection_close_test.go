@@ -71,8 +71,8 @@ func TestConnectionCloseHandling(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           30,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 30,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 
 	proxy := NewProxy(cfg)
@@ -177,8 +177,8 @@ func TestConnectionCloseHTTPS(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           30,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 30,
+		Classifiers:    make(map[string]config.Classifier),
 	}
 
 	proxy := NewProxy(cfg)

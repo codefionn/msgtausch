@@ -371,8 +371,8 @@ func createProxyWithStatsCollector(collector stats.Collector) (*Proxy, string, f
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 		Statistics: config.StatisticsConfig{
 			Enabled:    true,        // Enable stats collection
 			SQLitePath: sqlLitePath, // Path won't be used since we provide our own collector

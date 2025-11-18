@@ -120,8 +120,7 @@ func TestHasChanged(t *testing.T) {
 			"different TimeoutSeconds",
 			&Config{TimeoutSeconds: 1}, &Config{TimeoutSeconds: 2}, true,
 		},
-		{
-		},
+		{},
 		{
 			"different Classifiers map",
 			&Config{Classifiers: map[string]Classifier{"a": portClassifier1}},

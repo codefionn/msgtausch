@@ -58,8 +58,8 @@ func TestHTTPInterception(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 		Interception: config.InterceptionConfig{
 			Enabled: true,
 			HTTP:    true,
@@ -178,8 +178,8 @@ func TestHTTPInterceptionWithResponseModification(t *testing.T) {
 				Enabled:       true,
 			},
 		},
-		TimeoutSeconds:           5,
-		Classifiers:              make(map[string]config.Classifier),
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
 		Interception: config.InterceptionConfig{
 			Enabled: true,
 			HTTP:    true,

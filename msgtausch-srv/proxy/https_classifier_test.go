@@ -32,9 +32,9 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 		if len(proxy.servers) == 0 {
 			// Add a test server
 			serverCfg := config.ServerConfig{
-				Type:           config.ProxyTypeStandard,
-				ListenAddress:  "127.0.0.1:8080",
-				Enabled:        true,
+				Type:          config.ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:8080",
+				Enabled:       true,
 			}
 
 			// Compile HTTPS classifier directly for testing
@@ -171,9 +171,9 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 
 		// Add a test server
 		serverCfg := config.ServerConfig{
-			Type:           config.ProxyTypeStandard,
-			ListenAddress:  "127.0.0.1:8080",
-			Enabled:        true,
+			Type:          config.ProxyTypeStandard,
+			ListenAddress: "127.0.0.1:8080",
+			Enabled:       true,
 		}
 
 		server := &Server{
@@ -217,9 +217,9 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 
 		// Add a test server
 		serverCfg := config.ServerConfig{
-			Type:           config.ProxyTypeStandard,
-			ListenAddress:  "127.0.0.1:8080",
-			Enabled:        true,
+			Type:          config.ProxyTypeStandard,
+			ListenAddress: "127.0.0.1:8080",
+			Enabled:       true,
 		}
 
 		// The server creation should handle the missing classifier gracefully

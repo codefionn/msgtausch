@@ -78,3 +78,5 @@ test_proxy_stats*.db-shm
 test_proxy_stats*.db-wal
 
 /proxy-test
+
+/.cache

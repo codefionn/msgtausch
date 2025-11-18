@@ -443,6 +443,270 @@ func TestHTTPSInterceptionWithStandardProxy(t *testing.T) {
 	})
 }
 
+// Test that HTTP requests still work when HTTP interception is disabled but HTTPS interception is enabled,
+// and that HTTPS requests are intercepted with the configured CA.
+func TestStandardProxy_HTTPDisabledHTTPSInterceptionEnabled(t *testing.T) {
+	caCertPath := "testdata/test_ca.crt"
+	caKeyPath := "testdata/test_ca.key"
+
+	httpContent := "http-ok"
+	httpListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	httpSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(httpContent))
+	}))
+	httpSrv.Listener = httpListener
+	httpSrv.Start()
+	defer httpSrv.Close()
+
+	httpsContent := "https-ok"
+	httpsListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	httpsSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(httpsContent))
+	}))
+	httpsSrv.Listener = httpsListener
+	httpsSrv.StartTLS()
+	defer httpsSrv.Close()
+
+	caCertData, err := os.ReadFile(caCertPath)
+	require.NoError(t, err, "Failed to read CA certificate")
+	_, err = os.ReadFile(caKeyPath)
+	require.NoError(t, err, "Failed to read CA key")
+
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{
+				Type:          config.ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:0",
+				Enabled:       true,
+			},
+		},
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
+		Interception: config.InterceptionConfig{
+			Enabled:            true,
+			HTTP:               false,
+			HTTPS:              true,
+			InsecureSkipVerify: true,
+			CAFile:             caCertPath,
+			CAKeyFile:          caKeyPath,
+		},
+	}
+
+	proxy := NewProxy(cfg)
+	require.Len(t, proxy.servers, 1)
+	assert.Nil(t, proxy.servers[0].httpInterceptor, "HTTP interceptor should not be initialized")
+	require.NotNil(t, proxy.servers[0].httpsInterceptor, "HTTPS interceptor should be initialized")
+
+	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
+	require.NoError(t, err)
+	proxyAddr := listener.Addr().String()
+
+	go func() {
+		if err := proxy.StartWithListener(listener); err != http.ErrServerClosed && err != nil {
+			t.Errorf("Proxy server error: %v", err)
+		}
+	}()
+	defer proxy.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	require.NoError(t, err)
+
+	// HTTP request should succeed via proxy even though HTTP interception is disabled
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+	}
+
+	httpResp, err := httpClient.Get(httpSrv.URL)
+	require.NoError(t, err)
+	defer httpResp.Body.Close()
+	body, err := io.ReadAll(httpResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, httpContent, string(body), "HTTP request should be forwarded without interception")
+
+	// Capture original HTTPS certificate for comparison
+	var originalCert *x509.Certificate
+	directTLSConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) > 0 {
+				originalCert = cs.PeerCertificates[0]
+			}
+			return nil
+		},
+	}
+	directClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: directTLSConfig,
+		},
+	}
+	directResp, err := directClient.Get(httpsSrv.URL)
+	require.NoError(t, err)
+	_ = directResp.Body.Close()
+	require.NotNil(t, originalCert, "Failed to capture original certificate")
+
+	// HTTPS request should be intercepted with the proxy-issued certificate
+	var interceptedCert *x509.Certificate
+	rootCAs := x509.NewCertPool()
+	require.True(t, rootCAs.AppendCertsFromPEM(caCertData), "Failed to append CA cert to pool")
+
+	tlsConfig := &tls.Config{
+		RootCAs:            rootCAs,
+		InsecureSkipVerify: true, // Hostname verification is handled manually below
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) > 0 {
+				interceptedCert = cs.PeerCertificates[0]
+				// Verify chain against provided CA while skipping hostname validation
+				if _, err := interceptedCert.Verify(x509.VerifyOptions{Roots: rootCAs}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:               http.ProxyURL(proxyURL),
+			TLSClientConfig:     tlsConfig,
+			ForceAttemptHTTP2:   false,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+	}
+
+	httpsResp, err := httpsClient.Get(httpsSrv.URL)
+	require.NoError(t, err)
+	defer httpsResp.Body.Close()
+	httpsBody, err := io.ReadAll(httpsResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, httpsContent, string(httpsBody))
+	require.NotNil(t, interceptedCert, "Did not capture intercepted certificate")
+
+	assert.NotEqual(t, originalCert.SerialNumber, interceptedCert.SerialNumber, "Intercepted certificate should differ from origin")
+	assert.Contains(t, interceptedCert.Issuer.String(), "Msgtausch Test CA", "Intercepted certificate should be issued by test CA")
+}
+
+// Test the inverse: HTTP interception enabled, HTTPS interception disabled.
+// HTTP traffic should be intercepted, while HTTPS is tunneled without certificate modification.
+func TestStandardProxy_HTTPEnabledHTTPSInterceptionDisabled(t *testing.T) {
+	httpContent := "http-ok"
+	intercepted := make(chan bool, 1)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		intercepted <- r.Header.Get("X-Intercepted") == "1"
+		_, _ = w.Write([]byte(httpContent))
+	}))
+	defer httpSrv.Close()
+
+	httpsContent := "https-ok"
+	httpsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(httpsContent))
+	}))
+	defer httpsSrv.Close()
+
+	origCert := httpsSrv.TLS.Certificates[0].Leaf
+	if origCert == nil {
+		var err error
+		origCert, err = x509.ParseCertificate(httpsSrv.TLS.Certificates[0].Certificate[0])
+		require.NoError(t, err)
+	}
+
+	cfg := &config.Config{
+		Servers: []config.ServerConfig{
+			{
+				Type:          config.ProxyTypeStandard,
+				ListenAddress: "127.0.0.1:0",
+				Enabled:       true,
+			},
+		},
+		TimeoutSeconds: 5,
+		Classifiers:    make(map[string]config.Classifier),
+		Interception: config.InterceptionConfig{
+			Enabled: true,
+			HTTP:    true,
+			HTTPS:   false,
+			// Allow connecting to self-signed upstream inside the tunnel
+			InsecureSkipVerify: true,
+		},
+	}
+
+	proxy := NewProxy(cfg)
+	require.Len(t, proxy.servers, 1)
+	require.NotNil(t, proxy.servers[0].httpInterceptor, "HTTP interceptor should be initialized")
+	assert.Nil(t, proxy.servers[0].httpsInterceptor, "HTTPS interceptor should not be initialized")
+
+	// Add a request hook to verify HTTP interception path
+	proxy.servers[0].httpInterceptor.AddRequestHook("mark", func(r *http.Request) error {
+		r.Header.Set("X-Intercepted", "1")
+		return nil
+	})
+
+	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
+	require.NoError(t, err)
+	proxyAddr := listener.Addr().String()
+
+	go func() {
+		if err := proxy.StartWithListener(listener); err != http.ErrServerClosed && err != nil {
+			t.Errorf("Proxy server error: %v", err)
+		}
+	}()
+	defer proxy.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	require.NoError(t, err)
+
+	// HTTP request should be intercepted
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+	}
+
+	httpResp, err := httpClient.Get(httpSrv.URL)
+	require.NoError(t, err)
+	defer httpResp.Body.Close()
+	body, err := io.ReadAll(httpResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, httpContent, string(body))
+	select {
+	case ok := <-intercepted:
+		assert.True(t, ok, "HTTP interceptor hook did not run")
+	default:
+		t.Fatalf("HTTP interceptor hook not observed")
+	}
+
+	// HTTPS should be tunneled without interception; certificate must match origin
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+			ForceAttemptHTTP2:   false,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+	}
+
+	httpsResp, err := httpsClient.Get(httpsSrv.URL)
+	require.NoError(t, err)
+	defer httpsResp.Body.Close()
+	httpsBody, err := io.ReadAll(httpsResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, httpsContent, string(httpsBody))
+	require.NotNil(t, httpsResp.TLS)
+	require.Greater(t, len(httpsResp.TLS.PeerCertificates), 0)
+	clientCert := httpsResp.TLS.PeerCertificates[0]
+
+	assert.Equal(t, origCert.SerialNumber, clientCert.SerialNumber, "HTTPS certificate should not be modified when interception is disabled")
+	assert.Equal(t, origCert.Issuer.String(), clientCert.Issuer.String(), "Issuer should match original server")
+}
+
 // Test that when only HTTP interception is enabled (and HTTPS interception is disabled),
 // a CONNECT tunnel carrying TLS is not mistakenly parsed as HTTP by the HTTP interceptor.
 // Expected correct behavior: HTTPS request succeeds via raw tunnel without interception.

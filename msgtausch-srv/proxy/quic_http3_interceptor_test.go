@@ -116,9 +116,7 @@ func TestGetOrCreateCertForQUIC(t *testing.T) {
 			assert.NotNil(t, cert, "Should return a valid certificate")
 
 			// Verify the cert is cached
-			interceptor.cacheMutex.RLock()
-			cachedCert, exists := interceptor.certCache[host]
-			interceptor.cacheMutex.RUnlock()
+			cachedCert, exists := interceptor.certCache.Get(host)
 			assert.True(t, exists, "Certificate should be cached")
 			assert.Equal(t, cert, cachedCert, "Cached certificate should match returned certificate")
 
@@ -206,11 +204,9 @@ func TestQUICHTTP3InterceptorWithCustomHandlers(t *testing.T) {
 	require.NotNil(t, interceptor.certCache, "Certificate cache should be initialized")
 
 	// We'll test that interceptor can generate and cache a certificate
-	interceptor.cacheMutex.Lock()
 	// Pre-load a certificate for testing
 	testCert := &tls.Certificate{} // Mock certificate
-	interceptor.certCache[testHost] = testCert
-	interceptor.cacheMutex.Unlock()
+	interceptor.certCache.Set(testHost, testCert)
 
 	// Test certificate retrieval from cache
 	cert, err := interceptor.getOrCreateCert(testHost)
@@ -232,9 +228,7 @@ func TestQUICHTTP3InterceptorWithCustomHandlers(t *testing.T) {
 	require.NotEqual(t, testCert, cert2, "Should not retrieve the cached certificate for a different domain")
 
 	// Verify the new certificate is properly cached
-	interceptor.cacheMutex.RLock()
-	cachedCert, exists := interceptor.certCache[anotherdomain]
-	interceptor.cacheMutex.RUnlock()
+	cachedCert, exists := interceptor.certCache.Get(anotherdomain)
 	require.True(t, exists, "Certificate should be cached for the new domain")
 	require.Equal(t, cert2, cachedCert, "Cached certificate should match the returned one")
 

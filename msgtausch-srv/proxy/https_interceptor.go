@@ -29,13 +29,10 @@ import (
 
 // HTTPSInterceptor handles MITM for HTTPS traffic via CONNECT method.
 type HTTPSInterceptor struct {
-	CA              tls.Certificate   // CA certificate and private key
-	caCert          *x509.Certificate // Parsed CA cert
-	caKey           crypto.PrivateKey // Parsed CA key (supports RSA and EC)
-	certCache       map[string]*tls.Certificate
-	cacheMutex      sync.RWMutex
-	certWaitGroups  map[string]*sync.WaitGroup                   // Wait groups for ongoing certificate generation
-	waitMutex       sync.RWMutex                                 // Mutex for the wait groups map
+	CA              tls.Certificate                              // CA certificate and private key
+	caCert          *x509.Certificate                            // Parsed CA cert
+	caKey           crypto.PrivateKey                            // Parsed CA key (supports RSA and EC)
+	certCache       *ShardedCertCache                            // Sharded certificate cache for reduced lock contention
 	proxy           *Proxy                                       // Reference to proxy for creating TCP connections
 	requestHandler  func(*http.Request) (*http.Request, error)   // Optional request handler for modifying requests
 	responseHandler func(*http.Response) (*http.Response, error) // Optional response handler for modifying responses
@@ -93,8 +90,7 @@ func NewHTTPSInterceptor(caCertPEM, caKeyPEM []byte, proxy *Proxy, requestHandle
 		CA:              ca,
 		caCert:          caCert,
 		caKey:           caKey,
-		certCache:       make(map[string]*tls.Certificate),
-		certWaitGroups:  make(map[string]*sync.WaitGroup),
+		certCache:       NewShardedCertCache(),
 		proxy:           proxy,
 		requestHandler:  requestHandler,
 		responseHandler: responseHandler,
@@ -187,29 +183,19 @@ func (h *HTTPSInterceptor) HandleHTTPSIntercept(w http.ResponseWriter, req *http
 func (h *HTTPSInterceptor) getOrCreateCert(host string) (*tls.Certificate, error) {
 	domainName := strings.Split(host, ":")[0]
 
-	// First check if we already have a certificate for this host
-	h.cacheMutex.RLock()
-	cert, ok := h.certCache[host]
-	h.cacheMutex.RUnlock()
-	if ok {
-		logger.Debug("Using cached certificate for %s", host)
-		return cert, nil
-	}
-
-	// Now check if another goroutine is already generating this certificate
-	h.waitMutex.RLock()
-	wg, isGenerating := h.certWaitGroups[host]
-	h.waitMutex.RUnlock()
-
-	if isGenerating {
+	// Check cache and wait status using the sharded cache
+	cert, found, wg := h.certCache.GetOrWait(host)
+	if found {
+		if cert != nil {
+			logger.Debug("Using cached certificate for %s", host)
+			return cert, nil
+		}
+		// Another goroutine is generating, wait for it
 		logger.Debug("Waiting for another goroutine to generate certificate for %s", host)
-		// Another goroutine is generating this cert, wait for it to finish
 		wg.Wait()
 
-		// Once we're here, the certificate should be in the cache
-		h.cacheMutex.RLock()
-		cert, ok = h.certCache[host]
-		h.cacheMutex.RUnlock()
+		// After waiting, check cache again
+		cert, ok := h.certCache.Get(host)
 		if ok {
 			return cert, nil
 		}
@@ -220,31 +206,34 @@ func (h *HTTPSInterceptor) getOrCreateCert(host string) (*tls.Certificate, error
 	// No other goroutine is generating this cert, we'll do it
 	logger.Debug("Generating new certificate for %s", host)
 
-	// Create a wait group for this cert generation and add it to the map
-	wg = &sync.WaitGroup{}
-	wg.Add(1)
-	h.waitMutex.Lock()
-	h.certWaitGroups[host] = wg
-	h.waitMutex.Unlock()
+	// Start generation and get wait group
+	wg = h.certCache.StartGeneration(host)
+	if wg == nil {
+		// Another goroutine started generation while we were checking, wait for it
+		cert, _, wg := h.certCache.GetOrWait(host)
+		if cert != nil {
+			return cert, nil
+		}
+		if wg != nil {
+			wg.Wait()
+			cert, ok := h.certCache.Get(host)
+			if ok {
+				return cert, nil
+			}
+		}
+		return nil, fmt.Errorf("certificate generation failed for %s", host)
+	}
 
 	// Make sure we signal completion when we're done
 	defer func() {
 		wg.Done()
-		h.waitMutex.Lock()
-		delete(h.certWaitGroups, host)
-		h.waitMutex.Unlock()
+		h.certCache.FinishGeneration(host)
 	}()
 
-	// Need to acquire write lock for the cert cache
-	h.cacheMutex.Lock()
-	defer h.cacheMutex.Unlock()
-
-	// Check again under write lock to avoid race condition where
-	// another goroutine has somehow already created the certificate
-	cert, ok = h.certCache[host]
-	if ok {
+	// Check one more time if cert was created while we were starting generation
+	if existingCert, ok := h.certCache.Get(host); ok {
 		logger.Debug("Another goroutine already generated certificate for %s", host)
-		return cert, nil
+		return existingCert, nil
 	}
 
 	// Generate new cert
@@ -278,8 +267,8 @@ func (h *HTTPSInterceptor) getOrCreateCert(host string) (*tls.Certificate, error
 		return nil, fmt.Errorf("failed to create X509 key pair: %w", err)
 	}
 
-	// Store in cache - we already have the write lock from above
-	h.certCache[host] = &newCert
+	// Store in cache using SetWithLock to handle race conditions
+	h.certCache.SetWithLock(host, &newCert)
 	logger.Debug("Generated and cached new certificate for %s", host)
 
 	return &newCert, nil

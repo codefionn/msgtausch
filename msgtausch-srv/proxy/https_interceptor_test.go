@@ -182,9 +182,7 @@ func TestGetOrCreateCert(t *testing.T) {
 			assert.NotNil(t, cert, "Should return a valid certificate")
 
 			// Verify the cert is cached
-			interceptor.cacheMutex.RLock()
-			cachedCert, exists := interceptor.certCache[host]
-			interceptor.cacheMutex.RUnlock()
+			cachedCert, exists := interceptor.certCache.Get(host)
 			assert.True(t, exists, "Certificate should be cached")
 			assert.Equal(t, cert, cachedCert, "Cached certificate should match returned certificate")
 
@@ -235,11 +233,8 @@ func TestGetOrCreateCert(t *testing.T) {
 		}
 		wg.Wait()
 
-		// Verify only one certificate in the cache for this host
-		parallelInterceptor.cacheMutex.RLock()
-		assert.Len(t, parallelInterceptor.certCache, 1, "Cache should contain only one cert")
-		cachedCert, exists := parallelInterceptor.certCache[host]
-		parallelInterceptor.cacheMutex.RUnlock()
+		// Verify the certificate is in the cache for this host
+		cachedCert, exists := parallelInterceptor.certCache.Get(host)
 		assert.True(t, exists, "Certificate should be in cache")
 		assert.NotNil(t, cachedCert, "Cached certificate should not be nil")
 	})

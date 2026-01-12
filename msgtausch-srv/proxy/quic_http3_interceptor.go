@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
@@ -20,12 +19,9 @@ import (
 
 // QUICHTTP3Interceptor handles MITM for HTTP/3 traffic over QUIC protocol.
 type QUICHTTP3Interceptor struct {
-	CA              tls.Certificate  // CA certificate and private key
-	caCert          *tls.Certificate // Parsed CA cert for HTTP/3
-	certCache       map[string]*tls.Certificate
-	cacheMutex      sync.RWMutex
-	certWaitGroups  map[string]*sync.WaitGroup                   // Wait groups for ongoing certificate generation
-	waitMutex       sync.RWMutex                                 // Mutex for the wait groups map
+	CA              tls.Certificate                              // CA certificate and private key
+	caCert          *tls.Certificate                             // Parsed CA cert for HTTP/3
+	certCache       *ShardedCertCache                            // Sharded certificate cache for reduced lock contention
 	proxy           *Proxy                                       // Reference to proxy for creating connections
 	requestHandler  func(*http.Request) (*http.Request, error)   // Optional request handler for modifying requests
 	responseHandler func(*http.Response) (*http.Response, error) // Optional response handler for modifying responses
@@ -80,8 +76,7 @@ func NewQUICHTTP3Interceptor(
 	return &QUICHTTP3Interceptor{
 		CA:              ca,
 		caCert:          &ca,
-		certCache:       make(map[string]*tls.Certificate),
-		certWaitGroups:  make(map[string]*sync.WaitGroup),
+		certCache:       NewShardedCertCache(),
 		proxy:           proxy,
 		requestHandler:  requestHandler,
 		responseHandler: responseHandler,
@@ -469,29 +464,19 @@ func (h *QUICHTTP3Interceptor) HandleUDPConnection(conn net.PacketConn, remoteAd
 // getOrCreateCert returns a certificate for the given host, generating it if necessary.
 // Using a similar implementation as HTTPS interceptor for certificate management.
 func (h *QUICHTTP3Interceptor) getOrCreateCert(host string) (*tls.Certificate, error) {
-	// First check if we already have a certificate for this host
-	h.cacheMutex.RLock()
-	cert, ok := h.certCache[host]
-	h.cacheMutex.RUnlock()
-	if ok {
-		logger.Debug("Using cached certificate for %s", host)
-		return cert, nil
-	}
-
-	// Now check if another goroutine is already generating this certificate
-	h.waitMutex.RLock()
-	wg, isGenerating := h.certWaitGroups[host]
-	h.waitMutex.RUnlock()
-
-	if isGenerating {
+	// Check cache and wait status using the sharded cache
+	cert, found, wg := h.certCache.GetOrWait(host)
+	if found {
+		if cert != nil {
+			logger.Debug("Using cached certificate for %s", host)
+			return cert, nil
+		}
+		// Another goroutine is generating, wait for it
 		logger.Debug("Waiting for another goroutine to generate certificate for %s", host)
-		// Another goroutine is generating this cert, wait for it to finish
 		wg.Wait()
 
-		// Once we're here, the certificate should be in the cache
-		h.cacheMutex.RLock()
-		cert, ok = h.certCache[host]
-		h.cacheMutex.RUnlock()
+		// After waiting, check cache again
+		cert, ok := h.certCache.Get(host)
 		if ok {
 			return cert, nil
 		}
@@ -502,30 +487,34 @@ func (h *QUICHTTP3Interceptor) getOrCreateCert(host string) (*tls.Certificate, e
 	// No other goroutine is generating this cert, we'll do it
 	logger.Debug("Generating new certificate for %s", host)
 
-	// Create a wait group for this cert generation and add it to the map
-	wg = &sync.WaitGroup{}
-	wg.Add(1)
-	h.waitMutex.Lock()
-	h.certWaitGroups[host] = wg
-	h.waitMutex.Unlock()
+	// Start generation and get wait group
+	wg = h.certCache.StartGeneration(host)
+	if wg == nil {
+		// Another goroutine started generation while we were checking, wait for it
+		cert, _, wg := h.certCache.GetOrWait(host)
+		if cert != nil {
+			return cert, nil
+		}
+		if wg != nil {
+			wg.Wait()
+			cert, ok := h.certCache.Get(host)
+			if ok {
+				return cert, nil
+			}
+		}
+		return nil, fmt.Errorf("certificate generation failed for %s", host)
+	}
 
 	// Make sure we signal completion when we're done
 	defer func() {
 		wg.Done()
-		h.waitMutex.Lock()
-		delete(h.certWaitGroups, host)
-		h.waitMutex.Unlock()
+		h.certCache.FinishGeneration(host)
 	}()
 
-	// Need to acquire write lock for the cert cache
-	h.cacheMutex.Lock()
-	defer h.cacheMutex.Unlock()
-
-	// Check again under write lock to avoid race condition
-	cert, ok = h.certCache[host]
-	if ok {
+	// Check one more time if cert was created while we were starting generation
+	if existingCert, ok := h.certCache.Get(host); ok {
 		logger.Debug("Another goroutine already generated certificate for %s", host)
-		return cert, nil
+		return existingCert, nil
 	}
 
 	// We need to use the same certificate generation code as in HTTPS interceptor
@@ -534,7 +523,7 @@ func (h *QUICHTTP3Interceptor) getOrCreateCert(host string) (*tls.Certificate, e
 
 	// This is a placeholder - in reality, you would generate a certificate here
 	// For now, we'll just return the CA certificate itself
-	h.certCache[host] = &h.CA
+	h.certCache.SetWithLock(host, &h.CA)
 	logger.Debug("Generated and cached new certificate for %s (placeholder)", host)
 
 	return &h.CA, nil

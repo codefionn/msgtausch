@@ -43,7 +43,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 				if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
 					// First, compile all classifiers to get the full map
 					if cfg.Classifiers != nil {
-						compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
+						compiledMap, err := CompileClassifiersMap(cfg.Classifiers, nil)
 						if err != nil {
 							t.Fatalf("Failed to compile classifiers map: %v", err)
 						}
@@ -54,7 +54,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 					}
 				} else {
 					// If it's not a ClassifierRef, try to compile it directly
-					compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier)
+					compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier, nil)
 					if err != nil {
 						t.Fatalf("Failed to compile HTTPS classifier: %v", err)
 					}
@@ -228,7 +228,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 			if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
 				// First, compile all classifiers to get the full map
 				if cfg.Classifiers != nil {
-					compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
+					compiledMap, err := CompileClassifiersMap(cfg.Classifiers, nil)
 					if err == nil {
 						// Look up the specific classifier by ID
 						if compiled, exists := compiledMap[classifierRef.Id]; exists {
@@ -238,7 +238,7 @@ func TestHTTPSClassifierIntegration(t *testing.T) {
 				}
 			} else {
 				// If it's not a ClassifierRef, try to compile it directly
-				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier)
+				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier, nil)
 				if err == nil {
 					httpsClassifier = compiled
 				}
@@ -287,7 +287,7 @@ func TestHTTPSClassifierTypes(t *testing.T) {
 			t.Fatal("HTTPS classifier config not found")
 		}
 
-		classifier, err := CompileClassifier(classifierConfig)
+		classifier, err := CompileClassifier(classifierConfig, nil)
 		if err != nil {
 			t.Fatalf("Failed to compile HTTPS classifier: %v", err)
 		}
@@ -342,7 +342,7 @@ func TestHTTPSClassifierTypes(t *testing.T) {
 			t.Fatal("HTTPS OR classifier config not found")
 		}
 
-		classifier, err := CompileClassifier(classifierConfig)
+		classifier, err := CompileClassifier(classifierConfig, nil)
 		if err != nil {
 			t.Fatalf("Failed to compile HTTPS OR classifier: %v", err)
 		}

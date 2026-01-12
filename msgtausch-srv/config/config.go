@@ -68,6 +68,7 @@ type Config struct {
 	Interception        InterceptionConfig // Global settings for traffic interception
 	Statistics          StatisticsConfig   // Statistics collection configuration
 	Portal              PortalConfig       // Portal authentication configuration
+	Cache               CacheConfig        // Cache configuration
 }
 
 // ForwardType defines the type of forwarding rule.

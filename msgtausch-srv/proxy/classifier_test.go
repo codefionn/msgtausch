@@ -194,9 +194,9 @@ func TestClassifierTrueFalse_Classify(t *testing.T) {
 
 func TestClassifierTrueFalse_Integration(t *testing.T) {
 	t.Run("Integration: ClassifierTrue from config", func(t *testing.T) {
-		c, err := CompileClassifier(&config.ClassifierTrue{})
+		c, err := CompileClassifier(&config.ClassifierTrue{}, nil)
 		if err != nil {
-			t.Fatalf("CompileClassifier(True) error: %v", err)
+			t.Fatalf("CompileClassifier(True, nil) error: %v", err)
 		}
 		result, err := c.Classify(ClassifierInput{host: "irrelevant", remoteIP: "", remotePort: 0})
 		if err != nil {
@@ -208,9 +208,9 @@ func TestClassifierTrueFalse_Integration(t *testing.T) {
 	})
 
 	t.Run("Integration: ClassifierFalse from config", func(t *testing.T) {
-		c, err := CompileClassifier(&config.ClassifierFalse{})
+		c, err := CompileClassifier(&config.ClassifierFalse{}, nil)
 		if err != nil {
-			t.Fatalf("CompileClassifier(False) error: %v", err)
+			t.Fatalf("CompileClassifier(False, nil) error: %v", err)
 		}
 		result, err := c.Classify(ClassifierInput{host: "irrelevant", remoteIP: "", remotePort: 0})
 		if err != nil {
@@ -224,9 +224,9 @@ func TestClassifierTrueFalse_Integration(t *testing.T) {
 
 func TestCompileClassifier_TrueFalse(t *testing.T) {
 	t.Run("CompileClassifier True", func(t *testing.T) {
-		c, err := CompileClassifier(&config.ClassifierTrue{})
+		c, err := CompileClassifier(&config.ClassifierTrue{}, nil)
 		if err != nil {
-			t.Fatalf("CompileClassifier(True) error: %v", err)
+			t.Fatalf("CompileClassifier(True, nil) error: %v", err)
 		}
 		result, err := c.Classify(ClassifierInput{})
 		if err != nil {
@@ -238,9 +238,9 @@ func TestCompileClassifier_TrueFalse(t *testing.T) {
 	})
 
 	t.Run("CompileClassifier False", func(t *testing.T) {
-		c, err := CompileClassifier(&config.ClassifierFalse{})
+		c, err := CompileClassifier(&config.ClassifierFalse{}, nil)
 		if err != nil {
-			t.Fatalf("CompileClassifier(False) error: %v", err)
+			t.Fatalf("CompileClassifier(False, nil) error: %v", err)
 		}
 		result, err := c.Classify(ClassifierInput{})
 		if err != nil {
@@ -330,7 +330,7 @@ func TestCompileClassifier_Ref(t *testing.T) {
 
 	// Classifier is an interface, so we need to pass a value that implements it
 	var classifier config.Classifier = configRef
-	result, err := CompileClassifier(classifier)
+	result, err := CompileClassifier(classifier, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifier() error = %v", err)
 	}
@@ -362,7 +362,7 @@ func TestCompileClassifiersMap_WithRefs(t *testing.T) {
 	}
 
 	// Execute: Compile classifiers
-	compiledClassifiers, err := CompileClassifiersMap(classifiers)
+	compiledClassifiers, err := CompileClassifiersMap(classifiers, nil)
 
 	// Verify: No error
 	if err != nil {
@@ -413,7 +413,7 @@ func TestCompileClassifiersMap_TrueFalse(t *testing.T) {
 			"t": &config.ClassifierTrue{},
 			"f": &config.ClassifierFalse{},
 		}
-		compiled, err := CompileClassifiersMap(classifiers)
+		compiled, err := CompileClassifiersMap(classifiers, nil)
 		if err != nil {
 			t.Fatalf("CompileClassifiersMap error: %v", err)
 		}
@@ -446,7 +446,7 @@ func TestClassifierTrueFalse_JSONIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
-	compiled, err := CompileClassifiersMap(cfg.Classifiers)
+	compiled, err := CompileClassifiersMap(cfg.Classifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap error: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestClassifierPort_Classify(t *testing.T) {
 func TestCompileClassifier_Port(t *testing.T) {
 	portClassifier := &config.ClassifierPort{Port: 8080}
 	var classifier config.Classifier = portClassifier
-	result, err := CompileClassifier(classifier)
+	result, err := CompileClassifier(classifier, nil)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 		return
@@ -650,7 +650,7 @@ func TestCompileClassifier_IP(t *testing.T) {
 
 	// Convert to Classifier interface
 	var classifier config.Classifier = ipClassifier
-	result, err := CompileClassifier(classifier)
+	result, err := CompileClassifier(classifier, nil)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -678,7 +678,7 @@ func TestCompileClassifier_Network(t *testing.T) {
 
 	// Convert to Classifier interface
 	var classifier config.Classifier = networkClassifier
-	result, err := CompileClassifier(classifier)
+	result, err := CompileClassifier(classifier, nil)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -1468,7 +1468,7 @@ func TestClassifierOrDomainsOptimization(t *testing.T) {
 		},
 	}
 
-	compiled, err := CompileClassifiersMap(classifiers)
+	compiled, err := CompileClassifiersMap(classifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap error: %v", err)
 	}
@@ -1537,7 +1537,7 @@ func TestClassifierOrDomainsNoOptimization(t *testing.T) {
 		},
 	}
 
-	compiled, err := CompileClassifiersMap(classifiers)
+	compiled, err := CompileClassifiersMap(classifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap error: %v", err)
 	}
@@ -1687,7 +1687,7 @@ func TestClassifierStrIs_Integration(t *testing.T) {
 		Domain: "example.com",
 	}
 
-	compiled, err := CompileClassifier(domainClassifier)
+	compiled, err := CompileClassifier(domainClassifier, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifier error: %v", err)
 	}
@@ -1789,7 +1789,7 @@ func TestClassifierOrDomainsIsOptimization(t *testing.T) {
 		},
 	}
 
-	compiled, err := CompileClassifiersMap(classifiers)
+	compiled, err := CompileClassifiersMap(classifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap error: %v", err)
 	}
@@ -1862,7 +1862,7 @@ func TestClassifierOrDomainsIsNoOptimization(t *testing.T) {
 		},
 	}
 
-	compiled, err := CompileClassifiersMap(classifiers)
+	compiled, err := CompileClassifiersMap(classifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap error: %v", err)
 	}
@@ -1908,12 +1908,12 @@ func TestClassifierOrOptimizationCoexistence(t *testing.T) {
 	}
 
 	// Compile both
-	compiledEqual, err := CompileClassifiersMap(equalClassifiers)
+	compiledEqual, err := CompileClassifiersMap(equalClassifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap (equal) error: %v", err)
 	}
 
-	compiledIs, err := CompileClassifiersMap(isClassifiers)
+	compiledIs, err := CompileClassifiersMap(isClassifiers, nil)
 	if err != nil {
 		t.Fatalf("CompileClassifiersMap (is) error: %v", err)
 	}
@@ -2084,7 +2084,7 @@ func TestTryOptimizeOrClassifier_SingleDomain(t *testing.T) {
 				},
 			}
 
-			optimized := tryOptimizeOrClassifier(orClassifier)
+			optimized := tryOptimizeOrClassifier(orClassifier, nil)
 
 			if optimized != nil {
 				t.Error("Single domain classifier should not be optimized")
@@ -2136,7 +2136,7 @@ func TestTryOptimizeOrClassifier_MixedTypes(t *testing.T) {
 				Classifiers: tt.classifiers,
 			}
 
-			optimized := tryOptimizeOrClassifier(orClassifier)
+			optimized := tryOptimizeOrClassifier(orClassifier, nil)
 
 			if optimized != nil {
 				t.Errorf("Mixed classifier types should not be optimized, got %T", optimized)
@@ -2218,7 +2218,7 @@ func TestTryOptimizeOrClassifier_LargeNumberOfDomains(t *testing.T) {
 		Classifiers: domains,
 	}
 
-	optimized := tryOptimizeOrClassifier(orClassifier)
+	optimized := tryOptimizeOrClassifier(orClassifier, nil)
 
 	// Should be optimized to ClassifierOrDomainsIs
 	orIsClassifier, ok := optimized.(*ClassifierOrDomainsIs)

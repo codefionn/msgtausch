@@ -88,7 +88,7 @@ func TestClassifierRecordCompilation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			compiledClassifier, err := CompileClassifier(tt.configClassifier)
+			compiledClassifier, err := CompileClassifier(tt.configClassifier, nil)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -127,7 +127,7 @@ func TestClassifierRecordWithComplexClassifier(t *testing.T) {
 		},
 	}
 
-	compiledClassifier, err := CompileClassifier(configClassifier)
+	compiledClassifier, err := CompileClassifier(configClassifier, nil)
 	require.NoError(t, err)
 
 	recordClassifier, ok := compiledClassifier.(*ClassifierRecord)
@@ -198,7 +198,7 @@ func TestClassifierRecordWithOrClassifier(t *testing.T) {
 		},
 	}
 
-	compiledClassifier, err := CompileClassifier(configClassifier)
+	compiledClassifier, err := CompileClassifier(configClassifier, nil)
 	require.NoError(t, err)
 
 	recordClassifier, ok := compiledClassifier.(*ClassifierRecord)
@@ -263,7 +263,7 @@ func TestClassifierRecordWithNotClassifier(t *testing.T) {
 		},
 	}
 
-	compiledClassifier, err := CompileClassifier(configClassifier)
+	compiledClassifier, err := CompileClassifier(configClassifier, nil)
 	require.NoError(t, err)
 
 	recordClassifier, ok := compiledClassifier.(*ClassifierRecord)

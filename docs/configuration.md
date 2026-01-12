@@ -26,6 +26,66 @@ The root configuration object contains the following fields:
 | `forwards` | `[]Forward` | `[]` | Forwarding rules for different destinations |
 | `interception` | `InterceptionConfig` | `{...}` | Global interception settings |
 | `statistics` | `StatisticsConfig` | `{...}` | Statistics collection configuration |
+| `cache` | `CacheConfig` | `{...}` | Domain URL cache configuration |
+
+### Cache Configuration
+
+The `cache` object controls background caching of domain lists fetched from URLs:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `true` | Enable background caching of domain URLs |
+| `default-ttl` | `int` | `3600` | Default cache time-to-live in seconds (1 hour) |
+| `refresh-interval` | `int` | `300` | Background refresh interval in seconds (5 minutes) |
+| `http-timeout` | `int` | `30` | HTTP request timeout in seconds |
+| `max-retries` | `int` | `3` | Maximum retry attempts for failed requests |
+| `retry-delay` | `int` | `5` | Delay between retry attempts in seconds |
+
+#### Cache Behavior
+
+- **Background Refresh**: Cache entries are automatically refreshed in the background before they expire
+- **Error Handling**: Failed fetch attempts are cached for a short duration (5 minutes) to avoid repeated failed requests
+- **Retry Logic**: Failed requests are retried up to `max-retries` times with `retry-delay` between attempts
+- **Memory Efficiency**: Uses Aho-Corasick tries for efficient domain matching
+- **Graceful Degradation**: Classification continues with stale data if refresh fails, rather than blocking requests
+
+#### Cache Configuration Examples
+
+```json
+{
+  "cache": {
+    "enabled": true,
+    "default-ttl": 7200,
+    "refresh-interval": 600,
+    "http-timeout": 45,
+    "max-retries": 5,
+    "retry-delay": 10
+  }
+}
+```
+
+#### HCL Cache Configuration
+```hcl
+cache = {
+  enabled          = true
+  default-ttl      = 7200  # 2 hours
+  refresh-interval = 600   # 10 minutes
+  http-timeout     = 45    # 45 seconds
+  max-retries      = 5
+  retry-delay      = 10    # 10 seconds
+}
+```
+
+#### Environment Variables
+
+| Environment Variable | Description | Type |
+|---------------------|-------------|------|
+| `MSGTAUSCH_CACHE_ENABLED` | Enable domain URL caching | bool |
+| `MSGTAUSCH_CACHE_DEFAULT_TTL` | Cache TTL in seconds | int |
+| `MSGTAUSCH_CACHE_REFRESH_INTERVAL` | Refresh interval in seconds | int |
+| `MSGTAUSCH_CACHE_HTTP_TIMEOUT` | HTTP timeout in seconds | int |
+| `MSGTAUSCH_CACHE_MAX_RETRIES` | Maximum retry attempts | int |
+| `MSGTAUSCH_CACHE_RETRY_DELAY` | Retry delay in seconds | int |
 
 ### Statistics Configuration
 
@@ -119,6 +179,37 @@ Classifiers are rule-based matching systems used for allowlists, blocklists, and
 
 **Fields:**
 - `file`: Path to file containing domain patterns (one per line)
+
+- **`domains-url`**: Match domains fetched from a URL with mirror fallback support
+
+**Fields:**
+- `url`: Primary URL to fetch domain patterns from
+- `mirrors`: Array of mirror URLs for fallback (optional, max 5 URLs)
+- `format`: Format of the domain list (`rpz`, `wildcard`, `adblock`, `plain`)
+- `timeout`: Timeout in seconds for HTTP request (optional, default: 30)
+
+**URL Formats:**
+- **`rpz`**: RPZ format with `domain CNAME .` entries
+- **`wildcard`**: Wildcard format with `*.domain` entries  
+- **`adblock`**: AdBlock format with `||domain^` entries
+- **`plain`**: Plain domain names, one per line
+
+#### Mirror URL Behavior
+
+- **Primary First**: The system always tries the primary URL first
+- **Sequential Fallback**: If primary fails, mirrors are tried in order
+- **Independent Caching**: Each URL (primary + mirrors combination) is cached separately
+- **Retry Logic**: Each URL gets its own retry attempts before trying the next
+- **Success Logging**: The system logs which URL successfully provided the content
+- **Cache Source**: Cache entries remember which URL provided the content for debugging
+
+#### Mirror URL Best Practices
+
+- **Geographic Distribution**: Use mirrors in different geographic regions
+- **Different Providers**: Use different hosting providers for redundancy
+- **Content Consistency**: Ensure all mirrors serve identical content
+- **URL Limits**: Maximum 5 mirrors per classifier to avoid complexity
+- **Format Consistency**: All mirrors must serve the same format as the primary
 
 ##### Reference Classifiers
 
@@ -330,6 +421,106 @@ export MSGTAUSCH_SERVER_1_ENABLED=true
       "username": "proxyuser",
       "password": "proxypass"
     }
+  ]
+}
+```
+
+### Domains-URL Configuration Example
+
+#### Using Different URL Formats with Mirrors
+```json
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "127.0.0.1:8080"
+    }
+  ],
+  "classifiers": {
+    "hagezi-dyndns": {
+      "type": "domains-url",
+      "url": "https://github.com/hagezi/dns-blocklists/raw/main/domains/rpz.txt",
+      "mirrors": [
+        "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/domains/rpz.txt",
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/rpz.txt"
+      ],
+      "format": "rpz",
+      "timeout": 45
+    },
+    "wildcard-blocklist": {
+      "type": "domains-url",
+      "url": "https://github.com/hagezi/dns-blocklists/raw/main/domains/wildcard.txt",
+      "format": "wildcard"
+    },
+    "adblock-tracker": {
+      "type": "domains-url",
+      "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus",
+      "mirrors": [
+        "https://mirror1.example.com/adservers.txt",
+        "https://mirror2.example.com/adservers.txt"
+      ],
+      "format": "adblock",
+      "timeout": 30
+    },
+    "plain-domains": {
+      "type": "domains-url",
+      "url": "https://example.com/simple-domains.txt",
+      "mirrors": [
+        "https://backup.example.com/simple-domains.txt"
+      ],
+      "format": "plain",
+      "timeout": 60
+    }
+  },
+  "blocklist": {
+    "type": "or",
+    "classifiers": [
+      { "type": "ref", "id": "hagezi-dyndns" },
+      { "type": "ref", "id": "wildcard-blocklist" },
+      { "type": "ref", "id": "adblock-tracker" },
+      { "type": "ref", "id": "plain-domains" }
+    ]
+  }
+}
+```
+
+#### HCL Example with Domains-URL and Mirrors
+```hcl
+servers = [
+  {
+    type = "standard"
+    listen-address = "127.0.0.1:8080"
+  }
+]
+
+classifiers = {
+  "reliable-blocklist" = {
+    type = "domains-url"
+    url = "https://primary.example.com/blocklist.txt"
+    mirrors = [
+      "https://mirror1.example.com/blocklist.txt"
+      "https://mirror2.example.com/blocklist.txt"
+      "https://backup.example.com/blocklist.txt"
+    ]
+    format = "plain"
+    timeout = 45
+  }
+  
+  "hagezi-mirrored" = {
+    type = "domains-url"
+    url = "https://github.com/hagezi/dns-blocklists/raw/main/domains/rpz.txt"
+    mirrors = [
+      "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/domains/rpz.txt"
+    ]
+    format = "rpz"
+  }
+}
+
+blocklist = {
+  type = "or"
+  classifiers = [
+    { type = "ref", id = "reliable-blocklist" }
+    { type = "ref", id = "hagezi-mirrored" }
   ]
 }
 ```

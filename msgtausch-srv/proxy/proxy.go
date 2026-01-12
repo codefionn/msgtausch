@@ -92,6 +92,7 @@ type Server struct {
 type Proxy struct {
 	config              *config.Config
 	servers             []*Server
+	cacheManager        *CacheManager
 	compiledForwards    []compiledForward
 	blocklistClassifier Classifier
 	allowlistClassifier Classifier
@@ -205,7 +206,7 @@ func (p *Proxy) CompileClassifiers() {
 			forwardInfo := p.getForwardDebugInfo(fwd)
 			logger.Info("Forward[%d]: %s", i, forwardInfo)
 
-			cf, err := CompileClassifier(fwd.Classifier())
+			cf, err := CompileClassifier(fwd.Classifier(), p.cacheManager)
 			if err != nil {
 				logger.Error("Error compiling classifier for forward[%d] (%s): %v", i, forwardInfo, err)
 				continue
@@ -222,7 +223,7 @@ func (p *Proxy) CompileClassifiers() {
 	}
 
 	if p.config.Blocklist != nil {
-		blf, err := CompileClassifier(p.config.Blocklist)
+		blf, err := CompileClassifier(p.config.Blocklist, p.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling blocklist classifier: %v", err)
 		} else {
@@ -231,7 +232,7 @@ func (p *Proxy) CompileClassifiers() {
 	}
 
 	if p.config.Allowlist != nil {
-		alf, err := CompileClassifier(p.config.Allowlist)
+		alf, err := CompileClassifier(p.config.Allowlist, p.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling allowlist classifier: %v", err)
 		} else {
@@ -240,7 +241,7 @@ func (p *Proxy) CompileClassifiers() {
 	}
 
 	if p.config.Statistics.Recording != nil {
-		rcf, err := CompileClassifier(p.config.Statistics.Recording)
+		rcf, err := CompileClassifier(p.config.Statistics.Recording, p.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling recording classifier: %v", err)
 		} else {
@@ -250,9 +251,17 @@ func (p *Proxy) CompileClassifiers() {
 }
 
 func NewProxy(cfg *config.Config) *Proxy {
+	// Initialize cache manager
+	cacheConfig := cfg.Cache
+	if !cacheConfig.Enabled {
+		cacheConfig = config.DefaultCacheConfig()
+	}
+	cacheManager := NewCacheManagerWithConfig(cacheConfig)
+
 	p := &Proxy{
-		config:  cfg,
-		servers: make([]*Server, 0, len(cfg.Servers)),
+		config:       cfg,
+		cacheManager: cacheManager,
+		servers:      make([]*Server, 0, len(cfg.Servers)),
 	}
 
 	// Set up logger to extract connection UUIDs from context
@@ -285,7 +294,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 			if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
 				// First, compile all classifiers to get the full map
 				if cfg.Classifiers != nil {
-					compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
+					compiledMap, err := CompileClassifiersMap(cfg.Classifiers, p.cacheManager)
 					if err != nil {
 						logger.Error("Failed to compile classifiers map for server %s: %v", serverCfg.ListenAddress, err)
 					} else {
@@ -302,7 +311,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 				}
 			} else {
 				// If it's not a ClassifierRef, try to compile it directly
-				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier)
+				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier, p.cacheManager)
 				if err != nil {
 					logger.Error("Failed to compile HTTPS classifier for server %s: %v", serverCfg.ListenAddress, err)
 				} else {
@@ -318,7 +327,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 			if classifierRef, ok := cfg.Interception.ExcludeClassifier.(*config.ClassifierRef); ok {
 				// First, compile all classifiers to get the full map
 				if cfg.Classifiers != nil {
-					compiledMap, err := CompileClassifiersMap(cfg.Classifiers)
+					compiledMap, err := CompileClassifiersMap(cfg.Classifiers, p.cacheManager)
 					if err != nil {
 						logger.Error("Failed to compile classifiers map for exclude classifier on server %s: %v", serverCfg.ListenAddress, err)
 					} else {
@@ -335,7 +344,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 				}
 			} else {
 				// If it's not a ClassifierRef, try to compile it directly
-				compiled, err := CompileClassifier(cfg.Interception.ExcludeClassifier)
+				compiled, err := CompileClassifier(cfg.Interception.ExcludeClassifier, p.cacheManager)
 				if err != nil {
 					logger.Error("Failed to compile exclude classifier for server %s: %v", serverCfg.ListenAddress, err)
 				} else {
@@ -1761,7 +1770,7 @@ func (p *Server) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
 	}
 
 	if p.blocklistClassifier == nil && p.config.Blocklist != nil {
-		blf, err := CompileClassifier(p.config.Blocklist)
+		blf, err := CompileClassifier(p.config.Blocklist, p.proxy.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling blocklist classifier: %v", err)
 		} else {
@@ -1769,7 +1778,7 @@ func (p *Server) isHostAllowed(host, remoteIP string, remotePort uint16) bool {
 		}
 	}
 	if p.allowlistClassifier == nil && p.config.Allowlist != nil {
-		alf, err := CompileClassifier(p.config.Allowlist)
+		alf, err := CompileClassifier(p.config.Allowlist, p.proxy.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling allowlist classifier: %v", err)
 		} else {

@@ -50,6 +50,10 @@
       "$ref": "#/definitions/StatisticsConfig",
       "description": "Statistics collection configuration"
     },
+    "cache": {
+      "$ref": "#/definitions/CacheConfig",
+      "description": "Domain URL cache configuration"
+    },
     "portal": {
       "$ref": "#/definitions/PortalConfig",
       "description": "Portal authentication configuration"
@@ -190,7 +194,7 @@
           "enum": [
             "and", "or", "not",
             "domain", "ip", "network", "port",
-            "domains-file", "ref",
+            "domains-file", "domains-url", "ref",
             "true", "false"
           ]
         }
@@ -344,6 +348,45 @@
         },
         {
           "if": {
+            "properties": { "type": { "const": "domains-url" } }
+          },
+          "then": {
+            "properties": {
+              "type": { "const": "domains-url" },
+              "url": {
+                "type": "string",
+                "description": "Primary URL to fetch domain patterns from",
+                "format": "uri"
+              },
+              "mirrors": {
+                "type": "array",
+                "description": "Mirror URLs for fallback if primary URL fails",
+                "items": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "maxItems": 5
+              },
+              "format": {
+                "type": "string",
+                "description": "Format of the domain list at the URL",
+                "enum": ["rpz", "wildcard", "adblock", "plain"],
+                "default": "plain"
+              },
+              "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds for HTTP request",
+                "minimum": 1,
+                "maximum": 300,
+                "default": 30
+              }
+            },
+            "required": ["url", "format"],
+            "additionalProperties": false
+          }
+        },
+        {
+          "if": {
             "properties": { "type": { "const": "ref" } }
           },
           "then": {
@@ -490,6 +533,53 @@
           }
         }
       ]
+    },
+    "CacheConfig": {
+      "type": "object",
+      "description": "Configuration for domain URL caching",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable background caching of domain URLs",
+          "default": true
+        },
+        "default-ttl": {
+          "type": "integer",
+          "description": "Default cache time-to-live in seconds",
+          "minimum": 60,
+          "maximum": 86400,
+          "default": 3600
+        },
+        "refresh-interval": {
+          "type": "integer",
+          "description": "Background refresh interval in seconds",
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 300
+        },
+        "http-timeout": {
+          "type": "integer",
+          "description": "HTTP request timeout in seconds",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 30
+        },
+        "max-retries": {
+          "type": "integer",
+          "description": "Maximum retry attempts for failed requests",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "retry-delay": {
+          "type": "integer",
+          "description": "Delay between retry attempts in seconds",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 5
+        }
+      },
+      "additionalProperties": false
     },
     "Secret": {
       "type": "object",

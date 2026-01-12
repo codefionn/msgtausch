@@ -26,6 +26,8 @@ const (
 	ClassifierTypeFalse
 	// ClassifierTypeDomainsFile matches against domains loaded from a file.
 	ClassifierTypeDomainsFile
+	// ClassifierTypeDomainsURL matches against domains fetched from a URL.
+	ClassifierTypeDomainsURL
 	// ClassifierTypeRecord matches traffic that should have full request/response recorded.
 	ClassifierTypeRecord
 )
@@ -47,6 +49,34 @@ type ClassifierDomainsFile struct {
 // Type returns the classifier type for this configuration.
 func (c *ClassifierDomainsFile) Type() ClassifierType {
 	return ClassifierTypeDomainsFile
+}
+
+// DomainsURLFormat specifies the format of the domain list fetched from URL.
+type DomainsURLFormat string
+
+const (
+	// DomainsURLFormatRPZ expects RPZ format with CNAME . entries
+	DomainsURLFormatRPZ DomainsURLFormat = "rpz"
+	// DomainsURLFormatWildcard expects wildcard format with *.domain entries
+	DomainsURLFormatWildcard DomainsURLFormat = "wildcard"
+	// DomainsURLFormatAdblock expects AdBlock format with ||domain^ entries
+	DomainsURLFormatAdblock DomainsURLFormat = "adblock"
+	// DomainsURLFormatPlain expects plain domain names, one per line
+	DomainsURLFormatPlain DomainsURLFormat = "plain"
+)
+
+// ClassifierDomainsURL holds configuration for fetching domains from a URL.
+// Actual loading and matching is handled in proxy/classifier.go.
+type ClassifierDomainsURL struct {
+	URL     string           `json:"url"`
+	Mirrors []string         `json:"mirrors,omitempty"` // Mirror URLs for fallback
+	Format  DomainsURLFormat `json:"format"`
+	Timeout int              `json:"timeout,omitempty"` // Timeout in seconds, default 30
+}
+
+// Type returns the classifier type for this configuration.
+func (c *ClassifierDomainsURL) Type() ClassifierType {
+	return ClassifierTypeDomainsURL
 }
 
 // ClassifierPort matches traffic based on port numbers.

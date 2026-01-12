@@ -16,6 +16,15 @@ import (
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
 )
 
+var rgComment = regexp.MustCompile(`\A(.*?)[ \t\v]*(?:[#;].*)?\z`)
+var rgSplitDomains = regexp.MustCompile(`[ \t\v]+`)
+
+// Regex patterns for different URL formats
+var rgRPZ = regexp.MustCompile(`^([a-zA-Z0-9.-]+)\s+CNAME\s+\.$`)
+var rgWildcard = regexp.MustCompile(`^\*\.([a-zA-Z0-9.-]+)$`)
+var rgAdblock = regexp.MustCompile(`^\|\|([a-zA-Z0-9.-]+)\^$`)
+var rgPlainDomain = regexp.MustCompile(`^([a-zA-Z0-9.-]+)$`)
+
 // ClassifierInput contains the input data for classification decisions.
 type ClassifierInput struct {
 	host       string
@@ -327,13 +336,15 @@ func (c *ClassifierRef) Classify(input ClassifierInput) (bool, error) {
 // tryOptimizeOrClassifier attempts to optimize an OR classifier when all sub-classifiers
 // are domain classifiers with the same operation by using Aho-Corasick for efficient pattern matching.
 // Returns nil if optimization is not possible, the optimized classifier if successful.
-func tryOptimizeOrClassifier(orClassifier *config.ClassifierOr) Classifier {
+func tryOptimizeOrClassifier(orClassifier *config.ClassifierOr, cacheManager *CacheManager) Classifier {
 	// Check if all classifiers are domain/equal - if so, optimize with Aho-Corasick
 	var domains []string
 	var domainsFilePaths []string
+	var domainsURLs []config.ClassifierDomainsURL
 	allDomainEqual := true
 	allDomainIs := true
 	allDomainsFile := true
+	allDomainsURL := true
 	allDomainsIsOrFile := true
 
 detectOptimizations:
@@ -362,11 +373,18 @@ detectOptimizations:
 			domainsFilePaths = append(domainsFilePaths, c.FilePath)
 			allDomainEqual = false // Mixed types
 			allDomainIs = false    // Mixed types
+			allDomainsURL = false  // Mixed types
+		case *config.ClassifierDomainsURL:
+			domainsURLs = append(domainsURLs, *c)
+			allDomainEqual = false // Mixed types
+			allDomainIs = false    // Mixed types
+			allDomainsFile = false // Mixed types
 		default:
-			// Not a domain or domains-file classifier - no optimization possible
+			// Not a domain, domains-file, or domains-url classifier - no optimization possible
 			allDomainEqual = false
 			allDomainIs = false
 			allDomainsFile = false
+			allDomainsURL = false
 			allDomainsIsOrFile = false
 			break detectOptimizations
 		}
@@ -429,8 +447,31 @@ detectOptimizations:
 		}
 	}
 
+	// If all are domains-url classifiers and we have more than one, use optimized version
+	if allDomainsURL && len(domainsURLs) > 1 {
+		// Create optimized classifier that uses cache manager for each URL
+		// This allows individual caching while still optimizing the OR logic
+		var urlClassifiers []Classifier
+
+		for _, domainsURLConfig := range domainsURLs {
+			urlClassifier := &ClassifierDomainsURL{
+				cacheManager: cacheManager,
+				URL:          domainsURLConfig.URL,
+				Mirrors:      domainsURLConfig.Mirrors,
+				Format:       domainsURLConfig.Format,
+				Timeout:      domainsURLConfig.Timeout,
+			}
+			urlClassifiers = append(urlClassifiers, urlClassifier)
+		}
+
+		logger.Info("Created optimized OR classifier with %d domains-url classifiers", len(domainsURLs))
+		return &ClassifierOr{
+			Classifiers: urlClassifiers,
+		}
+	}
+
 	// If all are domain/is classifiers and we have more than one, use optimized version
-	if allDomainsIsOrFile && (len(domains) > 1 || len(domainsFilePaths) > 1) {
+	if allDomainsIsOrFile && (len(domains) > 1 || len(domainsFilePaths) > 1 || len(domainsURLs) > 0) {
 		// Load and combine all domain lists from the files
 		var combinedDomains []string
 		for _, filePath := range domainsFilePaths {
@@ -443,11 +484,25 @@ detectOptimizations:
 			combinedDomains = append(combinedDomains, domainsFileClassifier.DomainList...)
 		}
 
+		// Create domains-url classifiers for URLs (they'll use cache manager)
+		var urlClassifiers []Classifier
+
+		for _, domainsURLConfig := range domainsURLs {
+			urlClassifier := &ClassifierDomainsURL{
+				cacheManager: cacheManager,
+				URL:          domainsURLConfig.URL,
+				Mirrors:      domainsURLConfig.Mirrors,
+				Format:       domainsURLConfig.Format,
+				Timeout:      domainsURLConfig.Timeout,
+			}
+			urlClassifiers = append(urlClassifiers, urlClassifier)
+		}
+
 		var trieDomainFiles *ahocorasick.Trie
 		if len(combinedDomains) > 0 {
 			trieDomainFiles = ahocorasick.NewTrieBuilder().AddStrings(combinedDomains).Build()
 			memSize := estimateTrieMemorySize(trieDomainFiles, len(combinedDomains))
-			logger.Info("Created optimized Aho-Corasick OR classifier with %d domains from %d files (memory: %s)", len(combinedDomains), len(domainsFilePaths), formatMemorySize(memSize))
+			logger.Info("Created optimized Aho-Corasick OR classifier with %d domains from %d files and %d URLs (memory: %s)", len(combinedDomains), len(domainsFilePaths), len(domainsURLs), formatMemorySize(memSize))
 		}
 
 		classifierOrDomainsFile := &ClassifierOrDomainsFile{
@@ -467,8 +522,12 @@ detectOptimizations:
 			DomainList: domains,
 		}
 
+		// Combine all classifiers: files/domains + URLs
+		allClassifiers := []Classifier{classifierOrDomainsFile, classifierOrDomains}
+		allClassifiers = append(allClassifiers, urlClassifiers...)
+
 		return &ClassifierOr{
-			Classifiers: []Classifier{classifierOrDomainsFile, classifierOrDomains},
+			Classifiers: allClassifiers,
 		}
 	}
 
@@ -477,11 +536,11 @@ detectOptimizations:
 }
 
 // CompileClassifiersMap compiles a map of config.Classifier into runtime Classifiers.
-func CompileClassifiersMap(classifiers map[string]config.Classifier) (map[string]Classifier, error) {
+func CompileClassifiersMap(classifiers map[string]config.Classifier, cacheManager *CacheManager) (map[string]Classifier, error) {
 	// First pass: compile all classifiers
 	result := make(map[string]Classifier)
 	for name, classifier := range classifiers {
-		c, err := CompileClassifier(classifier)
+		c, err := CompileClassifier(classifier, cacheManager)
 		if err != nil {
 			return nil, err
 		}
@@ -500,10 +559,10 @@ func CompileClassifiersMap(classifiers map[string]config.Classifier) (map[string
 }
 
 // CompileClassifiers compiles a slice of config.Classifier into runtime Classifiers.
-func CompileClassifiers(classifiers []config.Classifier) ([]Classifier, error) {
+func CompileClassifiers(classifiers []config.Classifier, cacheManager *CacheManager) ([]Classifier, error) {
 	var result []Classifier
 	for _, classifier := range classifiers {
-		c, err := CompileClassifier(classifier)
+		c, err := CompileClassifier(classifier, cacheManager)
 		if err != nil {
 			return nil, err
 		}
@@ -558,133 +617,81 @@ func (c *ClassifierDomainsFile) Classify(input ClassifierInput) (bool, error) {
 }
 
 // CompileClassifier compiles a config.Classifier into a runtime Classifier.
-func CompileClassifier(classifier config.Classifier) (Classifier, error) {
+func CompileClassifier(classifier config.Classifier, cacheManager *CacheManager) (Classifier, error) {
 	// Check for nil classifier
 	if classifier == nil {
 		return nil, fmt.Errorf("nil classifier provided")
 	}
 
-	switch classifier.Type() {
-	case config.ClassifierTypePort:
-		portClassifier := classifier.(*config.ClassifierPort)
-		return &ClassifierPort{
-			Port: portClassifier.Port,
-		}, nil
-	case config.ClassifierTypeAnd:
-		c, err := CompileClassifiers(classifier.(*config.ClassifierAnd).Classifiers)
+	switch c := classifier.(type) {
+	case *config.ClassifierAnd:
+		classifiers, err := CompileClassifiers(c.Classifiers, cacheManager)
 		if err != nil {
 			return nil, err
 		}
-		return &ClassifierAnd{
-			Classifiers: c,
-		}, nil
-	case config.ClassifierTypeOr:
-		orClassifier := classifier.(*config.ClassifierOr)
+		return &ClassifierAnd{Classifiers: classifiers}, nil
 
-		// Try to optimize for domain/equal classifiers
-		if optimized := tryOptimizeOrClassifier(orClassifier); optimized != nil {
+	case *config.ClassifierOr:
+		// Try to optimize OR classifier if possible
+		if optimized := tryOptimizeOrClassifier(c, cacheManager); optimized != nil {
 			return optimized, nil
 		}
 
 		// Fall back to regular OR classifier
-		c, err := CompileClassifiers(orClassifier.Classifiers)
+		classifiers, err := CompileClassifiers(c.Classifiers, cacheManager)
 		if err != nil {
 			return nil, err
 		}
-		return &ClassifierOr{
-			Classifiers: c,
-		}, nil
-	case config.ClassifierTypeNot:
-		c, err := CompileClassifier(classifier.(*config.ClassifierNot).Classifier)
-		if err != nil {
-			return nil, err
-		}
-		return &ClassifierNot{
-			Classifier: c,
-		}, nil
-	case config.ClassifierTypeDomain:
-		domainClassifier := classifier.(*config.ClassifierDomain)
+		return &ClassifierOr{Classifiers: classifiers}, nil
 
-		// For domain classifiers, we need to reverse the usual comparison logic
-		// The domain from the classifier should be compared against the host in the input
-		switch domainClassifier.Op {
-		case config.ClassifierOpEqual:
-			return &ClassifierStrEq{
-				Get: func(input ClassifierInput) (string, error) {
-					return domainClassifier.Domain, nil
-				},
-			}, nil
-		case config.ClassifierOpNotEqual:
-			return &ClassifierStrNotEq{
-				Get: func(input ClassifierInput) (string, error) {
-					return domainClassifier.Domain, nil
-				},
-			}, nil
-		case config.ClassifierOpContains:
-			// For Contains, check if the host contains the configured domain substring
-			return &ClassifierStrContains{
-				Get: func(input ClassifierInput) (string, error) {
-					return domainClassifier.Domain, nil
-				},
-			}, nil
-		case config.ClassifierOpNotContains:
-			// For NotContains, ensure the host does not contain the configured domain substring
-			return &ClassifierStrNotContains{
-				Get: func(input ClassifierInput) (string, error) {
-					return domainClassifier.Domain, nil
-				},
-			}, nil
-		case config.ClassifierOpIs:
-			return &ClassifierStrIs{
-				Get: func(input ClassifierInput) (string, error) {
-					return domainClassifier.Domain, nil
-				},
-			}, nil
-		default:
-			return nil, fmt.Errorf("unsupported domain classifier operation: %v", domainClassifier.Op)
+	case *config.ClassifierNot:
+		classifier, err := CompileClassifier(c.Classifier, cacheManager)
+		if err != nil {
+			return nil, err
 		}
-	case config.ClassifierTypeIP:
-		ipClassifier := classifier.(*config.ClassifierIP)
-		return &ClassifierIP{
-			IP: ipClassifier.IP,
-		}, nil
-	case config.ClassifierTypeNetwork:
-		networkClassifier := classifier.(*config.ClassifierNetwork)
-		return &ClassifierNetwork{
-			CIDR: networkClassifier.CIDR,
-		}, nil
-	case config.ClassifierTypeRef:
-		// For reference classifiers, we need to return a placeholder that will be
-		// populated with the actual classifiers map later
-		return &ClassifierRef{
-			Id:          classifier.(*config.ClassifierRef).Id,
-			Classifiers: make(map[string]Classifier),
-		}, nil
-	case config.ClassifierTypeTrue:
+		return &ClassifierNot{Classifier: classifier}, nil
+
+	case *config.ClassifierDomain:
+		getfn := func(input ClassifierInput) (string, error) {
+			return c.Domain, nil
+		}
+		return CreateOpClassifier(c.Op, getfn)
+
+	case *config.ClassifierDomainsFile:
+		return NewClassifierDomainsFile(c.FilePath)
+
+	case *config.ClassifierDomainsURL:
+		return NewClassifierDomainsURLWithMirrors(cacheManager, c.URL, c.Mirrors, c.Format, c.Timeout)
+
+	case *config.ClassifierPort:
+		return &ClassifierPort{Port: c.Port}, nil
+
+	case *config.ClassifierIP:
+		return &ClassifierIP{IP: c.IP}, nil
+
+	case *config.ClassifierNetwork:
+		return &ClassifierNetwork{CIDR: c.CIDR}, nil
+
+	case *config.ClassifierTrue:
 		return &ClassifierTrue{}, nil
-	case config.ClassifierTypeFalse:
+
+	case *config.ClassifierFalse:
 		return &ClassifierFalse{}, nil
-	case config.ClassifierTypeDomainsFile:
-		domainsFile := classifier.(*config.ClassifierDomainsFile)
-		clf, err := NewClassifierDomainsFile(domainsFile.FilePath)
+
+	case *config.ClassifierRef:
+		return &ClassifierRef{Id: c.Id, Classifiers: make(map[string]Classifier)}, nil
+
+	case *config.ClassifierRecord:
+		wrapped, err := CompileClassifier(c.Classifier, cacheManager)
 		if err != nil {
 			return nil, err
 		}
-		return clf, nil
-	case config.ClassifierTypeRecord:
-		recordClassifier := classifier.(*config.ClassifierRecord)
-		wrappedClassifier, err := CompileClassifier(recordClassifier.Classifier)
-		if err != nil {
-			return nil, err
-		}
-		return &ClassifierRecord{WrappedClassifier: wrappedClassifier}, nil
+		return &ClassifierRecord{WrappedClassifier: wrapped}, nil
+
 	default:
-		return nil, fmt.Errorf("unsupported classifier type: %v", classifier.Type())
+		return nil, fmt.Errorf("unknown classifier type: %T", classifier)
 	}
 }
-
-var rgComment = regexp.MustCompile(`\A(.*?)[ \t\v]*(?:[#;].*)?\z`)
-var rgSplitDomains = regexp.MustCompile(`[ \t\v]+`)
 
 // NewClassifierDomainsFile loads domains from the given file path and creates
 // an Aho-Corasick trie for efficient pattern matching.
@@ -756,6 +763,166 @@ func NewClassifierDomainsFile(filePath string) (*ClassifierDomainsFile, error) {
 		Trie:       trie,
 		DomainList: domainList,
 	}, nil
+}
+
+// ClassifierDomainsURL matches if the input host is in the domains fetched from URL.
+// Uses Aho-Corasick algorithm for efficient domain matching with background caching and mirror fallback.
+type ClassifierDomainsURL struct {
+	cacheManager *CacheManager
+	URL          string
+	Mirrors      []string
+	Format       config.DomainsURLFormat
+	Timeout      int
+}
+
+// Classify returns true if the input host matches any domain fetched from the URL.
+// Uses cached data for performance and falls back gracefully on cache errors.
+func (c *ClassifierDomainsURL) Classify(input ClassifierInput) (bool, error) {
+	// Handle nil cache manager gracefully
+	if c.cacheManager == nil {
+		logger.Warn("Cache manager is nil for classifier %s, cannot classify", c.formatURLsForLog())
+		return false, nil
+	}
+
+	// Get cached domains with mirror fallback
+	cacheEntry, err := c.cacheManager.GetDomainsWithMirrors(c.URL, c.Mirrors, c.Format, c.Timeout)
+	if err != nil {
+		// Log error but don't fail classification - return false instead
+		logger.Warn("Failed to get domains from cache for URLs %s: %v", c.formatURLsForLog(), err)
+		return false, nil
+	}
+
+	// Check for subdomain matches using Aho-Corasick for efficient pattern matching
+	if cacheEntry.Trie != nil {
+		matches := cacheEntry.Trie.MatchString(input.host)
+		for _, match := range matches {
+			// Get the matched pattern (domain)
+			matchedDomain := cacheEntry.DomainList[match.Pattern()]
+
+			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
+			if hasSuffix && len(input.host) == len(matchedDomain) {
+				return true, nil
+			}
+
+			// Check if it's a valid subdomain match (host ends with ".domain")
+			if hasSuffix && len(input.host) > len(matchedDomain) && input.host[len(input.host)-len(matchedDomain)-1] == '.' {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// formatURLsForLog formats URLs for logging
+func (c *ClassifierDomainsURL) formatURLsForLog() string {
+	if len(c.Mirrors) == 0 {
+		return c.URL
+	}
+	return fmt.Sprintf("%s (+%d mirrors)", c.URL, len(c.Mirrors))
+}
+
+// NewClassifierDomainsURL creates a domains-url classifier that uses background caching.
+// The actual fetching is done lazily and cached by the cache manager.
+func NewClassifierDomainsURL(cacheManager *CacheManager, url string, format config.DomainsURLFormat, timeout int) (*ClassifierDomainsURL, error) {
+	return NewClassifierDomainsURLWithMirrors(cacheManager, url, []string{}, format, timeout)
+}
+
+// NewClassifierDomainsURLWithMirrors creates a domains-url classifier with mirror support.
+// The actual fetching is done lazily and cached by the cache manager.
+func NewClassifierDomainsURLWithMirrors(cacheManager *CacheManager, url string, mirrors []string, format config.DomainsURLFormat, timeout int) (*ClassifierDomainsURL, error) {
+	logger.Debug("NewClassifierDomainsURL called with URL: %s, mirrors: %v, format: %s, timeout: %d", url, mirrors, format, timeout)
+
+	// Use global cache manager if nil is passed
+	if cacheManager == nil {
+		cacheManager = GetGlobalCacheManager()
+	}
+
+	// Set default timeout if not specified
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	classifier := &ClassifierDomainsURL{
+		cacheManager: cacheManager,
+		URL:          url,
+		Mirrors:      mirrors,
+		Format:       format,
+		Timeout:      timeout,
+	}
+
+	logger.Info("Created domains-url classifier for: %s (format: %s, mirrors: %d)", url, format, len(mirrors))
+
+	return classifier, nil
+}
+
+// parseDomainsFromContent parses domain content based on the specified format
+func parseDomainsFromContent(content string, format config.DomainsURLFormat) ([]string, error) {
+	var domains []string
+	scanner := bufio.NewScanner(strings.NewReader(content))
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		// Skip comments based on format
+		switch format {
+		case config.DomainsURLFormatRPZ:
+			if strings.HasPrefix(line, ";") || strings.HasPrefix(line, "$") || line == "NS  localhost." {
+				continue
+			}
+		case config.DomainsURLFormatWildcard, config.DomainsURLFormatPlain:
+			if strings.HasPrefix(line, "#") {
+				continue
+			}
+		case config.DomainsURLFormatAdblock:
+			if strings.HasPrefix(line, "!") {
+				continue
+			}
+		}
+
+		// Extract domain based on format
+		var domain string
+		var matches []string
+
+		switch format {
+		case config.DomainsURLFormatRPZ:
+			matches = rgRPZ.FindStringSubmatch(line)
+			if len(matches) == 2 {
+				domain = matches[1]
+			}
+		case config.DomainsURLFormatWildcard:
+			matches = rgWildcard.FindStringSubmatch(line)
+			if len(matches) == 2 {
+				domain = matches[1]
+			}
+		case config.DomainsURLFormatAdblock:
+			matches = rgAdblock.FindStringSubmatch(line)
+			if len(matches) == 2 {
+				domain = matches[1]
+			}
+		case config.DomainsURLFormatPlain:
+			matches = rgPlainDomain.FindStringSubmatch(line)
+			if len(matches) == 2 {
+				domain = matches[1]
+			}
+		}
+
+		if domain != "" && domain != "0.0.0.0" && domain != "localhost" {
+			// Validate domain format (basic check)
+			if strings.Contains(domain, ".") && !strings.HasPrefix(domain, ".") && !strings.HasSuffix(domain, ".") {
+				domains = append(domains, domain)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error scanning content: %w", err)
+	}
+
+	return domains, nil
 }
 
 // ClassifierIP checks if the remote IP matches a specified IP address

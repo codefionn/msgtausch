@@ -26,6 +26,27 @@ type HTTPInterceptor struct {
 	hookMutex     sync.RWMutex            // Mutex for hooks maps
 }
 
+// buildFullURL efficiently constructs a full URL from request components using strings.Builder
+func buildFullURL(scheme, host, path, rawQuery string) string {
+	// Pre-calculate capacity: scheme + "://" + host + path + "?" + rawQuery
+	capacity := len(scheme) + 3 + len(host) + len(path)
+	if rawQuery != "" {
+		capacity += 1 + len(rawQuery)
+	}
+
+	var b strings.Builder
+	b.Grow(capacity)
+	b.WriteString(scheme)
+	b.WriteString("://")
+	b.WriteString(host)
+	b.WriteString(path)
+	if rawQuery != "" {
+		b.WriteByte('?')
+		b.WriteString(rawQuery)
+	}
+	return b.String()
+}
+
 // RequestHook is a function that can modify an HTTP request before it's sent upstream
 type RequestHook func(*http.Request) error
 
@@ -155,11 +176,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 	// Construct full URL for logging
 	fullURL := req.URL.String()
 	if req.URL.Host == "" && req.Header.Get("Host") != "" {
-		scheme := "http"
-		fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
-		if req.URL.RawQuery != "" {
-			fullURL += "?" + req.URL.RawQuery
-		}
+		fullURL = buildFullURL("http", req.Header.Get("Host"), req.URL.Path, req.URL.RawQuery)
 	}
 	logger.DebugCtx(req.Context(), "HTTP interceptor handling request to %s (URL: %s)", req.URL.String(), fullURL)
 
@@ -191,8 +208,8 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		// If collector supports streaming, tee the body to DB while forwarding
 		if h.proxy != nil && h.proxy.Collector != nil {
 			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
-				// Build headers snapshot for metadata
-				requestHeaders := make(map[string][]string)
+				// Build headers snapshot for metadata with pre-allocated capacity
+				requestHeaders := make(map[string][]string, len(req.Header))
 				for k, v := range req.Header {
 					requestHeaders[k] = v
 				}
@@ -233,11 +250,8 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	// Remove hop-by-hop headers
-	removeHopByHopHeaders(clonedReq.Header)
-
-	// Remove proxy-specific headers
-	removeProxyHeaders(clonedReq.Header)
+	// Remove hop-by-hop and proxy-specific headers in a single pass
+	cleanRequestHeaders(clonedReq.Header)
 
 	// Ensure the Host header is correctly set
 	if clonedReq.Host != "" {
@@ -304,8 +318,8 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 	if shouldRecord {
 		if h.proxy != nil && h.proxy.Collector != nil {
 			if sr, ok := h.proxy.Collector.(stats.StreamingRecorder); ok {
-				// Begin streaming response record
-				responseHeaders := make(map[string][]string)
+				// Begin streaming response record with pre-allocated capacity
+				responseHeaders := make(map[string][]string, len(resp.Header))
 				for k, v := range resp.Header {
 					responseHeaders[k] = v
 				}
@@ -338,18 +352,17 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		}
 	}
 
-	// Copy headers from the upstream response to our response
+	// Copy headers from the upstream response to our response (optimized batch copy)
+	dstHeader := w.Header()
 	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
+		dstHeader[key] = append(dstHeader[key], values...)
 	}
 
 	// Set the status code
 	w.WriteHeader(resp.StatusCode)
 
 	// Copy the response body
-	_, err = io.Copy(w, resp.Body)
+	_, err = copyBuffer(w, resp.Body)
 	if err != nil {
 		logger.Error("Error copying response body: %v", err)
 		return
@@ -371,13 +384,13 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		connectionID := int64(0) // TODO: Get actual connection ID from context
 		timestamp := time.Now()
 
-		// Convert headers to map[string][]string format
-		requestHeaders := make(map[string][]string)
+		// Convert headers to map[string][]string format with pre-allocated capacity
+		requestHeaders := make(map[string][]string, len(req.Header))
 		for key, values := range req.Header {
 			requestHeaders[key] = values
 		}
 
-		responseHeaders := make(map[string][]string)
+		responseHeaders := make(map[string][]string, len(resp.Header))
 		for key, values := range resp.Header {
 			responseHeaders[key] = values
 		}
@@ -519,7 +532,9 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 				// If we've already detected WebSocket, switch to direct copying
 				if isWebSocket.Load() {
 					// For WebSockets, we just copy bytes directly
-					buffer := make([]byte, 32*1024)
+					bufPtr := getBuffer()
+					defer putBuffer(bufPtr)
+					buffer := *bufPtr
 					for {
 						n, err := clientReader.Read(buffer)
 						if err != nil {
@@ -553,11 +568,7 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			// Construct full URL for logging
 			fullURL := req.URL.String()
 			if req.URL.Host == "" && req.Header.Get("Host") != "" {
-				scheme := "http"
-				fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
-				if req.URL.RawQuery != "" {
-					fullURL += "?" + req.URL.RawQuery
-				}
+				fullURL = buildFullURL("http", req.Header.Get("Host"), req.URL.Path, req.URL.RawQuery)
 			}
 			// Store URL for response logging
 			currentURL.Store(fullURL)
@@ -595,11 +606,8 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 				return
 			}
 
-			// Remove hop-by-hop headers
-			removeHopByHopHeaders(req.Header)
-
-			// Remove proxy-specific headers
-			removeProxyHeaders(req.Header)
+			// Remove hop-by-hop and proxy-specific headers in a single pass
+			cleanRequestHeaders(req.Header)
 
 			// Add Host header if URL has a Host but no Host header is set
 			if req.Header.Get("Host") == "" && req.Host != "" {
@@ -630,7 +638,9 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			// If we've already detected WebSocket, switch to direct copying
 			if isWebSocket.Load() {
 				// For WebSockets, we just copy bytes directly
-				buffer := make([]byte, 32*1024)
+				bufPtr := getBuffer()
+				defer putBuffer(bufPtr)
+				buffer := *bufPtr
 				for {
 					n, err := upstreamReader.Read(buffer)
 					if err != nil {
@@ -850,11 +860,7 @@ func (h *HTTPInterceptor) HandleTCPConnectionWithContext(ctx context.Context, cl
 			// Construct full URL for logging
 			fullURL := req.URL.String()
 			if req.URL.Host == "" && req.Header.Get("Host") != "" {
-				scheme := "http"
-				fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
-				if req.URL.RawQuery != "" {
-					fullURL += "?" + req.URL.RawQuery
-				}
+				fullURL = buildFullURL("http", req.Header.Get("Host"), req.URL.Path, req.URL.RawQuery)
 			}
 			// Store URL for response logging
 			currentURL.Store(fullURL)
@@ -967,7 +973,7 @@ func (h *HTTPInterceptor) HandleTCPConnectionWithContext(ctx context.Context, cl
 		intercept(clientReader, upstreamConn)
 
 		// After interception ends, continue with raw tunneling if needed
-		if _, err := io.Copy(upstreamConn, clientReader); err != nil && !isClosedConnError(err) {
+		if _, err := copyBuffer(upstreamConn, clientReader); err != nil && !isClosedConnError(err) {
 			logger.Error("Error copying client to upstream: %v", err)
 		}
 	}()
@@ -988,7 +994,7 @@ func (h *HTTPInterceptor) HandleTCPConnectionWithContext(ctx context.Context, cl
 		interceptResponse(upstreamReader, clientConn)
 
 		// After interception ends, continue with raw tunneling if needed
-		if _, err := io.Copy(clientConn, upstreamReader); err != nil && !isClosedConnError(err) {
+		if _, err := copyBuffer(clientConn, upstreamReader); err != nil && !isClosedConnError(err) {
 			logger.Error("Error copying upstream to client: %v", err)
 		}
 	}()
@@ -998,28 +1004,46 @@ func (h *HTTPInterceptor) HandleTCPConnectionWithContext(ctx context.Context, cl
 	logger.DebugCtx(ctx, "HTTP interceptor tunnel closed for %s", host)
 }
 
-// removeHopByHopHeaders removes hop-by-hop headers according to RFC 2616
-// but preserves WebSocket upgrade headers
-func removeHopByHopHeaders(header http.Header) {
+// cleanRequestHeaders removes hop-by-hop and proxy-specific headers in a single pass
+// but preserves WebSocket upgrade headers according to RFC 7230
+func cleanRequestHeaders(header http.Header) {
 	// Check if this is a WebSocket upgrade request
 	isWebSocketUpgrade := strings.ToLower(header.Get("Upgrade")) == "websocket"
 
-	// According to RFC 7230, only proxy-specific headers should be removed
-	// We preserve Transfer-Encoding, TE, Trailer, and Keep-Alive for proper HTTP semantics
-	hopByHopHeaders := []string{
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		// Note: Keep-Alive, TE, Trailers, and Transfer-Encoding are preserved
+	// Pre-allocate slice for headers to delete
+	toDelete := make([]string, 0, 10)
+
+	// Single pass through all headers
+	for key := range header {
+		keyLower := strings.ToLower(key)
+
+		// Check against all removal criteria in one pass
+		shouldRemove := false
+
+		// Hop-by-hop headers
+		if keyLower == "proxy-authenticate" || keyLower == "proxy-authorization" {
+			shouldRemove = true
+		}
+
+		// For non-WebSocket requests, remove Connection and Upgrade
+		if !isWebSocketUpgrade && (keyLower == "connection" || keyLower == "upgrade") {
+			shouldRemove = true
+		}
+
+		// Proxy-specific headers
+		if keyLower == "proxy-connection" || keyLower == "x-forwarded-for" ||
+			keyLower == "x-forwarded-host" || keyLower == "x-forwarded-proto" {
+			shouldRemove = true
+		}
+
+		if shouldRemove {
+			toDelete = append(toDelete, key)
+		}
 	}
 
-	// For WebSocket upgrades, preserve Connection and Upgrade headers
-	if !isWebSocketUpgrade {
-		hopByHopHeaders = append(hopByHopHeaders, "Connection", "Upgrade")
-	}
-
-	// Remove standard hop-by-hop headers
-	for _, h := range hopByHopHeaders {
-		header.Del(h)
+	// Delete marked headers
+	for _, key := range toDelete {
+		header.Del(key)
 	}
 
 	// For non-WebSocket requests, remove headers listed in Connection header
@@ -1034,22 +1058,6 @@ func removeHopByHopHeaders(header http.Header) {
 	}
 }
 
-// removeProxyHeaders removes proxy-specific headers
-func removeProxyHeaders(header http.Header) {
-	// List of common proxy headers
-	proxyHeaders := []string{
-		"Proxy-Connection",
-		"X-Forwarded-For",
-		"X-Forwarded-Host",
-		"X-Forwarded-Proto",
-	}
-
-	// Remove proxy headers
-	for _, h := range proxyHeaders {
-		header.Del(h)
-	}
-}
-
 // rawTunnel handles raw TCP tunneling when TLS data is detected
 // This is used as a fallback when the HTTP interceptor detects TLS handshake bytes
 func (h *HTTPInterceptor) rawTunnel(clientConn, upstreamConn net.Conn) {
@@ -1061,7 +1069,7 @@ func (h *HTTPInterceptor) rawTunnel(clientConn, upstreamConn net.Conn) {
 	// Copy client to upstream
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(upstreamConn, clientConn)
+		_, err := copyBuffer(upstreamConn, clientConn)
 		if err != nil && !isClosedConnError(err) {
 			logger.Error("Raw tunnel: client to upstream copy error: %v", err)
 		}
@@ -1076,7 +1084,7 @@ func (h *HTTPInterceptor) rawTunnel(clientConn, upstreamConn net.Conn) {
 	// Copy upstream to client
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(clientConn, upstreamConn)
+		_, err := copyBuffer(clientConn, upstreamConn)
 		if err != nil && !isClosedConnError(err) {
 			logger.Error("Raw tunnel: upstream to client copy error: %v", err)
 		}

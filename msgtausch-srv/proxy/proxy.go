@@ -799,7 +799,10 @@ func isClosedConnError(err error) bool {
 // copyWithIdleTimeout copies data from src to dst, enforcing an idle timeout.
 // If no data is received for the given timeout, the copy returns with a timeout error.
 func copyWithIdleTimeout(dst, src net.Conn, timeout time.Duration) error {
-	buf := make([]byte, 32*1024)
+	bufPtr := getBuffer()
+	defer putBuffer(bufPtr)
+	buf := *bufPtr
+
 	for {
 		_ = src.SetReadDeadline(time.Now().Add(timeout))
 		n, rerr := src.Read(buf)
@@ -1133,7 +1136,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	if _, err := copyBuffer(w, resp.Body); err != nil {
 		logger.Error("Failed to copy response body: %v", err)
 	}
 
@@ -1756,7 +1759,7 @@ func writeProxyErrorResponse(w http.ResponseWriter, originalErr error, defaultEr
 	}
 	w.WriteHeader(badGatewayResp.StatusCode)
 	if badGatewayResp.Body != nil {
-		if _, err := io.Copy(w, badGatewayResp.Body); err != nil {
+		if _, err := copyBuffer(w, badGatewayResp.Body); err != nil {
 			logger.Error("Failed to copy bad gateway response body: %v", err)
 		}
 	}

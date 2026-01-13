@@ -469,7 +469,9 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 			// If we've already detected WebSocket, switch to direct copying
 			if isWebSocket.Load() {
 				// For WebSockets, we just copy bytes directly
-				buffer := make([]byte, 32*1024)
+				bufPtr := getBuffer()
+				defer putBuffer(bufPtr)
+				buffer := *bufPtr
 				for {
 					_ = tlsClientConn.SetReadDeadline(time.Now().Add(time.Duration(h.proxy.config.TimeoutSeconds) * time.Second))
 					n, err := clientReader.Read(buffer)
@@ -504,13 +506,9 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 				fullURL := req.URL.String()
 				if req.URL.Host == "" && req.Header.Get("Host") != "" {
 					// For requests without host in URL, construct it from Host header
-					scheme := "https" // We know this is HTTPS interception
-					fullURL = fmt.Sprintf("%s://%s%s", scheme, req.Header.Get("Host"), req.URL.Path)
-					if req.URL.RawQuery != "" {
-						fullURL += "?" + req.URL.RawQuery
-					}
+					fullURL = buildFullURL("https", req.Header.Get("Host"), req.URL.Path, req.URL.RawQuery)
 				} else if req.URL.Host == "" && host != "" {
-					fullURL = fmt.Sprintf("https://%s%s", host, req.URL.Path)
+					fullURL = buildFullURL("https", host, req.URL.Path, "")
 				}
 				logger.DebugCtx(req.Context(), "Intercepted HTTPS request: %s %s %s (URL: %s)", req.Method, req.URL, req.Proto, fullURL)
 			}
@@ -576,7 +574,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 			} else {
 				// Regular HTTP request - prepare for recording (streaming if supported)
 				if shouldRecord {
-					requestHeaders = make(map[string][]string)
+					requestHeaders = make(map[string][]string, len(req.Header))
 					for key, values := range req.Header {
 						requestHeaders[key] = values
 					}
@@ -693,7 +691,9 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 			// If we've already detected WebSocket, switch to direct copying
 			if isWebSocket.Load() {
 				// For WebSockets, we just copy bytes directly
-				buffer := make([]byte, 32*1024)
+				bufPtr := getBuffer()
+				defer putBuffer(bufPtr)
+				buffer := *bufPtr
 				for {
 					_ = upstreamConn.SetReadDeadline(time.Now().Add(time.Duration(h.proxy.config.TimeoutSeconds) * time.Second))
 					n, err := upstreamReader.Read(buffer)
@@ -782,15 +782,9 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 						fullURL := recording.req.URL.String()
 						if recording.req.URL.Host == "" && recording.req.Header.Get("Host") != "" {
 							scheme := "https"
-							fullURL = fmt.Sprintf("%s://%s%s", scheme, recording.req.Header.Get("Host"), recording.req.URL.Path)
-							if recording.req.URL.RawQuery != "" {
-								fullURL += "?" + recording.req.URL.RawQuery
-							}
+							fullURL = buildFullURL(scheme, recording.req.Header.Get("Host"), recording.req.URL.Path, recording.req.URL.RawQuery)
 						} else if recording.req.URL.Host == "" && host != "" {
-							fullURL = fmt.Sprintf("https://%s%s", host, recording.req.URL.Path)
-							if recording.req.URL.RawQuery != "" {
-								fullURL += "?" + recording.req.URL.RawQuery
-							}
+							fullURL = buildFullURL("https", host, recording.req.URL.Path, recording.req.URL.RawQuery)
 						}
 
 						// Record request only if we didn't stream it
@@ -857,7 +851,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 						}
 
 						// Record response
-						responseHeaders := make(map[string][]string)
+						responseHeaders := make(map[string][]string, len(resp.Header))
 						for key, values := range resp.Header {
 							responseHeaders[key] = values
 						}

@@ -172,8 +172,8 @@ func TestHTTPInterceptor(t *testing.T) {
 		assert.Contains(t, rec.Body.String(), "Method Not Allowed")
 	})
 
-	t.Run("WebSocket header preservation in removeHopByHopHeaders", func(t *testing.T) {
-		// Test that WebSocket headers are preserved when removing hop-by-hop headers
+	t.Run("WebSocket header preservation in cleanRequestHeaders", func(t *testing.T) {
+		// Test that WebSocket headers are preserved when cleaning request headers
 		headers := make(http.Header)
 		headers.Set("Upgrade", "websocket")
 		headers.Set("Connection", "Upgrade")
@@ -183,7 +183,7 @@ func TestHTTPInterceptor(t *testing.T) {
 		headers.Set("Proxy-Authorization", "Basic abc123")
 
 		// Call the function that removes hop-by-hop headers
-		removeHopByHopHeaders(headers)
+		cleanRequestHeaders(headers)
 
 		// Verify WebSocket headers are preserved
 		assert.Equal(t, "websocket", headers.Get("Upgrade"))
@@ -206,7 +206,7 @@ func TestHTTPInterceptor(t *testing.T) {
 		headers.Set("Host", "example.com")
 
 		// Call the function that removes hop-by-hop headers
-		removeHopByHopHeaders(headers)
+		cleanRequestHeaders(headers)
 
 		// Verify non-WebSocket upgrade headers are removed
 		assert.Empty(t, headers.Get("Upgrade"))

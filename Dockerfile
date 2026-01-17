@@ -121,18 +121,18 @@ FROM scratch AS runtime-dev
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
-COPY --from=build-dev /src/bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} ./msgtausch
+COPY --from=build-dev /src/bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} /msgtausch
 EXPOSE 8080
-ENTRYPOINT ["./msgtausch"]
+ENTRYPOINT ["/msgtausch"]
 CMD ["-config", "/config.json"]
 
 FROM scratch AS runtime-release
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
-COPY --from=build-release /src/bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} ./msgtausch
+COPY --from=build-release /src/bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} /msgtausch
 EXPOSE 8080
-ENTRYPOINT ["./msgtausch"]
+ENTRYPOINT ["/msgtausch"]
 CMD ["-config", "/config.json"]
 
 # Nix flake build test stage

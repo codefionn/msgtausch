@@ -533,7 +533,6 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 				if isWebSocket.Load() {
 					// For WebSockets, we just copy bytes directly
 					bufPtr := getBuffer()
-					defer putBuffer(bufPtr)
 					buffer := *bufPtr
 					for {
 						n, err := clientReader.Read(buffer)
@@ -541,12 +540,14 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 							if err != io.EOF && !isClosedConnError(err) {
 								logger.Error("WebSocket client read error: %v", err)
 							}
+							putBuffer(bufPtr)
 							return
 						}
 
 						_, err = upstreamConn.Write(buffer[:n])
 						if err != nil {
 							logger.Error("WebSocket upstream write error: %v", err)
+							putBuffer(bufPtr)
 							return
 						}
 					}
@@ -639,7 +640,6 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			if isWebSocket.Load() {
 				// For WebSockets, we just copy bytes directly
 				bufPtr := getBuffer()
-				defer putBuffer(bufPtr)
 				buffer := *bufPtr
 				for {
 					n, err := upstreamReader.Read(buffer)
@@ -647,12 +647,14 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 						if err != io.EOF && !isClosedConnError(err) {
 							logger.Error("WebSocket upstream read error: %v", err)
 						}
+						putBuffer(bufPtr)
 						return
 					}
 
 					_, err = clientConn.Write(buffer[:n])
 					if err != nil {
 						logger.Error("WebSocket client write error: %v", err)
+						putBuffer(bufPtr)
 						return
 					}
 				}

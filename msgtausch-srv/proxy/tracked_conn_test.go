@@ -311,22 +311,25 @@ func TestTrackedConn_PeriodicDataTransferReporting_ReadAndWrite(t *testing.T) {
 	mockCollector := &mockCollector{}
 	connectionID := int64(123)
 
-	// Add data for reading
-	readData := make([]byte, 5120)
+	// Add data for reading (10KB to trigger the read threshold)
+	readData := make([]byte, 10240)
 	mockConn.addReadData(readData)
 
-	// Set up expectations for periodic reporting when combined read+write reaches 10KB
-	mockCollector.On("RecordDataTransfer", ctx, connectionID, int64(5120), int64(5120)).Return(nil).Once()
+	// Periodic reporting triggers at 10KB thresholds independently for sent/received.
+	// First, write 10KB to trigger the write threshold (reports 10KB sent, 0 received)
+	mockCollector.On("RecordDataTransfer", ctx, connectionID, int64(10240), int64(0)).Return(nil).Once()
+	// Then, read 10KB to trigger the read threshold (reports 0 sent since last flush, 10KB received)
+	mockCollector.On("RecordDataTransfer", ctx, connectionID, int64(0), int64(10240)).Return(nil).Once()
 
 	tracked := newTrackedConn(ctx, mockConn, mockCollector, connectionID)
 
-	// Write 5KB
-	writeData := make([]byte, 5120)
+	// Write 10KB to trigger the write path
+	writeData := make([]byte, 10240)
 	_, err := tracked.Write(writeData)
 	require.NoError(t, err)
 
-	// Read 5KB - this should trigger reporting because total is now 10KB
-	buffer := make([]byte, 5120)
+	// Read 10KB to trigger the read path
+	buffer := make([]byte, 10240)
 	_, err = tracked.Read(buffer)
 	require.NoError(t, err)
 

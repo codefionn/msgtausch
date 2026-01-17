@@ -294,7 +294,7 @@ type StatisticsSnapshot struct {
 }
 
 // Add adds another snapshot to this one
-func (s *StatisticsSnapshot) Add(other StatisticsSnapshot) {
+func (s *StatisticsSnapshot) Add(other *StatisticsSnapshot) {
 	s.Connections += other.Connections
 	s.Requests += other.Requests
 	s.Errors += other.Errors

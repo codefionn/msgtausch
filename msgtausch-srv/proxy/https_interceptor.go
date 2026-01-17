@@ -470,7 +470,6 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 			if isWebSocket.Load() {
 				// For WebSockets, we just copy bytes directly
 				bufPtr := getBuffer()
-				defer putBuffer(bufPtr)
 				buffer := *bufPtr
 				for {
 					_ = tlsClientConn.SetReadDeadline(time.Now().Add(time.Duration(h.proxy.config.TimeoutSeconds) * time.Second))
@@ -479,6 +478,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 						if err != io.EOF && !isClosedConnError(err) {
 							logger.Error("WebSocket client read error: %v", err)
 						}
+						putBuffer(bufPtr)
 						return
 					}
 
@@ -486,6 +486,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 					_, err = upstreamConn.Write(buffer[:n])
 					if err != nil {
 						logger.Error("WebSocket upstream write error: %v", err)
+						putBuffer(bufPtr)
 						return
 					}
 				}
@@ -692,7 +693,6 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 			if isWebSocket.Load() {
 				// For WebSockets, we just copy bytes directly
 				bufPtr := getBuffer()
-				defer putBuffer(bufPtr)
 				buffer := *bufPtr
 				for {
 					_ = upstreamConn.SetReadDeadline(time.Now().Add(time.Duration(h.proxy.config.TimeoutSeconds) * time.Second))
@@ -701,6 +701,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 						if err != io.EOF && !isClosedConnError(err) {
 							logger.Error("WebSocket upstream read error: %v", err)
 						}
+						putBuffer(bufPtr)
 						return
 					}
 
@@ -708,6 +709,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 					_, err = tlsClientConn.Write(buffer[:n])
 					if err != nil {
 						logger.Error("WebSocket client write error: %v", err)
+						putBuffer(bufPtr)
 						return
 					}
 				}

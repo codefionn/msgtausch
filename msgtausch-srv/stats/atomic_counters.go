@@ -22,14 +22,14 @@ func (c *AtomicInt64Counter) Store(value int64) {
 	atomic.StoreInt64((*int64)(c), value)
 }
 
-// Swap atomically swaps the old value with new and returns the old value
-func (c *AtomicInt64Counter) Swap(new int64) int64 {
-	return atomic.SwapInt64((*int64)(c), new)
+// Swap atomically swaps the old value with newValue and returns the old value
+func (c *AtomicInt64Counter) Swap(newValue int64) int64 {
+	return atomic.SwapInt64((*int64)(c), newValue)
 }
 
 // CompareAndSwap performs atomic compare-and-swap
-func (c *AtomicInt64Counter) CompareAndSwap(old, new int64) bool {
-	return atomic.CompareAndSwapInt64((*int64)(c), old, new)
+func (c *AtomicInt64Counter) CompareAndSwap(old, newValue int64) bool {
+	return atomic.CompareAndSwapInt64((*int64)(c), old, newValue)
 }
 
 // Reset atomically resets the counter to 0 and returns the previous value
@@ -107,7 +107,7 @@ type CounterSnapshot struct {
 }
 
 // Add adds another snapshot to this one
-func (s *CounterSnapshot) Add(other CounterSnapshot) {
+func (s *CounterSnapshot) Add(other *CounterSnapshot) {
 	s.TotalConnections += other.TotalConnections
 	s.ActiveConnections += other.ActiveConnections
 	s.TotalRequests += other.TotalRequests
@@ -139,12 +139,12 @@ func (b *AtomicBool) Load() bool {
 }
 
 // CompareAndSwap performs atomic compare-and-swap
-func (b *AtomicBool) CompareAndSwap(old, new bool) bool {
+func (b *AtomicBool) CompareAndSwap(old, newValue bool) bool {
 	var oldInt, newInt int32 = 0, 0
 	if old {
 		oldInt = 1
 	}
-	if new {
+	if newValue {
 		newInt = 1
 	}
 	return atomic.CompareAndSwapInt32((*int32)(b), oldInt, newInt)
@@ -169,6 +169,6 @@ func (s *AtomicString) Load() string {
 }
 
 // CompareAndSwap performs atomic compare-and-swap for strings
-func (s *AtomicString) CompareAndSwap(old, new string) bool {
-	return s.v.CompareAndSwap(old, new)
+func (s *AtomicString) CompareAndSwap(old, newValue string) bool {
+	return s.v.CompareAndSwap(old, newValue)
 }

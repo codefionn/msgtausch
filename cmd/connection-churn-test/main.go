@@ -138,7 +138,7 @@ func run() error {
 	}
 	elapsed := time.Since(start)
 
-	printReport(results, reopenCount.Load(), elapsed, categories)
+	printReport(&results, reopenCount.Load(), elapsed, categories)
 	return nil
 }
 
@@ -164,13 +164,13 @@ func setupContext() (context.Context, context.CancelFunc) {
 	return ctx, stop
 }
 
-func prepareListeners() (net.Listener, net.Listener, error) {
-	serverLn, err := net.Listen("tcp", "127.0.0.1:0")
+func prepareListeners() (serverLn, proxyLn net.Listener, err error) {
+	serverLn, err = net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, nil, fmt.Errorf("start server: %w", err)
 	}
 
-	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	proxyLn, err = net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = serverLn.Close()
 		return nil, nil, fmt.Errorf("start proxy listener: %w", err)
@@ -192,8 +192,8 @@ func proxyConfig(proxyAddr string) *config.Config {
 	}
 }
 
-func startProxy(cfg *config.Config, ln net.Listener) (*proxy.Proxy, <-chan error) {
-	p := proxy.NewProxy(cfg)
+func startProxy(cfg *config.Config, ln net.Listener) (p *proxy.Proxy, proxyErrCh <-chan error) {
+	p = proxy.NewProxy(cfg)
 	proxyErr := make(chan error, 1)
 	go func() {
 		if err := p.StartWithListener(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -260,7 +260,7 @@ func waitForFirstError(errCh <-chan error) error {
 	return nil
 }
 
-func printReport(results latencyRecorder, reopenCount int64, elapsed time.Duration, categories map[string]*categoryStats) {
+func printReport(results *latencyRecorder, reopenCount int64, elapsed time.Duration, categories map[string]*categoryStats) {
 	totalRequests := int64(*connections * *requestsPerConn)
 	p999 := results.percentile(0.999)
 	p9999 := results.percentile(0.9999)
@@ -414,7 +414,7 @@ func ensureBufSize(buf []byte, size int) []byte {
 	return buf
 }
 
-func measureRoundTrip(conn net.Conn, rw *bufio.ReadWriter, payload []byte, readBuf []byte) (time.Duration, error) {
+func measureRoundTrip(conn net.Conn, rw *bufio.ReadWriter, payload, readBuf []byte) (time.Duration, error) {
 	start := time.Now()
 	if err := writePayload(conn, rw, payload); err != nil {
 		return 0, err
@@ -440,7 +440,8 @@ func recordCategory(isLarge, reopened bool, elapsed time.Duration, categories ma
 
 func newTestRand() *rand.Rand {
 	// Pseudo-random is sufficient for steering test traffic; cryptographic strength is not required.
-	return rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec
+	//nolint:gosec // G404: Use of weak random number generator (math/rand instead of crypto/rand) - acceptable for test purposes
+	return rand.New(rand.NewSource(time.Now().UnixNano()))
 }
 
 func runEchoServer(ctx context.Context, ln net.Listener) {

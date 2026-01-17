@@ -20,7 +20,6 @@ type trackedConn struct {
 	startTime     time.Time
 	ctx           context.Context
 	// internal synchronization for periodic flush and end-of-connection recording
-	mu            sync.Mutex
 	flushSent     int64 // accessed atomically
 	flushReceived int64 // accessed atomically
 	endOnce       sync.Once

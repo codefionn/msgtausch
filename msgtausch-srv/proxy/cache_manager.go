@@ -16,14 +16,16 @@ import (
 
 // CacheEntry represents a cached domain list
 type CacheEntry struct {
-	Trie       *ahocorasick.Trie
-	DomainList []string
-	URL        string // Primary URL that was successfully fetched
-	Format     config.DomainsURLFormat
-	LastFetch  time.Time
-	LastError  error
-	Expiry     time.Time
-	SourceURL  string // Actual URL that provided the content (might be a mirror)
+	Trie        *ahocorasick.Trie
+	ChunkedTrie *ChunkedTrie // Hybrid chunked trie for large domain lists
+	DomainList  []string
+	URL         string // Primary URL that was successfully fetched
+	Format      config.DomainsURLFormat
+	LastFetch   time.Time
+	LastError   error
+	Expiry      time.Time
+	SourceURL   string // Actual URL that provided the content (might be a mirror)
+	IsChunked   bool   // Whether this cache entry uses chunked approach
 }
 
 // CacheManager handles background caching of domain lists from URLs
@@ -220,23 +222,43 @@ func (cm *CacheManager) fetchAndCacheWithMirrors(primaryURL string, mirrors []st
 
 	// Create trie for efficient matching
 	var trie *ahocorasick.Trie
+	var chunkedTrie *ChunkedTrie
+	var isChunked bool
+
 	if len(domainList) > 0 {
-		trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
-		logger.Info("Created Aho-Corasick trie with %d domains from %s (format: %s)", len(domainList), successfulURL, format)
+		// Determine if we should use chunking based on domain count
+		// Default threshold is 2048 domains
+		chunkThreshold := 2048
+
+		if shouldUseChunking(len(domainList)) {
+			// Use hybrid chunked approach for large domain lists
+			chunkedTrie = NewChunkedTrie(domainList, chunkThreshold)
+			isChunked = true
+
+			memStats := chunkedTrie.GetMemoryUsage()
+			logger.Info("Created hybrid chunked AC trie with %d domains from %s (format: %s, %d chunks, memory: %s)",
+				len(domainList), successfulURL, format, memStats.NumChunks, formatMemorySize(memStats.TotalMemory))
+		} else {
+			// Use regular single trie for smaller domain lists
+			trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
+			logger.Info("Created Aho-Corasick trie with %d domains from %s (format: %s)", len(domainList), successfulURL, format)
+		}
 	}
 
 	// Create cache entry
 	var ttl time.Duration = 1 * time.Hour // Default fallback
 
 	entry := &CacheEntry{
-		Trie:       trie,
-		DomainList: domainList,
-		URL:        primaryURL,
-		Format:     format,
-		LastFetch:  time.Now(),
-		LastError:  nil,
-		Expiry:     time.Now().Add(ttl),
-		SourceURL:  successfulURL,
+		Trie:        trie,
+		ChunkedTrie: chunkedTrie,
+		DomainList:  domainList,
+		URL:         primaryURL,
+		Format:      format,
+		LastFetch:   time.Now(),
+		LastError:   nil,
+		Expiry:      time.Now().Add(ttl),
+		SourceURL:   successfulURL,
+		IsChunked:   isChunked,
 	}
 
 	// Cache the entry

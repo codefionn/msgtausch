@@ -153,13 +153,27 @@ func (c *ClassifierOr) Classify(input ClassifierInput) (bool, error) {
 
 // ClassifierOrDomains is an optimized OR classifier for multiple domain/equal classifiers
 // that uses Aho-Corasick for efficient pattern matching
+// For large domain lists (>2048 entries), uses hybrid chunked AC approach
 type ClassifierOrDomains struct {
-	Trie       *ahocorasick.Trie
-	DomainList []string // Keep original domains for debugging
+	Trie        *ahocorasick.Trie
+	ChunkedTrie *ChunkedTrie // Hybrid chunked trie for large domain lists
+	DomainList  []string     // Keep original domains for debugging
+	IsChunked   bool         // Whether this classifier uses chunked approach
 }
 
 // Classify returns true if the input host matches any domain in the list.
 func (c *ClassifierOrDomains) Classify(input ClassifierInput) (bool, error) {
+	if c.IsChunked && c.ChunkedTrie != nil {
+		// Use chunked trie for large domain lists
+		return c.classifyWithChunkedTrie(input)
+	}
+
+	// Use regular trie for smaller domain lists
+	return c.classifyWithRegularTrie(input)
+}
+
+// classifyWithRegularTrie handles classification using the standard AC trie
+func (c *ClassifierOrDomains) classifyWithRegularTrie(input ClassifierInput) (bool, error) {
 	// Use Aho-Corasick for efficient pattern matching
 	if c.Trie != nil {
 		matches := c.Trie.MatchString(input.host)
@@ -177,15 +191,49 @@ func (c *ClassifierOrDomains) Classify(input ClassifierInput) (bool, error) {
 	return false, nil
 }
 
+// classifyWithChunkedTrie handles classification using the hybrid chunked approach
+func (c *ClassifierOrDomains) classifyWithChunkedTrie(input ClassifierInput) (bool, error) {
+	if c.ChunkedTrie != nil {
+		matchFound, chunkIdx, patternIdx := c.ChunkedTrie.MatchString(input.host)
+		if matchFound {
+			matchedDomain := c.ChunkedTrie.GetMatchedDomain(chunkIdx, patternIdx)
+			if matchedDomain == "" {
+				return false, nil
+			}
+
+			// Check for exact match
+			if input.host == matchedDomain {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // ClassifierOrDomainsIs is an optimized OR classifier for multiple domain/is classifiers
 // that uses Aho-Corasick for efficient pattern matching with subdomain support
+// For large domain lists (>2048 entries), uses hybrid chunked AC approach
 type ClassifierOrDomainsIs struct {
-	Trie       *ahocorasick.Trie
-	DomainList []string // Keep original domains for debugging
+	Trie        *ahocorasick.Trie
+	ChunkedTrie *ChunkedTrie // Hybrid chunked trie for large domain lists
+	DomainList  []string     // Keep original domains for debugging
+	IsChunked   bool         // Whether this classifier uses chunked approach
 }
 
 // Classify returns true if the input host exactly matches any domain in the list.
 func (c *ClassifierOrDomainsIs) Classify(input ClassifierInput) (bool, error) {
+	if c.IsChunked && c.ChunkedTrie != nil {
+		// Use chunked trie for large domain lists
+		return c.classifyWithChunkedTrie(input)
+	}
+
+	// Use regular trie for smaller domain lists
+	return c.classifyWithRegularTrie(input)
+}
+
+// classifyWithRegularTrie handles classification using the standard AC trie
+func (c *ClassifierOrDomainsIs) classifyWithRegularTrie(input ClassifierInput) (bool, error) {
 	// Use Aho-Corasick for efficient pattern matching
 	if c.Trie != nil {
 		matches := c.Trie.MatchString(input.host)
@@ -203,21 +251,80 @@ func (c *ClassifierOrDomainsIs) Classify(input ClassifierInput) (bool, error) {
 	return false, nil
 }
 
+// classifyWithChunkedTrie handles classification using the hybrid chunked approach
+func (c *ClassifierOrDomainsIs) classifyWithChunkedTrie(input ClassifierInput) (bool, error) {
+	if c.ChunkedTrie != nil {
+		matchFound, chunkIdx, patternIdx := c.ChunkedTrie.MatchString(input.host)
+		if matchFound {
+			matchedDomain := c.ChunkedTrie.GetMatchedDomain(chunkIdx, patternIdx)
+			if matchedDomain == "" {
+				return false, nil
+			}
+
+			// Check for exact match or subdomain match (like ClassifierStrIs)
+			if input.host == matchedDomain || strings.HasSuffix(input.host, "."+matchedDomain) {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // ClassifierOrDomainsFile is an optimized OR classifier for multiple domains-file classifiers
 // that combines all domain lists and uses Aho-Corasick for efficient pattern matching
+// For large domain lists (>2048 entries), uses hybrid chunked AC approach
 type ClassifierOrDomainsFile struct {
-	Trie       *ahocorasick.Trie
-	DomainList []string // Combined domains from all files for debugging
+	Trie        *ahocorasick.Trie
+	ChunkedTrie *ChunkedTrie // Hybrid chunked trie for large domain lists
+	DomainList  []string     // Combined domains from all files for debugging
+	IsChunked   bool         // Whether this classifier uses chunked approach
 }
 
 // Classify returns true if the input host matches any domain from the combined domain files.
 func (c *ClassifierOrDomainsFile) Classify(input ClassifierInput) (bool, error) {
+	if c.IsChunked && c.ChunkedTrie != nil {
+		// Use chunked trie for large domain lists
+		return c.classifyWithChunkedTrie(input)
+	}
+
+	// Use regular trie for smaller domain lists
+	return c.classifyWithRegularTrie(input)
+}
+
+// classifyWithRegularTrie handles classification using the standard AC trie
+func (c *ClassifierOrDomainsFile) classifyWithRegularTrie(input ClassifierInput) (bool, error) {
 	// Use Aho-Corasick for efficient pattern matching
 	if c.Trie != nil {
 		matches := c.Trie.MatchString(input.host)
 		for _, match := range matches {
 			// Get the matched pattern (domain)
 			matchedDomain := c.DomainList[match.Pattern()]
+
+			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
+			if hasSuffix && len(input.host) == len(matchedDomain) {
+				return true, nil
+			}
+
+			// Check if it's a valid subdomain match (host ends with ".domain")
+			if hasSuffix && len(input.host) > len(matchedDomain) && input.host[len(input.host)-len(matchedDomain)-1] == '.' {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// classifyWithChunkedTrie handles classification using the hybrid chunked approach
+func (c *ClassifierOrDomainsFile) classifyWithChunkedTrie(input ClassifierInput) (bool, error) {
+	if c.ChunkedTrie != nil {
+		matchFound, chunkIdx, patternIdx := c.ChunkedTrie.MatchString(input.host)
+		if matchFound {
+			matchedDomain := c.ChunkedTrie.GetMatchedDomain(chunkIdx, patternIdx)
+			if matchedDomain == "" {
+				return false, nil
+			}
 
 			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
 			if hasSuffix && len(input.host) == len(matchedDomain) {
@@ -393,30 +500,70 @@ detectOptimizations:
 	// If all are domain/equal classifiers and we have more than one, use optimized version
 	if allDomainEqual && len(domains) > 1 {
 		var trie *ahocorasick.Trie
+		var chunkedTrie *ChunkedTrie
+		var isChunked bool
+
 		if len(domains) > 0 {
-			trie = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
-			memSize := estimateTrieMemorySize(trie, len(domains))
-			logger.Info("Created optimized Aho-Corasick OR classifier with %d equal domains (memory: %s)", len(domains), formatMemorySize(memSize))
+			// Determine if we should use chunking based on domain count
+			chunkThreshold := 2048
+
+			if shouldUseChunking(len(domains)) {
+				// Use hybrid chunked approach for large domain lists
+				chunkedTrie = NewChunkedTrie(domains, chunkThreshold)
+				isChunked = true
+
+				memStats := chunkedTrie.GetMemoryUsage()
+				logger.Info("Created optimized hybrid chunked AC OR classifier with %d equal domains (%d chunks, memory: %s)",
+					len(domains), memStats.NumChunks, formatMemorySize(memStats.TotalMemory))
+			} else {
+				// Use regular single trie for smaller domain lists
+				trie = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
+				memSize := estimateTrieMemorySize(trie, len(domains))
+				logger.Info("Created optimized Aho-Corasick OR classifier with %d equal domains (memory: %s)",
+					len(domains), formatMemorySize(memSize))
+			}
 		}
 
 		return &ClassifierOrDomains{
-			Trie:       trie,
-			DomainList: domains,
+			Trie:        trie,
+			ChunkedTrie: chunkedTrie,
+			DomainList:  domains,
+			IsChunked:   isChunked,
 		}
 	}
 
 	// If all are domain/is classifiers and we have more than one, use optimized version
 	if allDomainIs && len(domains) > 1 {
 		var trie *ahocorasick.Trie
+		var chunkedTrie *ChunkedTrie
+		var isChunked bool
+
 		if len(domains) > 0 {
-			trie = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
-			memSize := estimateTrieMemorySize(trie, len(domains))
-			logger.Info("Created optimized Aho-Corasick OR classifier with %d is domains (memory: %s)", len(domains), formatMemorySize(memSize))
+			// Determine if we should use chunking based on domain count
+			chunkThreshold := 2048
+
+			if shouldUseChunking(len(domains)) {
+				// Use hybrid chunked approach for large domain lists
+				chunkedTrie = NewChunkedTrie(domains, chunkThreshold)
+				isChunked = true
+
+				memStats := chunkedTrie.GetMemoryUsage()
+				logger.Info("Created optimized hybrid chunked AC OR classifier with %d is domains (%d chunks, memory: %s)",
+					len(domains), memStats.NumChunks, formatMemorySize(memStats.TotalMemory))
+			} else {
+				// Use regular single trie for smaller domain lists
+				trie = ahocorasick.NewTrieBuilder().AddStrings(domains).Build()
+				memSize := estimateTrieMemorySize(trie, len(domains))
+				logger.Info("Created optimized Aho-Corasick OR classifier with %d is domains (memory: %s)",
+					len(domains), formatMemorySize(memSize))
+			}
 		}
 
 		return &ClassifierOrDomainsIs{
-			Trie:       trie,
-			DomainList: domains,
+			Trie:        trie,
+			ChunkedTrie: chunkedTrie,
+			DomainList:  domains,
+			IsChunked:   isChunked,
 		}
 	}
 
@@ -435,15 +582,35 @@ detectOptimizations:
 		}
 
 		var trie *ahocorasick.Trie
+		var chunkedTrie *ChunkedTrie
+		var isChunked bool
+
 		if len(combinedDomains) > 0 {
-			trie = ahocorasick.NewTrieBuilder().AddStrings(combinedDomains).Build()
-			memSize := estimateTrieMemorySize(trie, len(combinedDomains))
-			logger.Info("Created optimized Aho-Corasick OR classifier with %d domains from %d files (memory: %s)", len(combinedDomains), len(domainsFilePaths), formatMemorySize(memSize))
+			// Determine if we should use chunking based on domain count
+			chunkThreshold := 2048
+
+			if shouldUseChunking(len(combinedDomains)) {
+				// Use hybrid chunked approach for large domain lists
+				chunkedTrie = NewChunkedTrie(combinedDomains, chunkThreshold)
+				isChunked = true
+
+				memStats := chunkedTrie.GetMemoryUsage()
+				logger.Info("Created optimized hybrid chunked AC OR classifier with %d domains from %d files (%d chunks, memory: %s)",
+					len(combinedDomains), len(domainsFilePaths), memStats.NumChunks, formatMemorySize(memStats.TotalMemory))
+			} else {
+				// Use regular single trie for smaller domain lists
+				trie = ahocorasick.NewTrieBuilder().AddStrings(combinedDomains).Build()
+				memSize := estimateTrieMemorySize(trie, len(combinedDomains))
+				logger.Info("Created optimized Aho-Corasick OR classifier with %d domains from %d files (memory: %s)",
+					len(combinedDomains), len(domainsFilePaths), formatMemorySize(memSize))
+			}
 		}
 
 		return &ClassifierOrDomainsFile{
-			Trie:       trie,
-			DomainList: combinedDomains,
+			Trie:        trie,
+			ChunkedTrie: chunkedTrie,
+			DomainList:  combinedDomains,
+			IsChunked:   isChunked,
 		}
 	}
 
@@ -587,19 +754,58 @@ func (c *ClassifierPort) Classify(input ClassifierInput) (bool, error) {
 
 // ClassifierDomainsFile matches if the input host is in the loaded domains set.
 // Uses Aho-Corasick algorithm for efficient domain matching.
+// For large domain lists (>2048 entries), uses hybrid chunked AC approach.
 type ClassifierDomainsFile struct {
-	Trie       *ahocorasick.Trie
-	DomainList []string // Keep original domains for debugging
+	Trie        *ahocorasick.Trie
+	ChunkedTrie *ChunkedTrie // Hybrid chunked trie for large domain lists
+	DomainList  []string     // Keep original domains for debugging
+	IsChunked   bool         // Whether this classifier uses chunked approach
 }
 
 // Classify returns true if the input host matches any domain loaded from the file.
 func (c *ClassifierDomainsFile) Classify(input ClassifierInput) (bool, error) {
+	if c.IsChunked && c.ChunkedTrie != nil {
+		// Use chunked trie for large domain lists
+		return c.classifyWithChunkedTrie(input)
+	}
+
+	// Use regular trie for smaller domain lists
+	return c.classifyWithRegularTrie(input)
+}
+
+// classifyWithRegularTrie handles classification using the standard AC trie
+func (c *ClassifierDomainsFile) classifyWithRegularTrie(input ClassifierInput) (bool, error) {
 	// Check for subdomain matches using Aho-Corasick for efficient pattern matching
 	if c.Trie != nil {
 		matches := c.Trie.MatchString(input.host)
 		for _, match := range matches {
 			// Get the matched pattern (domain)
 			matchedDomain := c.DomainList[match.Pattern()]
+
+			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
+			if hasSuffix && len(input.host) == len(matchedDomain) {
+				return true, nil
+			}
+
+			// Check if it's a valid subdomain match (host ends with ".domain")
+			if hasSuffix && len(input.host) > len(matchedDomain) && input.host[len(input.host)-len(matchedDomain)-1] == '.' {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// classifyWithChunkedTrie handles classification using the hybrid chunked approach
+func (c *ClassifierDomainsFile) classifyWithChunkedTrie(input ClassifierInput) (bool, error) {
+	if c.ChunkedTrie != nil {
+		matchFound, chunkIdx, patternIdx := c.ChunkedTrie.MatchString(input.host)
+		if matchFound {
+			matchedDomain := c.ChunkedTrie.GetMatchedDomain(chunkIdx, patternIdx)
+			if matchedDomain == "" {
+				return false, nil
+			}
 
 			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
 			if hasSuffix && len(input.host) == len(matchedDomain) {
@@ -695,6 +901,7 @@ func CompileClassifier(classifier config.Classifier, cacheManager *CacheManager)
 
 // NewClassifierDomainsFile loads domains from the given file path and creates
 // an Aho-Corasick trie for efficient pattern matching.
+// For large domain lists (>2048 entries), uses hybrid chunked AC approach.
 func NewClassifierDomainsFile(filePath string) (*ClassifierDomainsFile, error) {
 	logger.Debug("NewClassifierDomainsFile called with path: %s", filePath)
 	// Validate file path to prevent directory traversal
@@ -750,18 +957,38 @@ func NewClassifierDomainsFile(filePath string) (*ClassifierDomainsFile, error) {
 	}
 
 	var trie *ahocorasick.Trie
+	var chunkedTrie *ChunkedTrie
+	var isChunked bool
+
 	if len(domainList) > 0 {
-		// Create Aho-Corasick trie for efficient pattern matching
-		trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
-		memSize := estimateTrieMemorySize(trie, len(domainList))
-		logger.Info("Created Aho-Corasick trie with %d domains from file: %s (memory: %s)", len(domainList), filePath, formatMemorySize(memSize))
+		// Determine if we should use chunking based on domain count
+		// Default threshold is 2048 domains
+		chunkThreshold := 2048
+
+		if shouldUseChunking(len(domainList)) {
+			// Use hybrid chunked approach for large domain lists
+			chunkedTrie = NewChunkedTrie(domainList, chunkThreshold)
+			isChunked = true
+
+			memStats := chunkedTrie.GetMemoryUsage()
+			logger.Info("Created hybrid chunked AC trie with %d domains from file: %s (%d chunks, memory: %s)",
+				len(domainList), filePath, memStats.NumChunks, formatMemorySize(memStats.TotalMemory))
+		} else {
+			// Use regular single trie for smaller domain lists
+			trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
+			memSize := estimateTrieMemorySize(trie, len(domainList))
+			logger.Info("Created Aho-Corasick trie with %d domains from file: %s (memory: %s)",
+				len(domainList), filePath, formatMemorySize(memSize))
+		}
 	} else {
 		logger.Warn("No domains found in file: %s", filePath)
 	}
 
 	return &ClassifierDomainsFile{
-		Trie:       trie,
-		DomainList: domainList,
+		Trie:        trie,
+		ChunkedTrie: chunkedTrie,
+		DomainList:  domainList,
+		IsChunked:   isChunked,
 	}, nil
 }
 
@@ -792,12 +1019,48 @@ func (c *ClassifierDomainsURL) Classify(input ClassifierInput) (bool, error) {
 		return false, nil
 	}
 
+	// Use appropriate matching method based on whether chunking is used
+	if cacheEntry.IsChunked && cacheEntry.ChunkedTrie != nil {
+		return c.classifyWithChunkedCacheEntry(input, cacheEntry)
+	}
+
+	// Use regular trie for smaller domain lists
+	return c.classifyWithRegularCacheEntry(input, cacheEntry)
+}
+
+// classifyWithRegularCacheEntry handles classification using the standard AC trie from cache
+func (c *ClassifierDomainsURL) classifyWithRegularCacheEntry(input ClassifierInput, cacheEntry *CacheEntry) (bool, error) {
 	// Check for subdomain matches using Aho-Corasick for efficient pattern matching
 	if cacheEntry.Trie != nil {
 		matches := cacheEntry.Trie.MatchString(input.host)
 		for _, match := range matches {
 			// Get the matched pattern (domain)
 			matchedDomain := cacheEntry.DomainList[match.Pattern()]
+
+			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
+			if hasSuffix && len(input.host) == len(matchedDomain) {
+				return true, nil
+			}
+
+			// Check if it's a valid subdomain match (host ends with ".domain")
+			if hasSuffix && len(input.host) > len(matchedDomain) && input.host[len(input.host)-len(matchedDomain)-1] == '.' {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// classifyWithChunkedCacheEntry handles classification using the hybrid chunked approach from cache
+func (c *ClassifierDomainsURL) classifyWithChunkedCacheEntry(input ClassifierInput, cacheEntry *CacheEntry) (bool, error) {
+	if cacheEntry.ChunkedTrie != nil {
+		matchFound, chunkIdx, patternIdx := cacheEntry.ChunkedTrie.MatchString(input.host)
+		if matchFound {
+			matchedDomain := cacheEntry.ChunkedTrie.GetMatchedDomain(chunkIdx, patternIdx)
+			if matchedDomain == "" {
+				return false, nil
+			}
 
 			hasSuffix := strings.HasSuffix(input.host, matchedDomain)
 			if hasSuffix && len(input.host) == len(matchedDomain) {

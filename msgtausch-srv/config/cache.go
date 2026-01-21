@@ -10,6 +10,10 @@ type CacheConfig struct {
 	HTTPTimeout     int  `json:"http-timeout" hcl:"http-timeout"`
 	MaxRetries      int  `json:"max-retries" hcl:"max-retries"`
 	RetryDelay      int  `json:"retry-delay" hcl:"retry-delay"`
+	// Hybrid Chunked AC configuration for large domain lists
+	ChunkedACEnabled bool `json:"chunked-ac-enabled" hcl:"chunked-ac-enabled"`
+	ChunkSize        int  `json:"chunk-size" hcl:"chunk-size"`
+	ChunkThreshold   int  `json:"chunk-threshold" hcl:"chunk-threshold"`
 }
 
 // DefaultCacheConfig returns default cache configuration
@@ -21,6 +25,10 @@ func DefaultCacheConfig() CacheConfig {
 		HTTPTimeout:     30,   // 30 seconds
 		MaxRetries:      3,
 		RetryDelay:      5, // 5 seconds
+		// Hybrid Chunked AC defaults - enabled for large domain lists
+		ChunkedACEnabled: true,
+		ChunkSize:        2048, // Default chunk size
+		ChunkThreshold:   2048, // Use chunking for lists > 2048 domains
 	}
 }
 

@@ -117,19 +117,21 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     fi
 
 # Runtime stage
-FROM scratch AS runtime-dev
+FROM quay.io/lib/alpine:3.22.1 AS runtime-dev
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
+RUN apk add --no-cache libc6-compat
 COPY --from=build-dev /src/bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} /msgtausch
 EXPOSE 8080
 ENTRYPOINT ["/msgtausch"]
 CMD ["-config", "/config.json"]
 
-FROM scratch AS runtime-release
+FROM quay.io/lib/alpine:3.22.1 AS runtime-release
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
+RUN apk add --no-cache libc6-compat
 COPY --from=build-release /src/bin/msgtausch-${TARGETOS}-${TARGETARCH}${TARGETVARIANT} /msgtausch
 EXPOSE 8080
 ENTRYPOINT ["/msgtausch"]

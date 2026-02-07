@@ -18,6 +18,7 @@ import (
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/dashboard"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/resolver"
 	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -266,6 +267,9 @@ func NewProxy(cfg *config.Config) *Proxy {
 
 	// Set up logger to extract connection UUIDs from context
 	logger.ConnectionUUIDExtractor = ConnectionUUIDFromContext
+
+	// Initialize DNS resolver with configuration
+	_ = resolver.GetResolver(cfg.DNS)
 
 	p.CompileClassifiers()
 

@@ -87,6 +87,197 @@ cache = {
 | `MSGTAUSCH_CACHE_MAX_RETRIES` | Maximum retry attempts | int |
 | `MSGTAUSCH_CACHE_RETRY_DELAY` | Retry delay in seconds | int |
 
+### DNS Configuration
+
+The `dns` object controls the DNS resolver used by the proxy:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable custom DNS resolver |
+| `servers` | `[]DNSServerConfig` | `[]` | List of DNS servers to use (1-5 servers) |
+
+#### DNS Server Configuration
+
+Each server in the `servers` array supports the following configuration:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `address` | `string` | required | DNS server address (host:port or [IPv6]:port) |
+| `type` | `string` | `"udp"` | DNS server type: `"udp"`, `"tcp"`, or `"dot"` |
+| `timeout-seconds` | `int` | `10` | Query timeout in seconds (1-60) |
+| `tls-host` | `string` | `""` | TLS hostname for SNI (only for `type: "dot"`) |
+
+#### DNS Types
+
+- **udp**: Standard DNS over UDP (port 53)
+- **tcp**: Standard DNS over TCP (port 53)
+- **dot**: DNS over TLS (RFC 7858) - typically port 853
+
+#### DNS Behavior
+
+- **Server Rotation**: When multiple servers are configured, the proxy rotates through them in a round-robin fashion
+- **Failover**: If a server fails, the proxy automatically tries the next server in the list
+- **DoT Security**: DNS over TLS provides encrypted DNS queries, protecting against DNS surveillance and tampering
+- **System Default**: When DNS is disabled or no servers are configured, the proxy uses the system's default DNS resolver
+
+#### DNS Configuration Examples
+
+**Using Google DNS (UDP):**
+```json
+{
+  "dns": {
+    "enabled": true,
+    "servers": [
+      {
+        "address": "8.8.8.8:53",
+        "type": "udp",
+        "timeout-seconds": 10
+      },
+      {
+        "address": "8.8.4.4:53",
+        "type": "udp",
+        "timeout-seconds": 10
+      }
+    ]
+  }
+}
+```
+
+**Using Cloudflare DNS over TLS:**
+```json
+{
+  "dns": {
+    "enabled": true,
+    "servers": [
+      {
+        "address": "1.1.1.1:853",
+        "type": "dot",
+        "timeout-seconds": 15
+      },
+      {
+        "address": "1.0.0.1:853",
+        "type": "dot",
+        "timeout-seconds": 15
+      }
+    ]
+  }
+}
+```
+
+**Using DoT with custom TLS hostname (SNI):**
+```json
+{
+  "dns": {
+    "enabled": true,
+    "servers": [
+      {
+        "address": "9.9.9.9:853",
+        "type": "dot",
+        "timeout-seconds": 10,
+        "tls-host": "dns.quad9.net"
+      },
+      {
+        "address": "149.112.112.112:853",
+        "type": "dot",
+        "timeout-seconds": 10,
+        "tls-host": "dns.quad9.net"
+      }
+    ]
+  }
+}
+```
+
+The `tls-host` field is useful when:
+- Connecting to a DoT server via IP address (required for TLS certificate validation)
+- The server's TLS certificate uses a different hostname than the connection address
+- You want to specify the SNI (Server Name Indication) hostname explicitly
+
+**Mixed DNS servers:**
+```json
+{
+  "dns": {
+    "enabled": true,
+    "servers": [
+      {
+        "address": "8.8.8.8:53",
+        "type": "udp",
+        "timeout-seconds": 5
+      },
+      {
+        "address": "1.1.1.1:853",
+        "type": "dot",
+        "timeout-seconds": 10
+      },
+      {
+        "address": "9.9.9.9:853",
+        "type": "dot",
+        "timeout-seconds": 10
+      }
+    ]
+  }
+}
+```
+
+**Using IPv6 DNS servers:**
+```json
+{
+  "dns": {
+    "enabled": true,
+    "servers": [
+      {
+        "address": "[2001:4860:4860::8888]:53",
+        "type": "udp",
+        "timeout-seconds": 10
+      },
+      {
+        "address": "[2606:4700:4700::1111]:853",
+        "type": "dot",
+        "timeout-seconds": 15
+      }
+    ]
+  }
+}
+```
+
+#### HCL DNS Configuration
+```hcl
+dns = {
+  enabled = true
+  servers = [
+    {
+      address        = "8.8.8.8:53"
+      type           = "udp"
+      timeout-seconds = 10
+    }
+    {
+      address        = "1.1.1.1:853"
+      type           = "dot"
+      timeout-seconds = 15
+    }
+  ]
+}
+```
+
+#### Environment Variables
+
+| Environment Variable | Description | Type |
+|---------------------|-------------|------|
+| `MSGTAUSCH_DNS_ENABLED` | Enable custom DNS resolver | bool |
+| `MSGTAUSCH_DNS_SERVER_0_ADDRESS` | First DNS server address | string |
+| `MSGTAUSCH_DNS_SERVER_0_TYPE` | First DNS server type | string |
+| `MSGTAUSCH_DNS_SERVER_0_TIMEOUT_SECONDS` | First DNS server timeout (seconds) | int |
+| `MSGTAUSCH_DNS_SERVER_1_ADDRESS` | Second DNS server address | string |
+| ... | ... | ... |
+
+**Example with environment variables:**
+```bash
+export MSGTAUSCH_DNS_ENABLED=true
+export MSGTAUSCH_DNS_SERVER_0_ADDRESS=8.8.8.8:53
+export MSGTAUSCH_DNS_SERVER_0_TYPE=udp
+export MSGTAUSCH_DNS_SERVER_1_ADDRESS=1.1.1.1:853
+export MSGTAUSCH_DNS_SERVER_1_TYPE=dot
+```
+
 ### Statistics Configuration
 
 The `statistics` object controls statistics collection and monitoring:

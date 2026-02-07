@@ -69,6 +69,7 @@ type Config struct {
 	Statistics          StatisticsConfig   // Statistics collection configuration
 	Portal              PortalConfig       // Portal authentication configuration
 	Cache               CacheConfig        // Cache configuration
+	DNS                 DNSConfig          // DNS resolver configuration
 }
 
 // ForwardType defines the type of forwarding rule.
@@ -227,6 +228,30 @@ func validateConfigKeys(data map[string]any) error {
 		"ca_file":                    "ca-file",
 		"ca_key_file":                "ca-key-file",
 		"ca_key_passwd":              "ca-key-passwd",
+	}
+
+	// Check DNS configuration keys
+	if dns, ok := data["dns"].(map[string]any); ok {
+		dnsKeyMappings := map[string]string{
+			"timeout_seconds": "timeout-seconds",
+		}
+		for key := range dns {
+			if correctKey, exists := dnsKeyMappings[key]; exists {
+				return fmt.Errorf("invalid dns config key '%s': use '%s' instead (hyphens, not underscores)", key, correctKey)
+			}
+		}
+		// Check dns server configuration keys
+		if servers, ok := dns["servers"].([]any); ok {
+			for i, serverData := range servers {
+				if serverMap, ok := serverData.(map[string]any); ok {
+					for key := range serverMap {
+						if correctKey, exists := dnsKeyMappings[key]; exists {
+							return fmt.Errorf("invalid dns server config key '%s' at index %d: use '%s' instead (hyphens, not underscores)", key, i, correctKey)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Check top-level keys
@@ -925,6 +950,88 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 		}
 	}
 
+	// Handle DNS configuration
+	if val, exists := data["dns"]; exists {
+		dnsMap, ok := val.(map[string]any)
+		if !ok {
+			return fmt.Errorf("dns configuration must be an object")
+		}
+
+		// Parse enabled
+		if enabledVal, exists := dnsMap["enabled"]; exists {
+			if enabled, err := parseValue[bool](enabledVal); err == nil {
+				cfg.DNS.Enabled = *enabled
+			} else {
+				return fmt.Errorf("dns enabled must be a boolean: %w", err)
+			}
+		}
+
+		// Parse servers
+		if serversVal, exists := dnsMap["servers"]; exists {
+			serversList, ok := serversVal.([]any)
+			if !ok {
+				return fmt.Errorf("dns servers must be an array")
+			}
+
+			for i, serverData := range serversList {
+				serverMap, ok := serverData.(map[string]any)
+				if !ok {
+					return fmt.Errorf("dns server configuration at index %d must be an object", i)
+				}
+
+				server := DNSServerConfig{
+					Type:           DNSTypeUDP,
+					TimeoutSeconds: 10,
+				}
+
+				// Parse address
+				if addressVal, exists := serverMap["address"]; exists {
+					if address, err := parseValue[string](addressVal); err == nil {
+						server.Address = *address
+					} else {
+						return fmt.Errorf("dns server address at index %d must be a string: %w", i, err)
+					}
+				} else {
+					return fmt.Errorf("dns server address at index %d is required", i)
+				}
+
+				// Parse type
+				if typeVal, exists := serverMap["type"]; exists {
+					if dnsType, err := parseValue[string](typeVal); err == nil {
+						switch DNSType(*dnsType) {
+						case DNSTypeUDP, DNSTypeTCP, DNSTypeDoT:
+							server.Type = DNSType(*dnsType)
+						default:
+							return fmt.Errorf("dns server type at index %d must be 'udp', 'tcp', or 'dot': %s", i, *dnsType)
+						}
+					} else {
+						return fmt.Errorf("dns server type at index %d must be a string: %w", i, err)
+					}
+				}
+
+				// Parse timeout-seconds
+				if timeoutVal, exists := serverMap["timeout-seconds"]; exists {
+					if timeout, err := parseValue[int](timeoutVal); err == nil {
+						server.TimeoutSeconds = *timeout
+					} else {
+						return fmt.Errorf("dns server timeout-seconds at index %d must be an integer: %w", i, err)
+					}
+				}
+
+				// Parse tls-host (optional, only for DoT)
+				if tlsHostVal, exists := serverMap["tls-host"]; exists {
+					if tlsHost, err := parseValue[string](tlsHostVal); err == nil {
+						server.TLSHost = *tlsHost
+					} else {
+						return fmt.Errorf("dns server tls-host at index %d must be a string: %w", i, err)
+					}
+				}
+
+				cfg.DNS.Servers = append(cfg.DNS.Servers, server)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1323,5 +1430,66 @@ func loadConfigFromEnv(cfg *Config) {
 		} else {
 			cfg.Servers = append(cfg.Servers, server)
 		}
+	}
+
+	// Handle DNS configuration from environment variables
+	if dnsEnabled := os.Getenv("MSGTAUSCH_DNS_ENABLED"); dnsEnabled != "" {
+		if enabled, err := strconv.ParseBool(dnsEnabled); err == nil {
+			cfg.DNS.Enabled = enabled
+		} else {
+			logger.Error("Invalid value for MSGTAUSCH_DNS_ENABLED: %s (must be true or false)", dnsEnabled)
+		}
+	}
+
+	// Handle DNS servers from environment variables
+	// Format: MSGTAUSCH_DNS_SERVER_0_ADDRESS=8.8.8.8:53, MSGTAUSCH_DNS_SERVER_0_TYPE=udp
+	for i := 0; ; i++ {
+		prefix := fmt.Sprintf("MSGTAUSCH_DNS_SERVER_%d_", i)
+		addressVar := prefix + "ADDRESS"
+		typeVar := prefix + "TYPE"
+		timeoutVar := prefix + "TIMEOUT_SECONDS"
+		tlsHostVar := prefix + "TLS_HOST"
+
+		// Check if this DNS server config exists by looking for the address
+		address := os.Getenv(addressVar)
+		if address == "" {
+			// No more DNS server configurations
+			break
+		}
+
+		// Create a new DNS server config with defaults
+		dnsServer := DNSServerConfig{
+			Type:           DNSTypeUDP,
+			TimeoutSeconds: 10,
+		}
+
+		// Set the address
+		dnsServer.Address = address
+
+		// Set the type if specified
+		if typeStr := os.Getenv(typeVar); typeStr != "" {
+			switch DNSType(typeStr) {
+			case DNSTypeUDP, DNSTypeTCP, DNSTypeDoT:
+				dnsServer.Type = DNSType(typeStr)
+			default:
+				fmt.Fprintf(os.Stderr, "Warning: Invalid DNS server type %s for %s: must be 'udp', 'tcp', or 'dot'\n", typeStr, addressVar)
+			}
+		}
+
+		// Set the timeout if specified
+		if timeoutStr := os.Getenv(timeoutVar); timeoutStr != "" {
+			if timeout, err := strconv.Atoi(timeoutStr); err == nil {
+				dnsServer.TimeoutSeconds = timeout
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: Invalid timeout for %s: %s\n", timeoutVar, timeoutStr)
+			}
+		}
+
+		// Set the TLS host if specified (for DoT)
+		if tlsHost := os.Getenv(tlsHostVar); tlsHost != "" {
+			dnsServer.TLSHost = tlsHost
+		}
+
+		cfg.DNS.Servers = append(cfg.DNS.Servers, dnsServer)
 	}
 }

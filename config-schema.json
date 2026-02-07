@@ -54,6 +54,10 @@
       "$ref": "#/definitions/CacheConfig",
       "description": "Domain URL cache configuration"
     },
+    "dns": {
+      "$ref": "#/definitions/DNSConfig",
+      "description": "DNS resolver configuration"
+    },
     "portal": {
       "$ref": "#/definitions/PortalConfig",
       "description": "Portal authentication configuration"
@@ -579,6 +583,57 @@
           "default": 5
         }
       },
+      "additionalProperties": false
+    },
+    "DNSConfig": {
+      "type": "object",
+      "description": "Configuration for DNS resolver",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable custom DNS resolver",
+          "default": false
+        },
+        "servers": {
+          "type": "array",
+          "description": "List of DNS servers to use",
+          "items": {
+            "$ref": "#/definitions/DNSServerConfig"
+          },
+          "minItems": 1,
+          "maxItems": 5
+        }
+      },
+      "additionalProperties": false
+    },
+    "DNSServerConfig": {
+      "type": "object",
+      "description": "Configuration for a single DNS server",
+      "properties": {
+        "address": {
+          "type": "string",
+          "description": "DNS server address (host:port or [ipv6]:port). Examples: 8.8.8.8:53, [2001:4860:4860::8888]:53",
+          "pattern": "^([^:]+:[0-9]+|\\[[^\\]]+\\]:[0-9]+)$"
+        },
+        "type": {
+          "type": "string",
+          "description": "DNS server type",
+          "enum": ["udp", "tcp", "dot"],
+          "default": "udp"
+        },
+        "timeout-seconds": {
+          "type": "integer",
+          "description": "Query timeout in seconds",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 10
+        },
+        "tls-host": {
+          "type": "string",
+          "description": "TLS hostname for SNI (Server Name Indication). Only used for DNS over TLS (type=dot). Required when connecting to DoT servers via IP address or when the TLS certificate uses a different hostname."
+        }
+      },
+      "required": ["address"],
       "additionalProperties": false
     },
     "Secret": {

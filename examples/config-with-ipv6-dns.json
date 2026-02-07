@@ -1,0 +1,30 @@
+{
+    "servers": [
+        {
+            "type": "standard",
+            "listen-address": "127.0.0.1:8080",
+            "enabled": true
+        }
+    ],
+    "dns": {
+        "enabled": true,
+        "servers": [
+            {
+                "address": "[2001:4860:4860::8888]:53",
+                "type": "udp",
+                "timeout-seconds": 10
+            },
+            {
+                "address": "[2606:4700:4700::1111]:853",
+                "type": "dot",
+                "timeout-seconds": 15,
+                "tls-host": "cloudflare-dns.com"
+            },
+            {
+                "address": "8.8.8.8:53",
+                "type": "udp",
+                "timeout-seconds": 10
+            }
+        ]
+    }
+}

@@ -543,9 +543,8 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 	handler := http.HandlerFunc(p.handleRequest)
 
 	p.server = &http.Server{
-		Handler:      handler,
-		ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
-		WriteTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
+		Handler:     handler,
+		ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			// Generate UUID for this connection
 			connUUID := uuid.New().String()
@@ -567,7 +566,6 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 				ExpectContinueTimeout: 1 * time.Second,
 			}
 			client := &http.Client{
-				Timeout:   time.Duration(p.config.TimeoutSeconds) * time.Second,
 				Transport: transport,
 			}
 			clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
@@ -586,10 +584,9 @@ func (p *Server) Start() error {
 	case config.ProxyTypeStandard:
 		handler := http.HandlerFunc(p.handleRequest)
 		p.server = &http.Server{
-			Addr:         p.serverConfig.ListenAddress,
-			Handler:      handler,
-			ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
-			WriteTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
+			Addr:        p.serverConfig.ListenAddress,
+			Handler:     handler,
+			ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 				// Generate UUID for this connection
 				connUUID := uuid.New().String()
@@ -611,7 +608,6 @@ func (p *Server) Start() error {
 					ExpectContinueTimeout: 1 * time.Second,
 				}
 				client := &http.Client{
-					Timeout:   time.Duration(p.config.TimeoutSeconds) * time.Second,
 					Transport: transport,
 				}
 				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
@@ -638,10 +634,9 @@ func (p *Server) Start() error {
 
 		handler := http.HandlerFunc(p.handleRequest)
 		p.server = &http.Server{
-			Addr:         p.serverConfig.ListenAddress,
-			Handler:      handler,
-			ReadTimeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
-			WriteTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
+			Addr:        p.serverConfig.ListenAddress,
+			Handler:     handler,
+			ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 				// Generate UUID for this connection
 				connUUID := uuid.New().String()
@@ -663,7 +658,6 @@ func (p *Server) Start() error {
 					ExpectContinueTimeout: 1 * time.Second,
 				}
 				client := &http.Client{
-					Timeout:   time.Duration(p.config.TimeoutSeconds) * time.Second,
 					Transport: transport,
 				}
 				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
@@ -1247,13 +1241,6 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 	}
 
 	var wg sync.WaitGroup
-	// Honor global timeout for tunnel lifetime
-	tunnelTimeout := time.Duration(p.config.TimeoutSeconds) * time.Second
-	if tunnelTimeout <= 0 {
-		tunnelTimeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
-	defer cancel()
 	wg.Add(2)
 
 	go func() {
@@ -1299,13 +1286,6 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 		if err := copyWithIdleTimeout(clientConn, targetConn, idle); err != nil && !isClosedConnError(err) {
 			logger.Error("Failed to copy target to client: %v", err)
 		}
-	}()
-
-	// Force-close on timeout
-	go func() {
-		<-ctx.Done()
-		clientConn.Close()
-		targetConn.Close()
 	}()
 
 	wg.Wait()
@@ -1485,12 +1465,8 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Create a context to coordinate tunnel shutdown, honor global timeout
-	tunnelTimeout := time.Duration(p.config.TimeoutSeconds) * time.Second
-	if tunnelTimeout <= 0 {
-		tunnelTimeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelTimeout)
+	// Create a context to coordinate tunnel shutdown
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go func() {
@@ -1586,6 +1562,9 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 			switch cf.fwd.Type() {
 			case config.ForwardTypeDefaultNetwork:
 				fwd := cf.fwd.(*config.ForwardDefaultNetwork)
+				if fwd.Log {
+					logger.Info("Default network forward to %s", addr)
+				}
 				network := "tcp"
 				if fwd.ForceIPv4 {
 					network = "tcp4"
@@ -1601,7 +1580,9 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 
 			case config.ForwardTypeSocks5:
 				proxy := cf.fwd.(*config.ForwardSocks5)
-				logger.Info("SOCKS5 proxy forwarding to %s via %s", addr, proxy.Address)
+				if proxy.Log {
+					logger.Info("SOCKS5 proxy forwarding to %s via %s", addr, proxy.Address)
+				}
 				network := "tcp"
 				if proxy.ForceIPv4 {
 					network = "tcp4"
@@ -1620,7 +1601,9 @@ func (p *Server) createForwardTCPClient(ctx context.Context, addr string) (net.C
 
 			case config.ForwardTypeProxy:
 				proxy := cf.fwd.(*config.ForwardProxy)
-				logger.Info("HTTP proxy forwarding to %s via %s", addr, proxy.Address)
+				if proxy.Log {
+					logger.Info("HTTP proxy forwarding to %s via %s", addr, proxy.Address)
+				}
 				network := "tcp"
 				if proxy.ForceIPv4 {
 					network = "tcp4"

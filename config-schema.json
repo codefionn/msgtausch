@@ -457,6 +457,11 @@
                 "type": "boolean",
                 "description": "Force IPv4 connections",
                 "default": false
+              },
+              "log": {
+                "type": "boolean",
+                "description": "Log connections at info level",
+                "default": false
               }
             },
             "additionalProperties": false
@@ -492,6 +497,11 @@
               "force-ipv4": {
                 "type": "boolean",
                 "description": "Force IPv4 connections",
+                "default": false
+              },
+              "log": {
+                "type": "boolean",
+                "description": "Log connections at info level",
                 "default": false
               }
             },
@@ -529,6 +539,11 @@
               "force-ipv4": {
                 "type": "boolean",
                 "description": "Force IPv4 connections",
+                "default": false
+              },
+              "log": {
+                "type": "boolean",
+                "description": "Log connections at info level",
                 "default": false
               }
             },

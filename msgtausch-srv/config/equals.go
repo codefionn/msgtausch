@@ -157,7 +157,7 @@ func forwardEqual(a, b Forward) bool {
 	switch ta := a.(type) {
 	case *ForwardDefaultNetwork:
 		tb, ok := b.(*ForwardDefaultNetwork)
-		return ok && classifierEqual(ta.ClassifierData, tb.ClassifierData)
+		return ok && ta.ForceIPv4 == tb.ForceIPv4 && ta.Log == tb.Log && classifierEqual(ta.ClassifierData, tb.ClassifierData)
 	case *ForwardSocks5:
 		tb, ok := b.(*ForwardSocks5)
 		if !ok {
@@ -170,6 +170,12 @@ func forwardEqual(a, b Forward) bool {
 			return false
 		}
 		if !stringPtrEqual(ta.Password, tb.Password) {
+			return false
+		}
+		if ta.ForceIPv4 != tb.ForceIPv4 {
+			return false
+		}
+		if ta.Log != tb.Log {
 			return false
 		}
 		return classifierEqual(ta.ClassifierData, tb.ClassifierData)
@@ -185,6 +191,12 @@ func forwardEqual(a, b Forward) bool {
 			return false
 		}
 		if !stringPtrEqual(ta.Password, tb.Password) {
+			return false
+		}
+		if ta.ForceIPv4 != tb.ForceIPv4 {
+			return false
+		}
+		if ta.Log != tb.Log {
 			return false
 		}
 		return classifierEqual(ta.ClassifierData, tb.ClassifierData)

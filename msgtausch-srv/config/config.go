@@ -94,6 +94,7 @@ type Forward interface {
 type ForwardDefaultNetwork struct {
 	ClassifierData Classifier
 	ForceIPv4      bool
+	Log            bool
 }
 
 // Type returns the forwarding type for this configuration.
@@ -117,6 +118,7 @@ type ForwardSocks5 struct {
 	Username       *string
 	Password       *string
 	ForceIPv4      bool
+	Log            bool
 }
 
 // Type returns the forwarding type for this configuration.
@@ -140,6 +142,7 @@ type ForwardProxy struct {
 	Username       *string
 	Password       *string
 	ForceIPv4      bool
+	Log            bool
 }
 
 // Type returns the forwarding type for this configuration.
@@ -679,6 +682,9 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 				if forceIPv4, err := parseValue[bool](forwardMap["force-ipv4"]); err == nil {
 					networkForward.ForceIPv4 = *forceIPv4
 				}
+				if log, err := parseValue[bool](forwardMap["log"]); err == nil {
+					networkForward.Log = *log
+				}
 				newForward = networkForward
 
 			case "socks5":
@@ -703,6 +709,10 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 					socks5Forward.ForceIPv4 = *forceIPv4
 				}
 
+				if log, err := parseValue[bool](forwardMap["log"]); err == nil {
+					socks5Forward.Log = *log
+				}
+
 				newForward = socks5Forward
 
 			case "proxy":
@@ -725,6 +735,10 @@ func parseConfigData(data map[string]any, cfg *Config) error {
 
 				if forceIPv4, err := parseValue[bool](forwardMap["force-ipv4"]); err == nil {
 					proxyForward.ForceIPv4 = *forceIPv4
+				}
+
+				if log, err := parseValue[bool](forwardMap["log"]); err == nil {
+					proxyForward.Log = *log
 				}
 
 				newForward = proxyForward

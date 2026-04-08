@@ -354,6 +354,7 @@ func validateConfigKeys(data map[string]any) error {
 func validateClassifierKeys(classifierMap map[string]any, context string) error {
 	keyMappings := map[string]string{
 		"domains_file": "domains-file",
+		"domains_url":  "domains-url",
 		"not_equal":    "not-equal",
 		"not_contains": "not-contains",
 	}
@@ -1238,6 +1239,39 @@ func parseClassifier(classifierMap map[string]any) (Classifier, error) {
 		}
 		clf := &ClassifierDomainsFile{FilePath: filePath}
 		newClassifier = clf
+	case "domains-url":
+		url, ok := classifierMap["url"].(string)
+		if !ok || url == "" {
+			return nil, fmt.Errorf("domains-url classifier requires a 'url' field")
+		}
+		formatStr, ok := classifierMap["format"].(string)
+		if !ok || formatStr == "" {
+			return nil, fmt.Errorf("domains-url classifier requires a 'format' field")
+		}
+		clf := &ClassifierDomainsURL{
+			URL:    url,
+			Format: DomainsURLFormat(formatStr),
+		}
+		if mirrors, ok := classifierMap["mirrors"].([]any); ok {
+			for _, m := range mirrors {
+				if ms, ok := m.(string); ok {
+					clf.Mirrors = append(clf.Mirrors, ms)
+				}
+			}
+		}
+		if timeout, ok := classifierMap["timeout"]; ok {
+			switch v := timeout.(type) {
+			case int:
+				clf.Timeout = v
+			case float64:
+				clf.Timeout = int(v)
+			case int64:
+				clf.Timeout = int(v)
+			}
+		}
+		newClassifier = clf
+	case "domains_url":
+		return nil, fmt.Errorf("invalid classifier type 'domains_url': use 'domains-url' instead (hyphens, not underscores)")
 	case "domains_file":
 		return nil, fmt.Errorf("invalid classifier type 'domains_file': use 'domains-file' instead (hyphens, not underscores)")
 	case "record":

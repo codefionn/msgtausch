@@ -210,6 +210,7 @@ type SimulatedTargetServer struct {
 	requestCount       atomic.Int64       // Counter for actual requests received
 	websocketUpgrader  websocket.Upgrader // Upgrader for websocket connections
 	websocketConnCount atomic.Int64       // Counter for actual websocket connections made
+	receivedRequestIDs sync.Map           // Debug: track X-Sim-Req IDs received (for diagnosing tally mismatches)
 }
 
 // SimulatedSocks5Proxy represents a simulated SOCKS5 proxy (mocked for testing).
@@ -462,8 +463,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				defer func() {
 					mutexTarget.Unlock()
 					inFlight.Add(-1)
+					msgtauschlogger.Debug("[CLIENT] WS req-%d done (forward=%v)", reqIndex, usesForward)
 					wg.Done()
 				}()
+
+				msgtauschlogger.Debug("[CLIENT] WS req-%d starting (forward=%v, target=%s)", reqIndex, usesForward, wsURL)
 
 				// Connect to the WebSocket server
 				header := http.Header{}
@@ -522,8 +526,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				defer func() {
 					mutexTarget.Unlock()
 					inFlight.Add(-1)
+					msgtauschlogger.Debug("[CLIENT] HTTP req done (forward=%v, target=%s)", usesForward, targetURL)
 					wg.Done()
 				}()
+
+				msgtauschlogger.Debug("[CLIENT] HTTP req starting (forward=%v, target=%s)", usesForward, targetURL)
 
 				accounted := false
 				startTime := time.Now()
@@ -630,6 +637,19 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		}
 	}
 
+	// Log all target request counts after wg.Wait() for debugging
+	msgtauschlogger.Info("=== Post-wg.Wait() request counts (nRequestsNotForwarded=%d) ===", nRequestsNotForwarded)
+	for _, t := range targets {
+		var receivedIDs []string
+		t.receivedRequestIDs.Range(func(key, value any) bool {
+			receivedIDs = append(receivedIDs, key.(string))
+			return true
+		})
+		sort.Strings(receivedIDs)
+		msgtauschlogger.Info("  Target %s: requestCount=%d, expected=%d, receivedIDs=%v",
+			t.server.URL, t.getRequestCount(), totalRequests[t.server.URL], receivedIDs)
+	}
+
 	// Validate both error counts and request counts
 	err = validateRequestCounts(nRequestsNotForwarded, totalRequests, targets)
 	if err != nil {
@@ -638,6 +658,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	err = validateErrorCounts(errCounts, targets, len(forwards))
 	if err != nil {
 		return err
+	}
+
+	msgtauschlogger.Info("=== After validation, before stats collection ===")
+	for _, t := range targets {
+		msgtauschlogger.Info("  Target %s: requestCount=%d", t.server.URL, t.getRequestCount())
 	}
 
 	// Store simulation metadata in a global for stats collection
@@ -694,8 +719,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	}
 
 	// Additional invariants on collected stats
+	msgtauschlogger.Info("=== Final check (stats collection) ===")
 	var sumRequests int64
-	for _, tss := range lastSimulationStats.TargetServerStats {
+	for i, tss := range lastSimulationStats.TargetServerStats {
+		msgtauschlogger.Info("  Target %s: statsRequestCount=%d, liveRequestCount=%d",
+			tss.URL, tss.RequestCount, targets[i].getRequestCount())
 		sumRequests += tss.RequestCount
 		var sumErrors int
 		for _, c := range tss.ErrorCounts {
@@ -975,12 +1003,15 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 	// Shared handler for HTTP/HTTPS
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		usesForward := r.Header.Get("X-Sim-Forward") == "true"
+		simReqID := r.Header.Get("X-Sim-Req")
 
 		// Check if this is a WebSocket upgrade request
 		if websocket.IsWebSocketUpgrade(r) {
 			if !usesForward {
 				// Increment request counter for each request received
-				sts.requestCount.Add(1)
+				newCount := sts.requestCount.Add(1)
+				sts.receivedRequestIDs.Store(simReqID, true)
+				msgtauschlogger.Debug("[TARGET %s] WS request #%d: id=%s forward=%v", sts.server.URL, newCount, simReqID, usesForward)
 				// Increment the actual connection counter
 				sts.websocketConnCount.Add(1)
 			}
@@ -1020,7 +1051,9 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 
 		// Count ALL requests that reach the server, regardless of what happens next
 		if !usesForward {
-			sts.requestCount.Add(1)
+			newCount := sts.requestCount.Add(1)
+			sts.receivedRequestIDs.Store(simReqID, true)
+			msgtauschlogger.Debug("[TARGET %s] HTTP request #%d: id=%s forward=%v", sts.server.URL, newCount, simReqID, usesForward)
 		}
 
 		// Handle regular HTTP request

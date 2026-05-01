@@ -257,7 +257,8 @@ func NewProxy(cfg *config.Config) *Proxy {
 	if !cacheConfig.Enabled {
 		cacheConfig = config.DefaultCacheConfig()
 	}
-	cacheManager := NewCacheManagerWithConfig(cacheConfig)
+	InitGlobalCacheManagerWithDNS(cacheConfig, cfg.DNS)
+	cacheManager := NewCacheManagerWithConfigAndDNS(cacheConfig, cfg.DNS)
 
 	p := &Proxy{
 		config:       cfg,

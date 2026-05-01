@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,7 +13,34 @@ import (
 	ahocorasick "github.com/BobuSumisu/aho-corasick"
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/resolver"
 )
+
+// newCacheHTTPClient builds the HTTP client used to fetch blocklists.
+// When dnsCfg is enabled, requests resolve through the configured DNS
+// resolver instead of the system resolver.
+func newCacheHTTPClient(timeout time.Duration, dnsCfg config.DNSConfig) *http.Client {
+	if !dnsCfg.Enabled || len(dnsCfg.Servers) == 0 {
+		return &http.Client{Timeout: timeout}
+	}
+
+	dialer := &net.Dialer{
+		Timeout:  30 * time.Second,
+		Resolver: resolver.GetResolver(dnsCfg),
+	}
+	transport := &http.Transport{
+		DialContext:           dialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
 
 // CacheEntry represents a cached domain list
 type CacheEntry struct {
@@ -58,29 +86,36 @@ func DefaultCacheConfig() internalCacheConfig {
 	}
 }
 
-// NewCacheManagerWithConfig creates a new cache manager with custom configuration
-func NewCacheManagerWithConfig(config config.CacheConfig) *CacheManager {
-	if !config.Enabled {
+// NewCacheManagerWithConfig creates a new cache manager with custom configuration.
+// Blocklist downloads use the system DNS resolver. Use
+// NewCacheManagerWithConfigAndDNS to route lookups through a custom resolver.
+func NewCacheManagerWithConfig(cfg config.CacheConfig) *CacheManager {
+	return NewCacheManagerWithConfigAndDNS(cfg, config.DNSConfig{})
+}
+
+// NewCacheManagerWithConfigAndDNS creates a new cache manager with custom
+// configuration and routes blocklist HTTP downloads through the given DNS
+// resolver configuration.
+func NewCacheManagerWithConfigAndDNS(cfg config.CacheConfig, dnsCfg config.DNSConfig) *CacheManager {
+	if !cfg.Enabled {
 		return nil // Cache disabled
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cacheConfig := internalCacheConfig{
-		DefaultTTL:      config.GetTTLDuration(),
-		RefreshInterval: config.GetRefreshIntervalDuration(),
-		HTTPTimeout:     config.GetHTTPTimeoutDuration(),
-		MaxRetries:      config.MaxRetries,
-		RetryDelay:      config.GetRetryDelayDuration(),
+		DefaultTTL:      cfg.GetTTLDuration(),
+		RefreshInterval: cfg.GetRefreshIntervalDuration(),
+		HTTPTimeout:     cfg.GetHTTPTimeoutDuration(),
+		MaxRetries:      cfg.MaxRetries,
+		RetryDelay:      cfg.GetRetryDelayDuration(),
 	}
 
 	cm := &CacheManager{
-		cache: make(map[string]*CacheEntry),
-		httpClient: &http.Client{
-			Timeout: cacheConfig.HTTPTimeout,
-		},
-		ctx:    ctx,
-		cancel: cancel,
+		cache:      make(map[string]*CacheEntry),
+		httpClient: newCacheHTTPClient(cacheConfig.HTTPTimeout, dnsCfg),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 
 	// Start background refresh goroutine
@@ -493,6 +528,7 @@ func (cm *CacheManager) GetCacheStats() map[string]interface{} {
 var globalCacheManager *CacheManager
 var cacheManagerOnce sync.Once
 var cacheManagerConfig config.CacheConfig
+var cacheManagerDNSConfig config.DNSConfig
 
 // ResetGlobalCacheManager resets the global cache manager for testing
 func ResetGlobalCacheManager() {
@@ -503,20 +539,33 @@ func ResetGlobalCacheManager() {
 	cacheManagerOnce = sync.Once{}
 }
 
-// InitGlobalCacheManager initializes the global cache manager with configuration
-func InitGlobalCacheManager(config config.CacheConfig) {
-	cacheManagerConfig = config
+// InitGlobalCacheManager initializes the global cache manager with configuration.
+// Blocklist downloads use the system DNS resolver. Use
+// InitGlobalCacheManagerWithDNS to route lookups through a custom resolver.
+func InitGlobalCacheManager(cfg config.CacheConfig) {
+	cacheManagerConfig = cfg
+	cacheManagerDNSConfig = config.DNSConfig{}
+}
+
+// InitGlobalCacheManagerWithDNS initializes the global cache manager and
+// routes blocklist HTTP downloads through the given DNS resolver configuration.
+func InitGlobalCacheManagerWithDNS(cfg config.CacheConfig, dnsCfg config.DNSConfig) {
+	cacheManagerConfig = cfg
+	cacheManagerDNSConfig = dnsCfg
 }
 
 // GetGlobalCacheManager returns the global cache manager instance
 func GetGlobalCacheManager() *CacheManager {
 	cacheManagerOnce.Do(func() {
 		if cacheManagerConfig.Enabled {
-			globalCacheManager = NewCacheManagerWithConfig(cacheManagerConfig)
+			globalCacheManager = NewCacheManagerWithConfigAndDNS(cacheManagerConfig, cacheManagerDNSConfig)
 		} else {
 			// Cache disabled, create a minimal cache manager
 			defaultConfig := DefaultCacheConfig()
 			globalCacheManager = NewCacheManager(defaultConfig)
+			if cacheManagerDNSConfig.Enabled {
+				globalCacheManager.httpClient = newCacheHTTPClient(defaultConfig.HTTPTimeout, cacheManagerDNSConfig)
+			}
 		}
 	})
 	return globalCacheManager

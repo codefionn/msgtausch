@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -30,8 +32,39 @@ func (s *stringSliceFlag) Set(value string) error {
 var version string
 
 func main() {
+	setMemoryLimit()
 	cfg, configPaths := parseFlagsAndConfig()
 	runProxy(cfg, configPaths)
+}
+
+func setMemoryLimit() {
+	if val := os.Getenv("GOMEMLIMIT"); val != "" {
+		return
+	}
+	if cgroupLimit := readCgroupMemoryLimit(); cgroupLimit > 0 {
+		memLimit := int64(float64(cgroupLimit) * 0.9)
+		debug.SetMemoryLimit(memLimit)
+		logger.Info("Set GOMEMLIMIT=%d (90%% of cgroup limit %d)", memLimit, cgroupLimit)
+	}
+}
+
+func readCgroupMemoryLimit() int64 {
+	data, err := os.ReadFile("/sys/fs/cgroup/memory.limit_in_bytes")
+	if err == nil {
+		if limit, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && limit > 0 && limit < 1<<62 {
+			return limit
+		}
+	}
+	data, err = os.ReadFile("/sys/fs/cgroup/memory.max")
+	if err == nil {
+		trimmed := strings.TrimSpace(string(data))
+		if trimmed != "max" && trimmed != "" {
+			if limit, err := strconv.ParseInt(trimmed, 10, 64); err == nil && limit > 0 {
+				return limit
+			}
+		}
+	}
+	return 0
 }
 
 // parseFlagsAndConfig handles CLI flags, environment, logging, and config loading.
@@ -136,7 +169,7 @@ func runProxy(cfg *config.Config, configPaths []string) {
 				continue
 			}
 			logger.Info("Config changed. Restarting proxy...")
-			if err := proxyInstance.Stop(); err != nil {
+			if err := proxyInstance.Close(); err != nil {
 				logger.Error("Error stopping proxy for reload: %v", err)
 			}
 			proxyInstance = proxy.NewProxy(newCfg)
@@ -146,7 +179,7 @@ func runProxy(cfg *config.Config, configPaths []string) {
 		case syscall.SIGINT, syscall.SIGTERM:
 			logger.Info("Received signal %v, shutting down proxy server...", sig)
 			if proxyRunning {
-				if err := proxyInstance.Stop(); err != nil {
+				if err := proxyInstance.Close(); err != nil {
 					logger.Error("Error during shutdown: %v", err)
 				}
 			}

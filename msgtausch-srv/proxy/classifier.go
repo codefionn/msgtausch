@@ -725,6 +725,41 @@ func CompileClassifiersMap(classifiers map[string]config.Classifier, cacheManage
 	return result, nil
 }
 
+// wireRefs recursively connects ClassifierRef nodes within a compiled classifier
+// tree to the given named-classifiers map. Standalone classifiers (blocklist,
+// allowlist, forwards, recording) are compiled via CompileClassifier, which
+// leaves ClassifierRef.Classifiers empty; without this wiring a top-level
+// {"type":"ref"} can never resolve its target.
+func wireRefs(c Classifier, named map[string]Classifier) {
+	switch v := c.(type) {
+	case *ClassifierRef:
+		v.Classifiers = named
+	case *ClassifierAnd:
+		for _, sub := range v.Classifiers {
+			wireRefs(sub, named)
+		}
+	case *ClassifierOr:
+		for _, sub := range v.Classifiers {
+			wireRefs(sub, named)
+		}
+	case *ClassifierNot:
+		wireRefs(v.Classifier, named)
+	}
+}
+
+// CompileTopLevelClassifier compiles a standalone classifier and wires any
+// ClassifierRef nodes (including nested ones) to the named classifiers map.
+func CompileTopLevelClassifier(classifier config.Classifier, named map[string]Classifier, cacheManager *CacheManager) (Classifier, error) {
+	c, err := CompileClassifier(classifier, cacheManager)
+	if err != nil {
+		return nil, err
+	}
+	if named != nil {
+		wireRefs(c, named)
+	}
+	return c, nil
+}
+
 // CompileClassifiers compiles a slice of config.Classifier into runtime Classifiers.
 func CompileClassifiers(classifiers []config.Classifier, cacheManager *CacheManager) ([]Classifier, error) {
 	var result []Classifier
@@ -1019,12 +1054,15 @@ func (c *ClassifierDomainsURL) Classify(input ClassifierInput) (bool, error) {
 		return false, nil
 	}
 
-	// Use appropriate matching method based on whether chunking is used
+	// Preferred path: memory-efficient domain set.
+	if cacheEntry.Domains != nil {
+		return cacheEntry.Domains.Match(input.host), nil
+	}
+
+	// Fallback paths for any cache entries still backed by the legacy tries.
 	if cacheEntry.IsChunked && cacheEntry.ChunkedTrie != nil {
 		return c.classifyWithChunkedCacheEntry(input, cacheEntry)
 	}
-
-	// Use regular trie for smaller domain lists
 	return c.classifyWithRegularCacheEntry(input, cacheEntry)
 }
 

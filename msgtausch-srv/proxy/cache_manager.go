@@ -46,8 +46,10 @@ func newCacheHTTPClient(timeout time.Duration, dnsCfg config.DNSConfig) *http.Cl
 type CacheEntry struct {
 	Trie        *ahocorasick.Trie
 	ChunkedTrie *ChunkedTrie // Hybrid chunked trie for large domain lists
+	Domains     *DomainSet   // Memory-efficient domain matcher (preferred)
 	DomainList  []string
-	URL         string // Primary URL that was successfully fetched
+	URL         string   // Primary URL that was successfully fetched
+	Mirrors     []string // Mirror URLs, needed to refresh under the same cache key
 	Format      config.DomainsURLFormat
 	LastFetch   time.Time
 	LastError   error
@@ -64,6 +66,7 @@ type CacheManager struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	refreshing sync.Map // cacheKey -> struct{}, prevents overlapping refreshes
 }
 
 // internalCacheConfig holds configuration for the cache manager
@@ -255,45 +258,31 @@ func (cm *CacheManager) fetchAndCacheWithMirrors(primaryURL string, mirrors []st
 		return nil, fmt.Errorf("failed to fetch domains from all URLs (%s), last error: %w", cm.formatURLsForLog(primaryURL, mirrors), lastError)
 	}
 
-	// Create trie for efficient matching
-	var trie *ahocorasick.Trie
-	var chunkedTrie *ChunkedTrie
-	var isChunked bool
-
+	// Build a memory-efficient domain set. The previous Aho-Corasick /
+	// chunked-AC tries allocated multiple GiB for large lists (heap profile:
+	// 99.7% of process memory in TrieBuilder.Build); a hashset uses orders of
+	// magnitude less for identical match semantics.
+	var domains *DomainSet
 	if len(domainList) > 0 {
-		// Determine if we should use chunking based on domain count
-		// Default threshold is 2048 domains
-		chunkThreshold := 2048
-
-		if shouldUseChunking(len(domainList)) {
-			// Use hybrid chunked approach for large domain lists
-			chunkedTrie = NewChunkedTrie(domainList, chunkThreshold)
-			isChunked = true
-
-			memStats := chunkedTrie.GetMemoryUsage()
-			logger.Info("Created hybrid chunked AC trie with %d domains from %s (format: %s, %d chunks, memory: %s)",
-				len(domainList), successfulURL, format, memStats.NumChunks, formatMemorySize(memStats.TotalMemory))
-		} else {
-			// Use regular single trie for smaller domain lists
-			trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
-			logger.Info("Created Aho-Corasick trie with %d domains from %s (format: %s)", len(domainList), successfulURL, format)
-		}
+		domains = NewDomainSet(domainList)
+		logger.Info("Loaded %d domains (%d unique) from %s (format: %s)",
+			len(domainList), domains.Len(), successfulURL, format)
 	}
 
 	// Create cache entry
 	var ttl time.Duration = 1 * time.Hour // Default fallback
 
 	entry := &CacheEntry{
-		Trie:        trie,
-		ChunkedTrie: chunkedTrie,
-		DomainList:  domainList,
-		URL:         primaryURL,
-		Format:      format,
-		LastFetch:   time.Now(),
-		LastError:   nil,
-		Expiry:      time.Now().Add(ttl),
-		SourceURL:   successfulURL,
-		IsChunked:   isChunked,
+		Domains:    domains,
+		DomainList: domainList,
+		URL:        primaryURL,
+		Mirrors:    mirrors,
+		Format:     format,
+		LastFetch:  time.Now(),
+		LastError:  nil,
+		Expiry:     time.Now().Add(ttl),
+		SourceURL:  successfulURL,
+		IsChunked:  false,
 	}
 
 	// Cache the entry
@@ -303,78 +292,6 @@ func (cm *CacheManager) fetchAndCacheWithMirrors(primaryURL string, mirrors []st
 	cm.mutex.Unlock()
 
 	logger.Info("Successfully cached %d domains from %s (primary: %s, source: %s)", len(domainList), cm.formatURLsForLog(primaryURL, mirrors), primaryURL, successfulURL)
-
-	return entry, nil
-}
-
-// fetchAndCache fetches domains from URL and caches them (legacy method without mirrors)
-func (cm *CacheManager) fetchAndCache(url string, format config.DomainsURLFormat, timeout int) (*CacheEntry, error) {
-	// Create timeout context if specified
-	ctx := cm.ctx
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(cm.ctx, time.Duration(timeout)*time.Second)
-		defer cancel()
-	}
-
-	// Fetch with retries
-	var domainList []string
-	var lastErr error
-
-	for attempt := 0; attempt <= 3; attempt++ { // Max 3 attempts
-		if attempt > 0 {
-			select {
-			case <-time.After(5 * time.Second):
-				// Wait before retry
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		domainList, lastErr = cm.fetchDomains(ctx, url, format)
-		if lastErr == nil {
-			break
-		}
-
-		logger.Warn("Fetch attempt %d failed for URL %s: %v", attempt+1, url, lastErr)
-	}
-
-	if lastErr != nil {
-		// Even on failure, cache the error to avoid repeated failed requests
-		cm.cacheError(url, format, lastErr)
-		return nil, fmt.Errorf("failed to fetch domains after retries: %w", lastErr)
-	}
-
-	// Create trie for efficient matching
-	var trie *ahocorasick.Trie
-	if len(domainList) > 0 {
-		trie = ahocorasick.NewTrieBuilder().AddStrings(domainList).Build()
-		logger.Info("Created Aho-Corasick trie with %d domains from URL: %s (format: %s)", len(domainList), url, format)
-	}
-
-	// Create cache entry with configured TTL
-	var ttl time.Duration = 1 * time.Hour // Default fallback
-	if cm.cache != nil {
-		// Try to get TTL from current configuration, or use default
-		ttl = 1 * time.Hour
-	}
-
-	entry := &CacheEntry{
-		Trie:       trie,
-		DomainList: domainList,
-		URL:        url,
-		Format:     format,
-		LastFetch:  time.Now(),
-		LastError:  nil,
-		Expiry:     time.Now().Add(ttl),
-	}
-
-	// Cache the entry
-	cm.mutex.Lock()
-	cm.cache[cm.cacheKey(url, format)] = entry
-	cm.mutex.Unlock()
-
-	logger.Info("Successfully cached %d domains from URL: %s (format: %s)", len(domainList), url, format)
 
 	return entry, nil
 }
@@ -419,6 +336,7 @@ func (cm *CacheManager) cacheErrorWithMirrors(primaryURL string, mirrors []strin
 		Trie:       nil,
 		DomainList: nil,
 		URL:        primaryURL,
+		Mirrors:    mirrors,
 		Format:     format,
 		LastFetch:  time.Now(),
 		LastError:  err,
@@ -430,11 +348,6 @@ func (cm *CacheManager) cacheErrorWithMirrors(primaryURL string, mirrors []strin
 	cm.mutex.Lock()
 	cm.cache[cacheKey] = entry
 	cm.mutex.Unlock()
-}
-
-// cacheError caches a failed fetch attempt to avoid repeated requests (legacy method)
-func (cm *CacheManager) cacheError(url string, format config.DomainsURLFormat, err error) {
-	cm.cacheErrorWithMirrors(url, []string{}, format, err)
 }
 
 // backgroundRefresh periodically refreshes cached entries
@@ -477,18 +390,23 @@ func (cm *CacheManager) refreshCache() {
 
 	for _, entry := range entriesToRefresh {
 		// Fetch fresh data in background
-		go func(e *CacheEntry) {
-			_, err := cm.fetchAndCache(e.URL, e.Format, 30) // Use 30s timeout for refresh
+		key := cm.generateCacheKey(entry.URL, entry.Mirrors, entry.Format)
+		if _, busy := cm.refreshing.LoadOrStore(key, struct{}{}); busy {
+			// A refresh for this key is already running; skip to avoid
+			// concurrent fetches building duplicate tries.
+			continue
+		}
+		go func(e *CacheEntry, k string) {
+			defer cm.refreshing.Delete(k)
+			// Refresh under the same cache key the readers use (primary + mirrors),
+			// otherwise the refreshed entry lands under a different key and the
+			// original is never replaced, causing repeated refetches/rebuilds.
+			_, err := cm.fetchAndCacheWithMirrors(e.URL, e.Mirrors, e.Format, 30)
 			if err != nil {
 				logger.Warn("Background refresh failed for URL %s: %v", e.URL, err)
 			}
-		}(entry)
+		}(entry, key)
 	}
-}
-
-// cacheKey creates a unique cache key for URL+format combination
-func (cm *CacheManager) cacheKey(url string, format config.DomainsURLFormat) string {
-	return fmt.Sprintf("%s|%s", url, format)
 }
 
 // generateCacheKey creates a cache key for primary URL and mirrors

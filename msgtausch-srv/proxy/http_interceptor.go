@@ -18,6 +18,8 @@ import (
 	"github.com/codefionn/msgtausch/msgtausch-srv/stats"
 )
 
+const maxRecordedBodySize = 10 * 1024 * 1024
+
 // HTTPInterceptor handles interception and modification of HTTP traffic.
 type HTTPInterceptor struct {
 	proxy         *Proxy                  // Reference to proxy for creating TCP connections
@@ -234,7 +236,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		}
 		// Fallback: buffer body fully if streaming not used
 		if !streamed {
-			requestBody, err = io.ReadAll(clonedReq.Body)
+			requestBody, err = io.ReadAll(io.LimitReader(clonedReq.Body, maxRecordedBodySize))
 			if err != nil {
 				logger.Error("Failed to read request body for recording: %v", err)
 			} else {
@@ -258,7 +260,6 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		clonedReq.Header.Set("Host", clonedReq.Host)
 	}
 
-	// Create a client to forward the request
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -270,7 +271,6 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 			IdleConnTimeout:       90 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
-		// Don't automatically follow redirects
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -343,7 +343,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		}
 		// Fallback to buffering if not streaming
 		if !respStreamed {
-			responseBody, err = io.ReadAll(resp.Body)
+			responseBody, err = io.ReadAll(io.LimitReader(resp.Body, maxRecordedBodySize))
 			if err != nil {
 				logger.Error("Failed to read response body for recording: %v", err)
 			} else {
@@ -585,7 +585,7 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			var bodyData []byte
 			if req.Body != nil {
 				var err error
-				bodyData, err = io.ReadAll(req.Body)
+				bodyData, err = io.ReadAll(io.LimitReader(req.Body, maxRecordedBodySize))
 				if closeErr := req.Body.Close(); closeErr != nil {
 					logger.Error("Error closing request body: %v", closeErr)
 				}
@@ -709,7 +709,7 @@ func (h *HTTPInterceptor) HandleTCPConnection(clientConn net.Conn, host string) 
 			// Read and potentially modify the body
 			var bodyData []byte
 			if resp.Body != nil {
-				bodyData, err = io.ReadAll(resp.Body)
+				bodyData, err = io.ReadAll(io.LimitReader(resp.Body, maxRecordedBodySize))
 				if closeErr := resp.Body.Close(); closeErr != nil {
 					logger.Error("Error closing response body: %v", closeErr)
 				}

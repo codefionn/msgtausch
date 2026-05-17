@@ -607,7 +607,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 
 				// If not streaming, read and potentially modify the body (legacy behavior)
 				if !streamed && req.Body != nil {
-					bodyData, rerr := io.ReadAll(req.Body)
+					bodyData, rerr := io.ReadAll(io.LimitReader(req.Body, maxRecordedBodySize))
 					if closeErr := req.Body.Close(); closeErr != nil {
 						logger.Error("Error closing request body: %v", closeErr)
 					}
@@ -820,7 +820,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 									}
 									return nil
 								})
-								bodyData, err = io.ReadAll(resp.Body)
+								bodyData, err = io.ReadAll(io.LimitReader(resp.Body, maxRecordedBodySize))
 								if closeErr := resp.Body.Close(); closeErr != nil {
 									logger.Error("Error closing response body: %v", closeErr)
 								}
@@ -838,8 +838,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 								logger.Error("Error beginning recorded HTTPS response: %v", berr)
 							}
 						} else if resp.Body != nil {
-							// Fallback: buffer response body for recording and potential handler
-							bodyData, err = io.ReadAll(resp.Body)
+							bodyData, err = io.ReadAll(io.LimitReader(resp.Body, maxRecordedBodySize))
 							if closeErr := resp.Body.Close(); closeErr != nil {
 								logger.Error("Error closing response body: %v", closeErr)
 							}

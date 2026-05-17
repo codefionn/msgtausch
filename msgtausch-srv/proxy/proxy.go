@@ -201,13 +201,25 @@ func (p *Proxy) getClassifierDebugInfo(classifier config.Classifier) string {
 }
 
 func (p *Proxy) CompileClassifiers() {
+	// Compile the named classifiers map once so top-level ref classifiers
+	// (blocklist/allowlist/forwards/recording) can resolve their targets.
+	var namedClassifiers map[string]Classifier
+	if len(p.config.Classifiers) > 0 {
+		m, err := CompileClassifiersMap(p.config.Classifiers, p.cacheManager)
+		if err != nil {
+			logger.Error("Error compiling named classifiers map: %v", err)
+		} else {
+			namedClassifiers = m
+		}
+	}
+
 	if p.config.Forwards != nil {
 		logger.Info("Compiling %d forward configurations", len(p.config.Forwards))
 		for i, fwd := range p.config.Forwards {
 			forwardInfo := p.getForwardDebugInfo(fwd)
 			logger.Info("Forward[%d]: %s", i, forwardInfo)
 
-			cf, err := CompileClassifier(fwd.Classifier(), p.cacheManager)
+			cf, err := CompileTopLevelClassifier(fwd.Classifier(), namedClassifiers, p.cacheManager)
 			if err != nil {
 				logger.Error("Error compiling classifier for forward[%d] (%s): %v", i, forwardInfo, err)
 				continue
@@ -224,7 +236,7 @@ func (p *Proxy) CompileClassifiers() {
 	}
 
 	if p.config.Blocklist != nil {
-		blf, err := CompileClassifier(p.config.Blocklist, p.cacheManager)
+		blf, err := CompileTopLevelClassifier(p.config.Blocklist, namedClassifiers, p.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling blocklist classifier: %v", err)
 		} else {
@@ -233,7 +245,7 @@ func (p *Proxy) CompileClassifiers() {
 	}
 
 	if p.config.Allowlist != nil {
-		alf, err := CompileClassifier(p.config.Allowlist, p.cacheManager)
+		alf, err := CompileTopLevelClassifier(p.config.Allowlist, namedClassifiers, p.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling allowlist classifier: %v", err)
 		} else {
@@ -242,7 +254,7 @@ func (p *Proxy) CompileClassifiers() {
 	}
 
 	if p.config.Statistics.Recording != nil {
-		rcf, err := CompileClassifier(p.config.Statistics.Recording, p.cacheManager)
+		rcf, err := CompileTopLevelClassifier(p.config.Statistics.Recording, namedClassifiers, p.cacheManager)
 		if err != nil {
 			logger.Error("Error compiling recording classifier: %v", err)
 		} else {
@@ -257,8 +269,11 @@ func NewProxy(cfg *config.Config) *Proxy {
 	if !cacheConfig.Enabled {
 		cacheConfig = config.DefaultCacheConfig()
 	}
+	// Use a single cache manager instance. Previously this also created a
+	// separate NewCacheManagerWithConfigAndDNS, so any code path hitting the
+	// global manager built a second full copy of every blocklist trie.
 	InitGlobalCacheManagerWithDNS(cacheConfig, cfg.DNS)
-	cacheManager := NewCacheManagerWithConfigAndDNS(cacheConfig, cfg.DNS)
+	cacheManager := GetGlobalCacheManager()
 
 	p := &Proxy{
 		config:       cfg,
@@ -547,10 +562,8 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 		Handler:     handler,
 		ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			// Generate UUID for this connection
 			connUUID := uuid.New().String()
 			ctx = WithConnectionUUID(ctx, connUUID)
-
 			transport := &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 					if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
@@ -566,9 +579,7 @@ func (p *Server) StartWithListener(listener net.Listener) error {
 				IdleConnTimeout:       90 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 			}
-			client := &http.Client{
-				Transport: transport,
-			}
+			client := &http.Client{Transport: transport}
 			clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
 			ctx = WithClient(ctx, client)
 			ctx = WithClientIP(ctx, clientIP)
@@ -589,10 +600,8 @@ func (p *Server) Start() error {
 			Handler:     handler,
 			ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-				// Generate UUID for this connection
 				connUUID := uuid.New().String()
 				ctx = WithConnectionUUID(ctx, connUUID)
-
 				transport := &http.Transport{
 					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 						if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
@@ -608,9 +617,7 @@ func (p *Server) Start() error {
 					IdleConnTimeout:       90 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
 				}
-				client := &http.Client{
-					Transport: transport,
-				}
+				client := &http.Client{Transport: transport}
 				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
 				ctx = WithClient(ctx, client)
 				ctx = WithClientIP(ctx, clientIP)
@@ -639,10 +646,8 @@ func (p *Server) Start() error {
 			Handler:     handler,
 			ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-				// Generate UUID for this connection
 				connUUID := uuid.New().String()
 				ctx = WithConnectionUUID(ctx, connUUID)
-
 				transport := &http.Transport{
 					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 						if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
@@ -658,9 +663,7 @@ func (p *Server) Start() error {
 					IdleConnTimeout:       90 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
 				}
-				client := &http.Client{
-					Transport: transport,
-				}
+				client := &http.Client{Transport: transport}
 				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
 				ctx = WithClient(ctx, client)
 				ctx = WithClientIP(ctx, clientIP)
@@ -1821,12 +1824,10 @@ func (p *Proxy) Stop() error {
 func (p *Proxy) Close() error {
 	var lastErr error
 
-	// Stop all servers first
 	if err := p.Stop(); err != nil {
 		lastErr = err
 	}
 
-	// Close dashboard portal if it exists
 	if p.portal != nil {
 		if err := p.portal.Close(); err != nil {
 			lastErr = err
@@ -1834,12 +1835,18 @@ func (p *Proxy) Close() error {
 		}
 	}
 
-	// Close statistics collector if it exists
 	if p.Collector != nil {
 		if err := p.Collector.Close(); err != nil {
 			lastErr = err
 			logger.Error("Failed to close statistics collector: %v", err)
 		}
+	}
+
+	// p.cacheManager is the global instance; reset so a subsequent NewProxy
+	// (e.g. SIGHUP config reload) rebuilds a fresh, running manager instead of
+	// reusing this stopped one.
+	if p.cacheManager != nil {
+		ResetGlobalCacheManager()
 	}
 
 	return lastErr

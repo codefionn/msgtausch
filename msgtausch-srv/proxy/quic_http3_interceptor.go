@@ -214,7 +214,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 	// Fallback to buffering if not streamed
 	if !streamed && req.Body != nil {
 		var err error
-		reqBodyBytes, err := io.ReadAll(req.Body)
+		reqBodyBytes, err := io.ReadAll(io.LimitReader(req.Body, maxRecordedBodySize))
 		if closeErr := req.Body.Close(); closeErr != nil {
 			logger.Error("Error closing HTTP/3 request body: %v", closeErr)
 		}
@@ -316,7 +316,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 		}
 	}
 
-	respBodyBytes, err = io.ReadAll(resp.Body)
+	respBodyBytes, err = io.ReadAll(io.LimitReader(resp.Body, maxRecordedBodySize))
 	if err != nil {
 		logger.Error("Error reading HTTP/3 response body: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -402,7 +402,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 		} else if modifiedResp != nil {
 			// If the body was replaced, we need to read it
 			if modifiedResp.Body != modResp.Body {
-				respBodyBytes, err = io.ReadAll(modifiedResp.Body)
+				respBodyBytes, err = io.ReadAll(io.LimitReader(modifiedResp.Body, maxRecordedBodySize))
 				if closeErr := modifiedResp.Body.Close(); closeErr != nil {
 					logger.Error("Error closing modified HTTP/3 response body: %v", closeErr)
 				}

@@ -23,6 +23,7 @@ go.work.sum
 /src/bin/
 /src/pkg/
 /release
+/memtest
 
 # Windsurf and IDE specific
 .idea/

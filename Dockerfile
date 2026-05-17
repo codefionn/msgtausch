@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
 # Builder base with Go toolchain using Alpine for musl compatibility
-FROM --platform=${BUILDPLATFORM} docker.io/golang:1.24-alpine AS builder
+FROM --platform=${BUILDPLATFORM} docker.io/golang:1.25-alpine AS builder
 ARG TARGETARCH
 RUN apk add --no-cache git make gcc musl-dev sqlite-dev
 WORKDIR /src
@@ -9,10 +9,10 @@ ENV CGO_ENABLED=1
 COPY ./go.* ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download && \
-    go install github.com/a-h/templ/cmd/templ@latest
+    go install github.com/a-h/templ/cmd/templ@v0.3.1020
 
 # Target-platform builder for CGO builds (uses emulation when cross-building)
-FROM --platform=${TARGETPLATFORM} docker.io/golang:1.24-alpine AS builder-target
+FROM --platform=${TARGETPLATFORM} docker.io/golang:1.25-alpine AS builder-target
 RUN apk add --no-cache git make gcc musl-dev sqlite-dev
 WORKDIR /src
 

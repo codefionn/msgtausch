@@ -1836,7 +1836,7 @@ func (p *Proxy) Close() error {
 	}
 
 	if p.Collector != nil {
-		if err := p.Close(); err != nil {
+		if err := p.Collector.Close(); err != nil {
 			lastErr = err
 			logger.Error("Failed to close statistics collector: %v", err)
 		}

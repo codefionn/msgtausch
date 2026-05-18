@@ -91,6 +91,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     needs: [templ-generate]
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -119,6 +120,7 @@ jobs:
     name: Compose Intercept Test
     runs-on: ubuntu-latest
     needs: [templ-generate]
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -130,16 +132,24 @@ jobs:
           driver-opts: network=host
 
       - name: Run compose-intercept integration tests
+        timeout-minutes: 8
         run: |
           cd tests/compose-intercept
           docker compose build
-          docker compose up --build --abort-on-container-exit --exit-code-from client
+          timeout --signal=SIGINT 300 docker compose up --build --abort-on-container-exit --exit-code-from client
 
       - name: Run compose-intercept-stats integration tests
+        timeout-minutes: 8
         run: |
           cd tests/compose-intercept-stats
           docker compose build
-          docker compose up --build --abort-on-container-exit --exit-code-from client
+          timeout --signal=SIGINT 300 docker compose up --build --abort-on-container-exit --exit-code-from client
+
+      - name: Cleanup compose stacks
+        if: always()
+        run: |
+          cd tests/compose-intercept && docker compose down -v --remove-orphans || true
+          cd "$GITHUB_WORKSPACE/tests/compose-intercept-stats" && docker compose down -v --remove-orphans || true
 
   build-dev:
     name: Build Development
@@ -222,6 +232,7 @@ jobs:
     name: Proxy Test
     runs-on: ubuntu-latest
     needs: [templ-generate, format, lint, test, compose-intercept-test]
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -239,6 +250,7 @@ jobs:
     name: Simulation
     runs-on: ubuntu-latest
     needs: [templ-generate, format, lint, test, compose-intercept-test]
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4

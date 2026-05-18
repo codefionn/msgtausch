@@ -250,11 +250,12 @@ func handleMockSocks5Connection(t *testing.T, clientConn net.Conn, requiredUser,
 		replyCode := byte(0x01) // General server failure
 		if opErr, ok := err.(*net.OpError); ok {
 			if sysErr, ok := opErr.Err.(*os.SyscallError); ok {
-				if sysErr.Err == syscall.ECONNREFUSED {
+				switch sysErr.Err {
+				case syscall.ECONNREFUSED:
 					replyCode = 0x05 // Connection refused
-				} else if sysErr.Err == syscall.EHOSTUNREACH {
+				case syscall.EHOSTUNREACH:
 					replyCode = 0x04 // Host unreachable
-				} else if sysErr.Err == syscall.ENETUNREACH {
+				case syscall.ENETUNREACH:
 					replyCode = 0x03 // Network unreachable
 				}
 			}

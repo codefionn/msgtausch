@@ -159,7 +159,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 		}
 		port, _ := strconv.Atoi(portStr)
 		var err error
-		connectionID, err = h.proxy.Collector.StartConnection(context.Background(), clientIP, hostname, port, "quic-http3")
+		connectionID, err = h.proxy.StartConnection(context.Background(), clientIP, hostname, port, "quic-http3")
 		if err != nil {
 			logger.Error("Error starting connection tracking: %v", err)
 		}
@@ -349,7 +349,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 				}
 			}
 		} else {
-			if err := h.proxy.Collector.RecordFullHTTPRequest(
+			if err := h.proxy.RecordFullHTTPRequest(
 				context.Background(),
 				connectionID,
 				outReq.Method,
@@ -370,7 +370,7 @@ func (h *QUICHTTP3Interceptor) interceptHTTP3Request(w http.ResponseWriter, req 
 			responseHeaders[key] = values
 		}
 
-		if err := h.proxy.Collector.RecordFullHTTPResponse(
+		if err := h.proxy.RecordFullHTTPResponse(
 			context.Background(),
 			connectionID,
 			resp.StatusCode,

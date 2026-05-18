@@ -6,7 +6,7 @@ services:
     build:
       context: ../..
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS builder
+        FROM golang:1.25-alpine AS builder
         WORKDIR /src
         COPY go.mod go.sum ./
         RUN go install github.com/a-h/templ/cmd/templ@latest
@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS builder
+        FROM golang:1.25-alpine AS builder
         WORKDIR /src
         COPY backend/go.mod ./
         COPY backend/server.go ./
@@ -85,7 +85,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS builder
+        FROM golang:1.25-alpine AS builder
         WORKDIR /src
         COPY backend/go.mod ./
         COPY backend/server.go ./

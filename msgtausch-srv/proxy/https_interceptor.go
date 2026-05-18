@@ -552,7 +552,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 				}
 				port, _ := strconv.Atoi(portStr)
 				var err error
-				connectionID, err = h.proxy.Collector.StartConnection(context.Background(), clientIP, hostname, port, "https")
+				connectionID, err = h.proxy.StartConnection(context.Background(), clientIP, hostname, port, "https")
 				if err != nil {
 					logger.Error("Error starting connection tracking: %v", err)
 				}
@@ -791,7 +791,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 
 						// Record request only if we didn't stream it
 						if !recording.streamed {
-							if err := h.proxy.Collector.RecordFullHTTPRequest(
+							if err := h.proxy.RecordFullHTTPRequest(
 								context.Background(),
 								recording.connectionID,
 								recording.req.Method,
@@ -858,7 +858,7 @@ func (h *HTTPSInterceptor) HandleTCPConnectionWithClientIP(clientConn net.Conn, 
 						}
 
 						if !respStreamed {
-							if err := h.proxy.Collector.RecordFullHTTPResponse(
+							if err := h.proxy.RecordFullHTTPResponse(
 								context.Background(),
 								recording.connectionID,
 								resp.StatusCode,

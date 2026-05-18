@@ -114,28 +114,28 @@ func (p *Proxy) getForwardDebugInfo(fwd config.Forward) string {
 	case *config.ForwardDefaultNetwork:
 		info.WriteString("type=default-network")
 	case *config.ForwardSocks5:
-		info.WriteString(fmt.Sprintf("type=socks5, address=%s", f.Address))
+		fmt.Fprintf(&info, "type=socks5, address=%s", f.Address)
 		if f.Username != nil {
-			info.WriteString(fmt.Sprintf(", username=%s", *f.Username))
+			fmt.Fprintf(&info, ", username=%s", *f.Username)
 		}
 		if f.Password != nil {
 			info.WriteString(", password=***")
 		}
 	case *config.ForwardProxy:
-		info.WriteString(fmt.Sprintf("type=proxy, address=%s", f.Address))
+		fmt.Fprintf(&info, "type=proxy, address=%s", f.Address)
 		if f.Username != nil {
-			info.WriteString(fmt.Sprintf(", username=%s", *f.Username))
+			fmt.Fprintf(&info, ", username=%s", *f.Username)
 		}
 		if f.Password != nil {
 			info.WriteString(", password=***")
 		}
 	default:
-		info.WriteString(fmt.Sprintf("type=unknown(%T)", fwd))
+		fmt.Fprintf(&info, "type=unknown(%T)", fwd)
 	}
 
 	classifierInfo := p.getClassifierDebugInfo(fwd.Classifier())
 	if classifierInfo != "" {
-		info.WriteString(fmt.Sprintf(", classifier=%s", classifierInfo))
+		fmt.Fprintf(&info, ", classifier=%s", classifierInfo)
 	} else {
 		info.WriteString(", classifier=none")
 	}
@@ -901,12 +901,12 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	if p.proxy.Collector != nil {
 		if connUUID, ok := ConnectionUUIDFromContext(ctx); ok {
-			connectionID, startErr = p.proxy.Collector.StartConnectionWithUUID(ctx, connUUID, clientIP, hostname, int(remotePort), "http")
+			connectionID, startErr = p.proxy.StartConnectionWithUUID(ctx, connUUID, clientIP, hostname, int(remotePort), "http")
 			if startErr != nil {
 				logger.Error("Failed to record connection start with UUID: %v", startErr)
 			}
 		} else {
-			connectionID, startErr = p.proxy.Collector.StartConnection(ctx, clientIP, hostname, int(remotePort), "http")
+			connectionID, startErr = p.proxy.StartConnection(ctx, clientIP, hostname, int(remotePort), "http")
 			if startErr != nil {
 				logger.Error("Failed to record connection start: %v", startErr)
 			}
@@ -916,19 +916,19 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if !p.isHostAllowed(hostname, clientIP, remotePort) {
 		logger.WarnCtx(ctx, "Host not allowed: %s", host)
 		if p.proxy.Collector != nil {
-			if err := p.proxy.Collector.RecordBlockedRequest(ctx, clientIP, hostname, "host_not_allowed"); err != nil {
+			if err := p.proxy.RecordBlockedRequest(ctx, clientIP, hostname, "host_not_allowed"); err != nil {
 				logger.ErrorCtx(ctx, "Failed to record blocked request: %v", err)
 			}
 		}
 		http.Error(w, "Host not allowed", http.StatusForbidden)
 		if p.proxy.Collector != nil && connectionID > 0 {
-			_ = p.proxy.Collector.EndConnection(ctx, connectionID, 0, 0, 0, "blocked")
+			_ = p.proxy.EndConnection(ctx, connectionID, 0, 0, 0, "blocked")
 		}
 		return
 	}
 
 	if p.proxy.Collector != nil {
-		if err := p.proxy.Collector.RecordAllowedRequest(ctx, clientIP, hostname); err != nil {
+		if err := p.proxy.RecordAllowedRequest(ctx, clientIP, hostname); err != nil {
 			logger.ErrorCtx(ctx, "Failed to record allowed request: %v", err)
 		}
 	}
@@ -964,7 +964,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	req, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
 		if p.proxy.Collector != nil && connectionID > 0 {
-			_ = p.proxy.Collector.RecordError(r.Context(), connectionID, "request_creation_error", err.Error())
+			_ = p.proxy.RecordError(r.Context(), connectionID, "request_creation_error", err.Error())
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1065,7 +1065,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 			http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 		} else {
 			if p.proxy.Collector != nil && connectionID > 0 {
-				_ = p.proxy.Collector.RecordError(r.Context(), connectionID, "http_forward_error", err.Error())
+				_ = p.proxy.RecordError(r.Context(), connectionID, "http_forward_error", err.Error())
 			}
 			writeProxyErrorResponse(w, err, ErrCodeHTTPForwardFailed)
 		}
@@ -1094,7 +1094,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		if p.proxy.Collector != nil && connectionID > 0 {
 			logger.Debug("Recording WebSocket upgrade request/response for connectionID=%d", connectionID)
 			responseHeaderSize := estimateHTTPResponseHeaderSize(resp)
-			if err := p.proxy.Collector.RecordHTTPResponseWithHeaders(r.Context(), connectionID, resp.StatusCode, resp.ContentLength, responseHeaderSize); err != nil {
+			if err := p.proxy.RecordHTTPResponseWithHeaders(r.Context(), connectionID, resp.StatusCode, resp.ContentLength, responseHeaderSize); err != nil {
 				logger.Error("Failed to record HTTP response: %v", err)
 			}
 			contentLength := r.ContentLength
@@ -1102,7 +1102,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 				contentLength = 0
 			}
 			requestHeaderSize := estimateHTTPRequestHeaderSize(r)
-			if err := p.proxy.Collector.RecordHTTPRequestWithHeaders(ctx, connectionID, r.Method, targetURL, targetHost, r.UserAgent(), contentLength, requestHeaderSize); err != nil {
+			if err := p.proxy.RecordHTTPRequestWithHeaders(ctx, connectionID, r.Method, targetURL, targetHost, r.UserAgent(), contentLength, requestHeaderSize); err != nil {
 				logger.Error("Failed to record HTTP request: %v", err)
 			}
 		}
@@ -1114,7 +1114,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	if p.proxy.Collector != nil && connectionID > 0 {
 		responseHeaderSize := estimateHTTPResponseHeaderSize(resp)
 		logger.DebugCtx(r.Context(), "Recording HTTP response for connectionID=%d status=%d", connectionID, resp.StatusCode)
-		if err := p.proxy.Collector.RecordHTTPResponseWithHeaders(r.Context(), connectionID, resp.StatusCode, resp.ContentLength, responseHeaderSize); err != nil {
+		if err := p.proxy.RecordHTTPResponseWithHeaders(r.Context(), connectionID, resp.StatusCode, resp.ContentLength, responseHeaderSize); err != nil {
 			logger.Error("Failed to record HTTP response: %v", err)
 		}
 	}
@@ -1126,7 +1126,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 		requestHeaderSize := estimateHTTPRequestHeaderSize(r)
 		logger.DebugCtx(ctx, "Recording HTTP request for connectionID=%d method=%s url=%s", connectionID, r.Method, targetURL)
-		if err := p.proxy.Collector.RecordHTTPRequestWithHeaders(ctx, connectionID, r.Method, targetURL, targetHost, r.UserAgent(), contentLength, requestHeaderSize); err != nil {
+		if err := p.proxy.RecordHTTPRequestWithHeaders(ctx, connectionID, r.Method, targetURL, targetHost, r.UserAgent(), contentLength, requestHeaderSize); err != nil {
 			logger.Error("Failed to record HTTP request: %v", err)
 		}
 	}
@@ -1257,7 +1257,7 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 
 		if clientBuf != nil && clientBuf.Reader.Buffered() > 0 {
 			buf := make([]byte, clientBuf.Reader.Buffered())
-			if _, err := clientBuf.Reader.Read(buf); err != nil {
+			if _, err := clientBuf.Read(buf); err != nil {
 				logger.Error("Failed to read buffered data: %v", err)
 				return
 			}
@@ -1382,7 +1382,7 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 			if err != nil {
 				logger.Error("Failed to send 200 response: %v", err)
 				if p.proxy.Collector != nil && connectionID > 0 {
-					if err := p.proxy.Collector.EndConnection(r.Context(), connectionID, 0, 0, 0, "error"); err != nil {
+					if err := p.proxy.EndConnection(r.Context(), connectionID, 0, 0, 0, "error"); err != nil {
 						logger.Error("Failed to end connection: %v", err)
 					}
 				}
@@ -1836,7 +1836,7 @@ func (p *Proxy) Close() error {
 	}
 
 	if p.Collector != nil {
-		if err := p.Collector.Close(); err != nil {
+		if err := p.Close(); err != nil {
 			lastErr = err
 			logger.Error("Failed to close statistics collector: %v", err)
 		}

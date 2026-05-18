@@ -49,7 +49,7 @@ func estimateTrieMemorySize(trie *ahocorasick.Trie, domainCount int) int64 {
 	// The trie typically contains:
 	// - States/nodes (each state has goto functions, failure links, outputs)
 	// - Pattern strings
-	var totalSize int64 = baseSize
+	var totalSize = baseSize
 
 	// Iterate through fields if accessible
 	for i := 0; i < trieValue.NumField(); i++ {

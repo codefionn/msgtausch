@@ -164,7 +164,7 @@ func (si *SchemaInitializer) createIndex(index IndexDefinition) error {
 // generateCreateTableSQL generates CREATE TABLE SQL for the specific driver
 func (si *SchemaInitializer) generateCreateTableSQL(table TableDefinition) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n", table.Name))
+	fmt.Fprintf(&builder, "CREATE TABLE IF NOT EXISTS %s (\n", table.Name)
 
 	columnDefs := make([]string, 0, len(table.Columns))
 	for _, column := range table.Columns {

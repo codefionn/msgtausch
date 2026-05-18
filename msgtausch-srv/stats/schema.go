@@ -774,7 +774,7 @@ func (result *ValidationResult) GenerateReport() string {
 	if len(result.MissingTables) > 0 {
 		report.WriteString("Missing Tables:\n")
 		for _, table := range result.MissingTables {
-			report.WriteString(fmt.Sprintf("  - %s\n", table))
+			fmt.Fprintf(&report, "  - %s\n", table)
 		}
 		report.WriteString("\n")
 	}
@@ -782,7 +782,7 @@ func (result *ValidationResult) GenerateReport() string {
 	if len(result.MissingColumns) > 0 {
 		report.WriteString("Missing Columns:\n")
 		for _, col := range result.MissingColumns {
-			report.WriteString(fmt.Sprintf("  - Table '%s' missing column '%s': %s\n", col.Table, col.Column, col.Issue))
+			fmt.Fprintf(&report, "  - Table '%s' missing column '%s': %s\n", col.Table, col.Column, col.Issue)
 		}
 		report.WriteString("\n")
 	}
@@ -790,8 +790,8 @@ func (result *ValidationResult) GenerateReport() string {
 	if len(result.TypeMismatches) > 0 {
 		report.WriteString("Type Mismatches:\n")
 		for _, mismatch := range result.TypeMismatches {
-			report.WriteString(fmt.Sprintf("  - Table '%s' column '%s': expected %s, got %s\n",
-				mismatch.Table, mismatch.Column, mismatch.Expected, mismatch.Actual))
+			fmt.Fprintf(&report, "  - Table '%s' column '%s': expected %s, got %s\n",
+				mismatch.Table, mismatch.Column, mismatch.Expected, mismatch.Actual)
 		}
 		report.WriteString("\n")
 	}
@@ -800,7 +800,7 @@ func (result *ValidationResult) GenerateReport() string {
 		report.WriteString("Missing Indexes:\n")
 		sort.Strings(result.MissingIndexes)
 		for _, idx := range result.MissingIndexes {
-			report.WriteString(fmt.Sprintf("  - %s\n", idx))
+			fmt.Fprintf(&report, "  - %s\n", idx)
 		}
 		report.WriteString("\n")
 	}
@@ -808,7 +808,7 @@ func (result *ValidationResult) GenerateReport() string {
 	if len(result.ExtraColumns) > 0 {
 		report.WriteString("Extra Columns:\n")
 		for _, col := range result.ExtraColumns {
-			report.WriteString(fmt.Sprintf("  - Table '%s' has unexpected column '%s': %s\n", col.Table, col.Column, col.Issue))
+			fmt.Fprintf(&report, "  - Table '%s' has unexpected column '%s': %s\n", col.Table, col.Column, col.Issue)
 		}
 		report.WriteString("\n")
 	}
@@ -816,8 +816,8 @@ func (result *ValidationResult) GenerateReport() string {
 	if len(result.ConstraintIssues) > 0 {
 		report.WriteString("Constraint Issues:\n")
 		for _, issue := range result.ConstraintIssues {
-			report.WriteString(fmt.Sprintf("  - Table '%s' column '%s' constraint '%s': %s\n",
-				issue.Table, issue.Column, issue.Constraint, issue.Issue))
+			fmt.Fprintf(&report, "  - Table '%s' column '%s' constraint '%s': %s\n",
+				issue.Table, issue.Column, issue.Constraint, issue.Issue)
 		}
 		report.WriteString("\n")
 	}
@@ -825,7 +825,7 @@ func (result *ValidationResult) GenerateReport() string {
 	if len(result.Errors) > 0 {
 		report.WriteString("Validation Errors:\n")
 		for _, err := range result.Errors {
-			report.WriteString(fmt.Sprintf("  - %v\n", err))
+			fmt.Fprintf(&report, "  - %v\n", err)
 		}
 	}
 

@@ -132,13 +132,13 @@ func NewCacheManagerWithConfigAndDNS(cfg config.CacheConfig, dnsCfg config.DNSCo
 }
 
 // NewCacheManager creates a new cache manager
-func NewCacheManager(config internalCacheConfig) *CacheManager {
+func NewCacheManager(cacheCfg internalCacheConfig) *CacheManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cm := &CacheManager{
 		cache: make(map[string]*CacheEntry),
 		httpClient: &http.Client{
-			Timeout: config.HTTPTimeout,
+			Timeout: cacheCfg.HTTPTimeout,
 		},
 		ctx:    ctx,
 		cancel: cancel,
@@ -146,9 +146,9 @@ func NewCacheManager(config internalCacheConfig) *CacheManager {
 
 	// Start background refresh goroutine
 	cm.wg.Add(1)
-	go cm.backgroundRefresh(config.RefreshInterval)
+	go cm.backgroundRefresh(cacheCfg.RefreshInterval)
 
-	logger.Info("Cache manager started with refresh interval: %v", config.RefreshInterval)
+	logger.Info("Cache manager started with refresh interval: %v", cacheCfg.RefreshInterval)
 
 	return cm
 }
@@ -270,7 +270,7 @@ func (cm *CacheManager) fetchAndCacheWithMirrors(primaryURL string, mirrors []st
 	}
 
 	// Create cache entry
-	var ttl time.Duration = 1 * time.Hour // Default fallback
+	var ttl = 1 * time.Hour // Default fallback
 
 	entry := &CacheEntry{
 		Domains:    domains,

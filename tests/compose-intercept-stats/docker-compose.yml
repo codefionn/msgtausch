@@ -6,7 +6,7 @@ services:
     build:
       context: ../..
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS builder
+        FROM golang:1.25-alpine AS builder
         RUN apk add --no-cache git make gcc musl-dev sqlite-dev
         WORKDIR /src
         COPY go.mod go.sum ./
@@ -47,7 +47,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS builder
+        FROM golang:1.25-alpine AS builder
         RUN apk add --no-cache git make gcc musl-dev sqlite-dev
         WORKDIR /src
         COPY backend/go.mod ./
@@ -87,7 +87,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS builder
+        FROM golang:1.25-alpine AS builder
         RUN apk add --no-cache git make gcc musl-dev sqlite-dev
         WORKDIR /src
         COPY backend/go.mod ./

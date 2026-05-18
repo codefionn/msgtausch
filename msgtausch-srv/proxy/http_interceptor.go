@@ -397,7 +397,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 
 		// Record request only if we didn't stream it
 		if !streamed {
-			if err := h.proxy.Collector.RecordFullHTTPRequest(req.Context(), connectionID,
+			if err := h.proxy.RecordFullHTTPRequest(req.Context(), connectionID,
 				req.Method, fullURL, req.Host, req.UserAgent(), requestHeaders, requestBody, timestamp); err != nil {
 				logger.Error("Failed to record full HTTP request: %v", err)
 			}
@@ -405,7 +405,7 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 
 		// Record response only if we didn't stream it
 		if !respStreamed {
-			if err := h.proxy.Collector.RecordFullHTTPResponse(req.Context(), connectionID,
+			if err := h.proxy.RecordFullHTTPResponse(req.Context(), connectionID,
 				resp.StatusCode, responseHeaders, responseBody, timestamp); err != nil {
 				logger.Error("Failed to record full HTTP response: %v", err)
 			}

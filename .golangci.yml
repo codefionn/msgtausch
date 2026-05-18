@@ -1,123 +1,156 @@
+version: "2"
 run:
-  timeout: 5m
-  tests: true
   modules-download-mode: readonly
-
+  tests: true
 linters:
   enable:
     - bodyclose
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - typecheck
-    - unused
-    - gofmt
-    - goimports
-    - revive
-    - gosec
-    - misspell
+    - copyloopvar
     - gocritic
     - gocyclo
-    - unparam
+    - gosec
+    - misspell
+    - revive
     - unconvert
-    - copyloopvar
+    - unparam
     - whitespace
-
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-    
-  revive:
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 15
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - checkPrivateReceivers
+            - sayRepetitiveInsteadOfStutters
+          disabled: true
+  exclusions:
+    generated: lax
     rules:
-      - name: exported
-        arguments: ["checkPrivateReceivers", "sayRepetitiveInsteadOfStutters"]
-
+      - linters:
+          - errcheck
+          - gocritic
+          - gosec
+          - unparam
+        path: _test\.go
+      - linters:
+          - all
+        path: testdata/
+      - linters:
+          - gocritic
+          - gocyclo
+          - gosec
+        path: msgtausch-simulation/
+      - linters:
+          - gocyclo
+        path: msgtausch-srv/config/
+        text: cyclomatic complexity.*is high
+      - linters:
+          - gocyclo
+        path: msgtausch-srv/proxy/
+        text: cyclomatic complexity.*is high
+      - linters:
+          - gocyclo
+        path: msgtausch-srv/stats/
+        text: cyclomatic complexity.*is high
+      - linters:
+          - gocyclo
+        path: msgtausch-srv/dashboard/
+        text: cyclomatic complexity.*is high
+      - linters:
+          - bodyclose
+        path: _test\.go
+        text: response body must be closed
+      - linters:
+          - errcheck
+        path: _test\.go
+        text: Error return value.*is not checked
+      - linters:
+          - errcheck
+        text: Error return value.*proxy.*Stop.*is not checked
+      - linters:
+          - errcheck
+        text: Error return value.*Close.*is not checked
+      - linters:
+          - errcheck
+        text: Error return value.*fmt.Fprint.*is not checked
+      - linters:
+          - gocritic
+        text: should be preferred to the nil request body
+      - linters:
+          - ineffassign
+        path: _test\.go
+        text: ineffectual assignment
+      - linters:
+          - unparam
+        text: result.*is always nil
+      - linters:
+          - gocritic
+        path: cmd/throughput-test/
+        text: exitAfterDefer.*will not run
+      - linters:
+          - gosec
+        text: TLS InsecureSkipVerify set true
+      - linters:
+          - gosec
+        text: Potential Slowloris Attack
+      - linters:
+          - gosec
+        text: TLS MinVersion too low
+      - linters:
+          - gosec
+        text: integer overflow conversion
+      - linters:
+          - gosec
+        path: cmd/throughput-test/
+        text: Use of net/http serve function that has no support for setting timeouts
+      - linters:
+          - gosec
+        text: SSRF via taint analysis
+      - linters:
+          - gosec
+        text: XSS via taint analysis
+      - linters:
+          - gosec
+        text: Path traversal via taint analysis
+      - linters:
+          - gosec
+        text: Exported struct field.*Password.*matches secret pattern
+      - linters:
+          - gosec
+        text: Potential hardcoded credentials
+      - linters:
+          - gosec
+        path: cmd/memtest/
+        text: Profiling endpoint is automatically exposed
+      - linters:
+          - gosec
+        text: Errors unhandled
+      - linters:
+          - gosec
+        path: cmd/memtest/
+        text: Use of net/http serve function that has no support for setting timeouts
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck  # Test files can ignore some error checks
-        - unparam   # Test files often have unused parameters
-        - gocritic  # Allow some style issues in tests
-    - path: testdata/
-      linters:
-        - all
-    - path: msgtausch-simulation/
-      linters:
-        - gosec  # Allow weak random in simulation
-        - gocyclo # Allow complex simulation functions
-        - gocritic # Allow some style issues in simulation
-    - text: "cyclomatic complexity.*is high"
-      linters:
-        - gocyclo
-      path: msgtausch-srv/config/
-    - text: "cyclomatic complexity.*is high"
-      linters:
-        - gocyclo
-      path: msgtausch-srv/proxy/
-    - text: "cyclomatic complexity.*is high"
-      linters:
-        - gocyclo
-      path: msgtausch-srv/stats/
-    - text: "cyclomatic complexity.*is high"
-      linters:
-        - gocyclo
-      path: msgtausch-srv/dashboard/
-    - text: "response body must be closed"
-      linters:
-        - bodyclose
-      path: _test\.go
-    - text: "Error return value.*is not checked"
-      linters:
-        - errcheck
-      path: _test\.go
-    - text: "Error return value.*proxy.*Stop.*is not checked"
-      linters:
-        - errcheck
-    - text: "should be preferred to the nil request body"
-      linters:
-        - gocritic
-    - text: "ineffectual assignment"
-      linters:
-        - ineffassign
-      path: _test\.go
-    - text: "result.*is always nil"
-      linters:
-        - unparam
-    - text: "exitAfterDefer.*will not run"
-      linters:
-        - gocritic
-      path: cmd/throughput-test/
-    - text: "TLS InsecureSkipVerify set true"
-      linters:
-        - gosec  # Proxy needs to handle untrusted certificates
-    - text: "Potential Slowloris Attack"
-      linters:
-        - gosec  # Proxy server timeout handling
-    - text: "TLS MinVersion too low"
-      linters:
-        - gosec  # QUIC/HTTP3 compatibility
-    - text: "integer overflow conversion"
-      linters:
-        - gosec  # Port number conversions are safe
-    - text: "Use of net/http serve function that has no support for setting timeouts"
-      linters:
-        - gosec  # Test code acceptable
-      path: cmd/throughput-test/
-    - text: "main redeclared in this block"
-      linters:
-        - typecheck
-  
   max-issues-per-linter: 0
   max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

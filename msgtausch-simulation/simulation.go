@@ -26,7 +26,6 @@ import (
 
 	"github.com/armon/go-socks5"
 	msgtauschconfig "github.com/codefionn/msgtausch/msgtausch-srv/config"
-	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
 	msgtauschlogger "github.com/codefionn/msgtausch/msgtausch-srv/logger"
 	msgtauschproxy "github.com/codefionn/msgtausch/msgtausch-srv/proxy"
 	"github.com/gorilla/websocket"
@@ -293,7 +292,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 
 	// 3. Build config forwards
 	forwards := make([]msgtauschconfig.Forward, 0)
-	var usedForwards int = 0
+	var usedForwards = 0
 	if enableForwards {
 		for i, sp := range socksProxies {
 			var fwd msgtauschconfig.Forward = &msgtauschconfig.ForwardSocks5{
@@ -346,7 +345,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 
 	defer func() {
 		if closeErr := listener.Close(); closeErr != nil {
-			logger.Error("Error closing listener: %v", closeErr)
+			msgtauschlogger.Error("Error closing listener: %v", closeErr)
 		}
 	}()
 	proxy := msgtauschproxy.NewProxy(cfg)
@@ -478,7 +477,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				if resp != nil {
 					defer func() {
 						if closeErr := resp.Body.Close(); closeErr != nil {
-							logger.Error("Error closing response body: %v", closeErr)
+							msgtauschlogger.Error("Error closing response body: %v", closeErr)
 						}
 					}()
 				}
@@ -488,7 +487,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				}
 				defer func() {
 					if closeErr := conn.Close(); closeErr != nil {
-						logger.Error("Error closing connection: %v", closeErr)
+						msgtauschlogger.Error("Error closing connection: %v", closeErr)
 					}
 				}()
 
@@ -575,11 +574,12 @@ func RunSimulation(seed int64, enableForwards bool) error {
 					body, _ := io.ReadAll(resp.Body)
 					msgtauschlogger.Debug("Received non-200 status code in %s: %d (%s)", targetURL, resp.StatusCode, strings.ReplaceAll(string(body), "\n", ""))
 					var errorType SimulationErrorType
-					if resp.StatusCode == http.StatusBadRequest {
+					switch resp.StatusCode {
+					case http.StatusBadRequest:
 						errorType = ErrorHTTP400
-					} else if resp.StatusCode == http.StatusNotImplemented {
+					case http.StatusNotImplemented:
 						errorType = ErrorHTTP501
-					} else if resp.StatusCode == http.StatusBadGateway {
+					case http.StatusBadGateway:
 						gatewayErrCode := extractProxyErrorCode(resp)
 						if gatewayErrCode == msgtauschproxy.ErrCodeHTTPForwardFailed {
 							errorType = ErrorTCP
@@ -588,7 +588,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 							unrecoverableErrorCount.Add(1)
 							return
 						}
-					} else {
+					default:
 						msgtauschlogger.Error("Unhandled HTTP status code: %d", resp.StatusCode)
 						unrecoverableErrorCount.Add(1)
 						return
@@ -956,7 +956,7 @@ func CreateRandomSocks5Proxies(seed int64) []*SimulatedSocks5Proxy {
 		server, err := socks5.New(&socks5.Config{})
 		if err != nil {
 			if closeErr := listener.Close(); closeErr != nil {
-				logger.Error("Error closing listener: %v", closeErr)
+				msgtauschlogger.Error("Error closing listener: %v", closeErr)
 			}
 			panic(fmt.Sprintf("Failed to create SOCKS5 server: %v", err))
 		}
@@ -1024,7 +1024,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 			}
 			defer func() {
 				if closeErr := conn.Close(); closeErr != nil {
-					logger.Error("Error closing connection: %v", closeErr)
+					msgtauschlogger.Error("Error closing connection: %v", closeErr)
 				}
 			}()
 
@@ -1107,7 +1107,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 					return
 				}
 				if closeErr := conn.Close(); closeErr != nil {
-					logger.Error("Error closing connection: %v", closeErr)
+					msgtauschlogger.Error("Error closing connection: %v", closeErr)
 				}
 				return
 			case ErrorTimeout:
@@ -1128,7 +1128,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 				go func() {
 					time.Sleep(20 * time.Second) // Longer than client timeout
 					if closeErr := conn.Close(); closeErr != nil {
-						logger.Error("Error closing connection: %v", closeErr)
+						msgtauschlogger.Error("Error closing connection: %v", closeErr)
 					}
 				}()
 				return
@@ -1161,7 +1161,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 					log.Printf("Error writing response body: %v", err)
 				}
 			default:
-				if _, err := w.Write([]byte(fmt.Sprintf("Hello from SimulatedServer! Seed: %d", rng.Int63()))); err != nil {
+				if _, err := fmt.Fprintf(w, "Hello from SimulatedServer! Seed: %d", rng.Int63()); err != nil {
 					log.Printf("Error writing response: %v", err)
 				}
 			}

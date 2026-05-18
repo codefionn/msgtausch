@@ -66,7 +66,7 @@ type portalCache struct {
 }
 
 // NewPortal creates a new portal instance
-func NewPortal(config *config.Config, collector stats.Collector, proxy ProxyInterface) *Portal {
+func NewPortal(cfg *config.Config, collector stats.Collector, proxy ProxyInterface) *Portal {
 	// Generate a random JWT secret on the fly
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
@@ -75,7 +75,7 @@ func NewPortal(config *config.Config, collector stats.Collector, proxy ProxyInte
 	}
 
 	p := &Portal{
-		config:    config,
+		config:    cfg,
 		collector: collector,
 		proxy:     proxy,
 		jwtSecret: secret,
@@ -86,7 +86,7 @@ func NewPortal(config *config.Config, collector stats.Collector, proxy ProxyInte
 
 	// Portal uses the provided stats collector directly
 
-	logger.Info("Portal initialized with statistics: %t", config.Statistics.Enabled)
+	logger.Info("Portal initialized with statistics: %t", cfg.Statistics.Enabled)
 	return p
 }
 
@@ -111,32 +111,32 @@ func (p *Portal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	switch {
-	case r.URL.Path == "/" || r.URL.Path == "/dashboard":
+	switch r.URL.Path {
+	case "/", "/dashboard":
 		p.serveDashboard(w, r)
-	case r.URL.Path == "/domains" || r.URL.Path == "/security" || r.URL.Path == "/errors" || r.URL.Path == "/bandwidth":
+	case "/domains", "/security", "/errors", "/bandwidth":
 		p.serveDashboard(w, r)
-	case r.URL.Path == "/api/dashboard":
+	case "/api/dashboard":
 		p.serveData(w, r)
-	case r.URL.Path == "/api/dashboard/system":
+	case "/api/dashboard/system":
 		p.serveDataSystem(w, r)
-	case r.URL.Path == "/api/domains":
+	case "/api/domains":
 		p.serveDomainsData(w, r)
-	case r.URL.Path == "/api/security":
+	case "/api/security":
 		p.serveSecurityData(w, r)
-	case r.URL.Path == "/api/errors":
+	case "/api/errors":
 		p.serveErrorsData(w, r)
-	case r.URL.Path == "/api/bandwidth":
+	case "/api/bandwidth":
 		p.serveBandwidthData(w, r)
-	case r.URL.Path == "/api/stats":
+	case "/api/stats":
 		p.serveLegacyStats(w, r)
-	case r.URL.Path == "/api/config":
+	case "/api/config":
 		p.serveConfig(w, r)
-	case r.URL.Path == "/api/servers":
+	case "/api/servers":
 		p.serveServers(w, r)
-	case r.URL.Path == "/login":
+	case "/login":
 		p.serveLogin(w, r)
-	case r.URL.Path == "/logout":
+	case "/logout":
 		p.serveLogout(w, r)
 	default:
 		http.NotFound(w, r)
@@ -380,28 +380,28 @@ func (p *Portal) serveBandwidthData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stats, err := p.collector.GetBandwidthStats(ctx, 30)
+	bandwidthStats, err := p.collector.GetBandwidthStats(ctx, 30)
 	if err != nil {
 		logger.Error("Failed to get bandwidth data: %v", err)
 		http.Error(w, "Failed to load data", http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, stats)
+	writeJSON(w, bandwidthStats)
 }
 
 // serveLegacyStats serves legacy statistics for backward compatibility
 func (p *Portal) serveLegacyStats(w http.ResponseWriter, _ *http.Request) {
 	p.requests++
 	w.Header().Set("Content-Type", "application/json")
-	stats := map[string]interface{}{
+	resultMap := map[string]interface{}{
 		"startTime":      p.startTime.Format(time.RFC3339),
 		"uptime":         time.Since(p.startTime).Seconds(),
 		"requestsServed": p.requests,
 		"activeServers":  p.countActiveServers(),
 		"totalServers":   len(p.proxy.GetServerInfo()),
 	}
-	writeJSON(w, stats)
+	writeJSON(w, resultMap)
 }
 
 // serveConfig serves the proxy configuration as JSON

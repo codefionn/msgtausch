@@ -41,7 +41,7 @@ func TestHandleConnect_NoProxy_NoPanic(t *testing.T) {
 	req = req.WithContext(ctx)
 
 	// Should not panic; expect a 502 Bad Gateway due to failed upstream dial
-	srv.handleConnect(rr, req, 0, "127.0.0.1", "127.0.0.1", 1)
+	srv.handleConnect(rr, req, 1)
 
 	if rr.Code == 0 {
 		t.Fatalf("no response written; expected status code")
@@ -71,7 +71,7 @@ func TestHandleConnect_CollectorNil_NoPanic(t *testing.T) {
 	req = req.WithContext(ctx)
 
 	// Should not panic; expect a 502 Bad Gateway due to failed upstream dial
-	srv.handleConnect(rr, req, 0, "127.0.0.1", "127.0.0.1", 1)
+	srv.handleConnect(rr, req, 1)
 
 	if rr.Code == 0 {
 		t.Fatalf("no response written; expected status code")

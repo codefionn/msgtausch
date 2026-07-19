@@ -135,9 +135,6 @@ func (s *SQLiteCollector) RecordHTTPResponse(ctx context.Context, connectionID i
 
 // RecordHTTPRequestWithHeaders records an HTTP request including header size
 func (s *SQLiteCollector) RecordHTTPRequestWithHeaders(ctx context.Context, connectionID int64, method, url, host, userAgent string, contentLength, headerSize int64) error {
-	// First, try to add header_size column if it doesn't exist (migration)
-	_, _ = s.db.ExecContext(ctx, `ALTER TABLE http_requests ADD COLUMN header_size INTEGER DEFAULT 0`)
-
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO http_requests (connection_id, method, url, host, user_agent, content_length, header_size, timestamp)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -150,9 +147,6 @@ func (s *SQLiteCollector) RecordHTTPRequestWithHeaders(ctx context.Context, conn
 
 // RecordHTTPResponseWithHeaders records an HTTP response including header size
 func (s *SQLiteCollector) RecordHTTPResponseWithHeaders(ctx context.Context, connectionID int64, statusCode int, contentLength, headerSize int64) error {
-	// First, try to add header_size column if it doesn't exist (migration)
-	_, _ = s.db.ExecContext(ctx, `ALTER TABLE http_responses ADD COLUMN header_size INTEGER DEFAULT 0`)
-
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO http_responses (connection_id, status_code, content_length, header_size, timestamp)
 		 VALUES (?, ?, ?, ?, ?)`,

@@ -23,6 +23,7 @@ const maxRecordedBodySize = 10 * 1024 * 1024
 // HTTPInterceptor handles interception and modification of HTTP traffic.
 type HTTPInterceptor struct {
 	proxy         *Proxy                  // Reference to proxy for creating TCP connections
+	client        *http.Client            // Shared client preserves upstream keep-alive across requests
 	requestHooks  map[string]RequestHook  // Request modification hooks by ID
 	responseHooks map[string]ResponseHook // Response modification hooks by ID
 	hookMutex     sync.RWMutex            // Mutex for hooks maps
@@ -57,10 +58,37 @@ type ResponseHook func(*http.Response) error
 
 // NewHTTPInterceptor creates a new HTTPInterceptor
 func NewHTTPInterceptor(proxy *Proxy) *HTTPInterceptor {
-	return &HTTPInterceptor{
+	interceptor := &HTTPInterceptor{
 		proxy:         proxy,
 		requestHooks:  make(map[string]RequestHook),
 		responseHooks: make(map[string]ResponseHook),
+	}
+	if proxy != nil {
+		interceptor.client = &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return proxy.createForwardTCPClient(ctx, addr)
+				},
+				DisableKeepAlives:     false,
+				MaxIdleConns:          proxy.config.MaxIdleConns,
+				MaxIdleConnsPerHost:   proxy.config.MaxIdleConnsPerHost,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	}
+	return interceptor
+}
+
+// CloseIdleConnections releases pooled upstream connections during proxy
+// shutdown or configuration reload.
+func (h *HTTPInterceptor) CloseIdleConnections() {
+	if h != nil && h.client != nil {
+		h.client.CloseIdleConnections()
 	}
 }
 
@@ -260,24 +288,14 @@ func (h *HTTPInterceptor) InterceptRequest(w http.ResponseWriter, req *http.Requ
 		clonedReq.Header.Set("Host", clonedReq.Host)
 	}
 
-	client := http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return h.proxy.createForwardTCPClient(ctx, addr)
-			},
-			DisableKeepAlives:     false,
-			MaxIdleConns:          h.proxy.config.MaxIdleConns,
-			MaxIdleConnsPerHost:   h.proxy.config.MaxIdleConnsPerHost,
-			IdleConnTimeout:       90 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	if h.client == nil {
+		logger.Error("HTTP interception failed: HTTP client is not initialized")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	// Forward the request
-	resp, err := client.Do(clonedReq)
+	resp, err := h.client.Do(clonedReq)
 	if err != nil {
 		logger.Error("HTTP interception failed: Unable to forward request: %v", err)
 		// Use our custom Bad Gateway response.

@@ -67,6 +67,15 @@ type CacheManager struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	refreshing sync.Map // cacheKey -> struct{}, prevents overlapping refreshes
+	fetchMutex sync.Mutex
+	fetches    map[string]*cacheFetchCall
+	config     internalCacheConfig
+}
+
+type cacheFetchCall struct {
+	done  chan struct{}
+	entry *CacheEntry
+	err   error
 }
 
 // internalCacheConfig holds configuration for the cache manager
@@ -87,6 +96,26 @@ func DefaultCacheConfig() internalCacheConfig {
 		MaxRetries:      3,
 		RetryDelay:      5 * time.Second,
 	}
+}
+
+func normalizeCacheConfig(cfg internalCacheConfig) internalCacheConfig {
+	defaults := DefaultCacheConfig()
+	if cfg.DefaultTTL <= 0 {
+		cfg.DefaultTTL = defaults.DefaultTTL
+	}
+	if cfg.RefreshInterval <= 0 {
+		cfg.RefreshInterval = defaults.RefreshInterval
+	}
+	if cfg.HTTPTimeout <= 0 {
+		cfg.HTTPTimeout = defaults.HTTPTimeout
+	}
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = defaults.MaxRetries
+	}
+	if cfg.RetryDelay < 0 {
+		cfg.RetryDelay = defaults.RetryDelay
+	}
+	return cfg
 }
 
 // NewCacheManagerWithConfig creates a new cache manager with custom configuration.
@@ -113,12 +142,15 @@ func NewCacheManagerWithConfigAndDNS(cfg config.CacheConfig, dnsCfg config.DNSCo
 		MaxRetries:      cfg.MaxRetries,
 		RetryDelay:      cfg.GetRetryDelayDuration(),
 	}
+	cacheConfig = normalizeCacheConfig(cacheConfig)
 
 	cm := &CacheManager{
 		cache:      make(map[string]*CacheEntry),
 		httpClient: newCacheHTTPClient(cacheConfig.HTTPTimeout, dnsCfg),
 		ctx:        ctx,
 		cancel:     cancel,
+		fetches:    make(map[string]*cacheFetchCall),
+		config:     cacheConfig,
 	}
 
 	// Start background refresh goroutine
@@ -133,6 +165,7 @@ func NewCacheManagerWithConfigAndDNS(cfg config.CacheConfig, dnsCfg config.DNSCo
 
 // NewCacheManager creates a new cache manager
 func NewCacheManager(cacheCfg internalCacheConfig) *CacheManager {
+	cacheCfg = normalizeCacheConfig(cacheCfg)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cm := &CacheManager{
@@ -140,8 +173,10 @@ func NewCacheManager(cacheCfg internalCacheConfig) *CacheManager {
 		httpClient: &http.Client{
 			Timeout: cacheCfg.HTTPTimeout,
 		},
-		ctx:    ctx,
-		cancel: cancel,
+		ctx:     ctx,
+		cancel:  cancel,
+		fetches: make(map[string]*cacheFetchCall),
+		config:  cacheCfg,
 	}
 
 	// Start background refresh goroutine
@@ -169,20 +204,67 @@ func (cm *CacheManager) GetDomains(url string, format config.DomainsURLFormat, t
 // GetDomainsWithMirrors retrieves domains from cache with mirror URL fallback support
 func (cm *CacheManager) GetDomainsWithMirrors(primaryURL string, mirrors []string, format config.DomainsURLFormat, timeout int) (*CacheEntry, error) {
 	cacheKey := cm.generateCacheKey(primaryURL, mirrors, format)
+	return cm.getDomainsByKey(cacheKey, primaryURL, mirrors, format, timeout)
+}
 
-	// Check cache first
+func (cm *CacheManager) getDomainsByKey(cacheKey, primaryURL string, mirrors []string, format config.DomainsURLFormat, timeout int) (*CacheEntry, error) {
+	if entry, err, cached := cm.cachedResult(cacheKey); cached {
+		logger.Debug("Cache hit for URLs: %s (format: %s)", cm.formatURLsForLog(primaryURL, mirrors), format)
+		return entry, err
+	}
+
+	// Coalesce simultaneous misses so only one request downloads and builds a
+	// potentially large domain set. Waiting callers share the immutable entry.
+	entry, err := cm.coalesceFetch(cacheKey, func() (*CacheEntry, error) {
+		if entry, err, cached := cm.cachedResult(cacheKey); cached {
+			return entry, err
+		}
+		logger.Info("Cache miss for URLs: %s (format: %s), fetching fresh data", cm.formatURLsForLog(primaryURL, mirrors), format)
+		return cm.fetchAndCacheWithMirrors(primaryURL, mirrors, format, timeout)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entry, nil
+}
+
+func (cm *CacheManager) coalesceFetch(cacheKey string, fetch func() (*CacheEntry, error)) (*CacheEntry, error) {
+	cm.fetchMutex.Lock()
+	if call, exists := cm.fetches[cacheKey]; exists {
+		cm.fetchMutex.Unlock()
+		select {
+		case <-call.done:
+			return call.entry, call.err
+		case <-cm.ctx.Done():
+			return nil, cm.ctx.Err()
+		}
+	}
+
+	call := &cacheFetchCall{done: make(chan struct{})}
+	cm.fetches[cacheKey] = call
+	cm.fetchMutex.Unlock()
+
+	call.entry, call.err = fetch()
+	close(call.done)
+
+	cm.fetchMutex.Lock()
+	delete(cm.fetches, cacheKey)
+	cm.fetchMutex.Unlock()
+	return call.entry, call.err
+}
+
+func (cm *CacheManager) cachedResult(cacheKey string) (*CacheEntry, error, bool) {
 	cm.mutex.RLock()
 	entry, exists := cm.cache[cacheKey]
-	if exists && entry.LastError == nil && time.Now().Before(entry.Expiry) {
+	if exists && time.Now().Before(entry.Expiry) {
 		cm.mutex.RUnlock()
-		logger.Debug("Cache hit for URLs: %s (format: %s)", cm.formatURLsForLog(primaryURL, mirrors), format)
-		return entry, nil
+		if entry.LastError != nil {
+			return nil, entry.LastError, true
+		}
+		return entry, nil, true
 	}
 	cm.mutex.RUnlock()
-
-	// Cache miss or expired, fetch fresh data with mirror fallback
-	logger.Info("Cache miss for URLs: %s (format: %s), fetching fresh data", cm.formatURLsForLog(primaryURL, mirrors), format)
-	return cm.fetchAndCacheWithMirrors(primaryURL, mirrors, format, timeout)
+	return nil, nil, false
 }
 
 // formatURLsForLog formats URLs for logging
@@ -217,12 +299,16 @@ func (cm *CacheManager) fetchAndCacheWithMirrors(primaryURL string, mirrors []st
 		}
 
 		// Fetch with retries
-		for attempt := 0; attempt <= 3; attempt++ { // Max 3 attempts
+		for attempt := 0; attempt <= cm.config.MaxRetries; attempt++ {
 			if attempt > 0 {
+				retryTimer := time.NewTimer(cm.config.RetryDelay)
 				select {
-				case <-time.After(5 * time.Second):
+				case <-retryTimer.C:
 					// Wait before retry
 				case <-ctx.Done():
+					if !retryTimer.Stop() {
+						<-retryTimer.C
+					}
 					if cancel != nil {
 						cancel()
 					}
@@ -270,7 +356,7 @@ func (cm *CacheManager) fetchAndCacheWithMirrors(primaryURL string, mirrors []st
 	}
 
 	// Create cache entry
-	var ttl = 1 * time.Hour // Default fallback
+	ttl := cm.config.DefaultTTL
 
 	entry := &CacheEntry{
 		Domains:    domains,

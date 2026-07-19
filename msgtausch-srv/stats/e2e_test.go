@@ -136,8 +136,8 @@ func TestEndToEndStatisticsFlow(t *testing.T) {
 		assert.Equal(t, "192.168.1.100", clientIP)
 		assert.Equal(t, "example.com", targetHost)
 		assert.Equal(t, "http", protocol)
-		assert.Equal(t, int64(1024), bytesSent)
-		assert.Equal(t, int64(2048), bytesReceived)
+		assert.Equal(t, int64(512), bytesSent)
+		assert.Equal(t, int64(1024), bytesReceived)
 		assert.Equal(t, "normal", closeReason)
 
 		// Verify security events details
@@ -189,6 +189,72 @@ func TestBufferedCollectorGracefulShutdown(t *testing.T) {
 
 	assert.Equal(t, 1, connCount)
 	assert.Equal(t, 1, securityCount)
+}
+
+func TestBufferedCollectorPreservesActiveConnectionsAcrossFlushes(t *testing.T) {
+	dbPath := t.TempDir() + "/stats.db"
+	underlying, err := NewSQLiteCollector(dbPath)
+	require.NoError(t, err)
+
+	collector := NewBufferedCollectorWithInterval(underlying, time.Hour)
+	t.Cleanup(func() { require.NoError(t, collector.Close()) })
+
+	ctx := context.Background()
+	connectionID, err := collector.StartConnection(ctx, "127.0.0.1", "example.com", 443, "https")
+	require.NoError(t, err)
+
+	// An active connection is not itself a flushable event. It must remain in
+	// the in-memory lifecycle map while other batches are flushed.
+	require.NoError(t, collector.RecordAllowedRequest(ctx, "127.0.0.1", "example.com"))
+	collector.ForceFlush()
+	require.NoError(t, collector.RecordDataTransfer(ctx, connectionID, 25, 50))
+	collector.ForceFlush()
+
+	require.NoError(t, collector.EndConnection(ctx, connectionID, 100, 200, time.Second, "normal"))
+	collector.ForceFlush()
+
+	var endedAt sql.NullTime
+	var sent, received int64
+	err = underlying.db.QueryRow(
+		`SELECT ended_at, bytes_sent, bytes_received FROM connections WHERE id = ?`,
+		connectionID,
+	).Scan(&endedAt, &sent, &received)
+	require.NoError(t, err)
+	assert.True(t, endedAt.Valid)
+	assert.Equal(t, int64(100), sent)
+	assert.Equal(t, int64(200), received)
+}
+
+func TestAtomicBufferedCollectorPreservesActiveConnectionsAcrossFlushes(t *testing.T) {
+	dbPath := t.TempDir() + "/stats.db"
+	underlying, err := NewSQLiteCollector(dbPath)
+	require.NoError(t, err)
+
+	collector := NewAtomicBufferedCollectorWithInterval(underlying, time.Hour)
+	t.Cleanup(func() { require.NoError(t, collector.Close()) })
+
+	ctx := context.Background()
+	connectionID, err := collector.StartConnection(ctx, "127.0.0.1", "example.com", 443, "https")
+	require.NoError(t, err)
+	require.NoError(t, collector.RecordAllowedRequest(ctx, "127.0.0.1", "example.com"))
+	collector.ForceFlush()
+	require.NoError(t, collector.RecordDataTransfer(ctx, connectionID, 25, 50))
+	collector.ForceFlush()
+
+	require.NoError(t, collector.EndConnection(ctx, connectionID, 100, 200, time.Second, "normal"))
+	collector.ForceFlush()
+
+	var endedAt sql.NullTime
+	var sent, received int64
+	err = underlying.db.QueryRow(
+		`SELECT ended_at, bytes_sent, bytes_received FROM connections WHERE id = ?`,
+		connectionID,
+	).Scan(&endedAt, &sent, &received)
+	require.NoError(t, err)
+	assert.True(t, endedAt.Valid)
+	assert.Equal(t, int64(100), sent)
+	assert.Equal(t, int64(200), received)
+	assert.Equal(t, int64(0), collector.GetAtomicCounters().ActiveConnections)
 }
 
 func TestConfigurationVariations(t *testing.T) {

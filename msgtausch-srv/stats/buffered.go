@@ -12,6 +12,7 @@ import (
 type BufferedCollector struct {
 	underlying Collector
 	interval   time.Duration
+	flushMu    sync.Mutex
 
 	buffer struct {
 		pendingConnections   map[int64]*connectionData
@@ -376,11 +377,13 @@ func (b *BufferedCollector) HealthCheck(ctx context.Context) error {
 
 // flush writes all buffered data to the underlying collector
 func (b *BufferedCollector) flush() {
-	b.buffer.mu.Lock()
-	defer b.buffer.mu.Unlock()
+	// ForceFlush and the background ticker may fire concurrently. Keep writes
+	// ordered while allowing producers to continue filling the next batch.
+	b.flushMu.Lock()
+	defer b.flushMu.Unlock()
 
-	sumStats := len(b.buffer.pendingConnections) +
-		len(b.buffer.completedConnections) +
+	b.buffer.mu.Lock()
+	sumStats := len(b.buffer.completedConnections) +
 		len(b.buffer.httpRequests) +
 		len(b.buffer.httpResponses) +
 		len(b.buffer.errors) +
@@ -388,24 +391,33 @@ func (b *BufferedCollector) flush() {
 		len(b.buffer.security)
 
 	if sumStats == 0 {
+		b.buffer.mu.Unlock()
 		return
 	}
 
-	logger.Debug("Flushing stats data %d", sumStats)
+	completedConnections := b.buffer.completedConnections
+	httpRequests := b.buffer.httpRequests
+	httpResponses := b.buffer.httpResponses
+	errorsToFlush := b.buffer.errors
+	dataTransfers := b.buffer.dataTransfers
+	securityEvents := b.buffer.security
 
+	// Detach the batch. Do not reuse these backing arrays while the database
+	// writer is consuming them, and never clear pendingConnections: active
+	// connections must survive across arbitrarily many flush intervals.
+	b.buffer.completedConnections = make([]completedConnectionData, 0, max(1000, cap(completedConnections)))
+	b.buffer.httpRequests = make([]httpRequestData, 0, max(1000, cap(httpRequests)))
+	b.buffer.httpResponses = make([]httpResponseData, 0, max(1000, cap(httpResponses)))
+	b.buffer.errors = make([]errorData, 0, max(100, cap(errorsToFlush)))
+	b.buffer.dataTransfers = make([]dataTransferData, 0, max(1000, cap(dataTransfers)))
+	b.buffer.security = make([]securityEventData, 0, max(100, cap(securityEvents)))
+	b.buffer.mu.Unlock()
+
+	logger.Debug("Flushing stats data %d", sumStats)
 	ctx := context.Background()
 
-	// Process completed connections
-	for i := range b.buffer.completedConnections {
-		conn := &b.buffer.completedConnections[i]
-		if err := b.underlying.EndConnection(ctx, conn.connectionID, conn.bytesSent, conn.bytesReceived, conn.duration, conn.closeReason); err != nil {
-			// Log error but continue processing other items
-			_ = err
-		}
-	}
-
 	// Process HTTP requests
-	for _, req := range b.buffer.httpRequests {
+	for _, req := range httpRequests {
 		// Use the new method with headers if headerSize is provided, otherwise fall back to the old method
 		if req.headerSize > 0 {
 			if err := b.underlying.RecordHTTPRequestWithHeaders(ctx, req.connectionID, req.method, req.url, req.host, req.userAgent, req.contentLength, req.headerSize); err != nil {
@@ -419,7 +431,7 @@ func (b *BufferedCollector) flush() {
 	}
 
 	// Process HTTP responses
-	for _, resp := range b.buffer.httpResponses {
+	for _, resp := range httpResponses {
 		// Use the new method with headers if headerSize is provided, otherwise fall back to the old method
 		if resp.headerSize > 0 {
 			if err := b.underlying.RecordHTTPResponseWithHeaders(ctx, resp.connectionID, resp.statusCode, resp.contentLength, resp.headerSize); err != nil {
@@ -433,21 +445,21 @@ func (b *BufferedCollector) flush() {
 	}
 
 	// Process errors
-	for _, errData := range b.buffer.errors {
+	for _, errData := range errorsToFlush {
 		if err := b.underlying.RecordError(ctx, errData.connectionID, errData.errorType, errData.errorMessage); err != nil {
 			_ = err
 		}
 	}
 
 	// Process data transfers
-	for _, dt := range b.buffer.dataTransfers {
+	for _, dt := range dataTransfers {
 		if err := b.underlying.RecordDataTransfer(ctx, dt.connectionID, dt.bytesSent, dt.bytesReceived); err != nil {
 			_ = err
 		}
 	}
 
 	// Process security events
-	for _, event := range b.buffer.security {
+	for _, event := range securityEvents {
 		if event.eventType == "blocked" {
 			if err := b.underlying.RecordBlockedRequest(ctx, event.clientIP, event.targetHost, event.reason); err != nil {
 				_ = err
@@ -459,14 +471,14 @@ func (b *BufferedCollector) flush() {
 		}
 	}
 
-	// Clear buffers
-	b.buffer.pendingConnections = make(map[int64]*connectionData)
-	b.buffer.completedConnections = b.buffer.completedConnections[:0]
-	b.buffer.httpRequests = b.buffer.httpRequests[:0]
-	b.buffer.httpResponses = b.buffer.httpResponses[:0]
-	b.buffer.errors = b.buffer.errors[:0]
-	b.buffer.dataTransfers = b.buffer.dataTransfers[:0]
-	b.buffer.security = b.buffer.security[:0]
+	// Apply final totals last. This deliberately overwrites previously flushed
+	// deltas and prevents completed connections from being double-counted.
+	for i := range completedConnections {
+		conn := &completedConnections[i]
+		if err := b.underlying.EndConnection(ctx, conn.connectionID, conn.bytesSent, conn.bytesReceived, conn.duration, conn.closeReason); err != nil {
+			logger.Error("Failed to flush completed connection %d: %v", conn.connectionID, err)
+		}
+	}
 }
 
 // Close stops the flusher and writes any remaining data

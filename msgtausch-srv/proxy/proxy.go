@@ -95,6 +95,7 @@ type Proxy struct {
 	config              *config.Config
 	servers             []*Server
 	cacheManager        *CacheManager
+	namedClassifiers    map[string]Classifier
 	compiledForwards    []compiledForward
 	blocklistClassifier Classifier
 	allowlistClassifier Classifier
@@ -213,6 +214,7 @@ func (p *Proxy) CompileClassifiers() {
 			namedClassifiers = m
 		}
 	}
+	p.namedClassifiers = namedClassifiers
 
 	if p.config.Forwards != nil {
 		logger.Info("Compiling %d forward configurations", len(p.config.Forwards))
@@ -264,6 +266,26 @@ func (p *Proxy) CompileClassifiers() {
 	}
 }
 
+func (p *Proxy) compileServerClassifier(classifier config.Classifier, purpose, listenAddress string) Classifier {
+	if classifier == nil {
+		return nil
+	}
+	if ref, ok := classifier.(*config.ClassifierRef); ok {
+		if _, exists := p.namedClassifiers[ref.Id]; !exists {
+			logger.Warn("%s classifier '%s' was not found for server %s", purpose, ref.Id, listenAddress)
+			return nil
+		}
+	}
+
+	compiled, err := CompileTopLevelClassifier(classifier, p.namedClassifiers, p.cacheManager)
+	if err != nil {
+		logger.Error("Failed to compile %s classifier for server %s: %v", purpose, listenAddress, err)
+		return nil
+	}
+	logger.Debug("Compiled %s classifier for server %s", purpose, listenAddress)
+	return compiled
+}
+
 func NewProxy(cfg *config.Config) *Proxy {
 	// Initialize cache manager
 	cacheConfig := cfg.Cache
@@ -298,8 +320,6 @@ func NewProxy(cfg *config.Config) *Proxy {
 		if err != nil {
 			logger.Error("Failed to initialize statistics collector: %v", err)
 		}
-	} else {
-		p.Collector = stats.NewDummyCollector()
 	}
 
 	p.portal = dashboard.NewPortal(cfg, p, p)
@@ -310,71 +330,8 @@ func NewProxy(cfg *config.Config) *Proxy {
 			continue
 		}
 
-		// Compile HTTPS classifier if configured
-		var httpsClassifier Classifier
-		if cfg.Interception.HTTPSClassifier != nil {
-			if classifierRef, ok := cfg.Interception.HTTPSClassifier.(*config.ClassifierRef); ok {
-				// First, compile all classifiers to get the full map
-				if cfg.Classifiers != nil {
-					compiledMap, err := CompileClassifiersMap(cfg.Classifiers, p.cacheManager)
-					if err != nil {
-						logger.Error("Failed to compile classifiers map for server %s: %v", serverCfg.ListenAddress, err)
-					} else {
-						// Look up the specific classifier by ID
-						if compiled, exists := compiledMap[classifierRef.Id]; exists {
-							httpsClassifier = compiled
-							logger.Debug("Compiled HTTPS classifier '%s' for server %s", classifierRef.Id, serverCfg.ListenAddress)
-						} else {
-							logger.Warn("HTTPS classifier '%s' not found in classifiers config for server %s", classifierRef.Id, serverCfg.ListenAddress)
-						}
-					}
-				} else {
-					logger.Warn("HTTPS classifier '%s' configured but no classifiers defined for server %s", classifierRef.Id, serverCfg.ListenAddress)
-				}
-			} else {
-				// If it's not a ClassifierRef, try to compile it directly
-				compiled, err := CompileClassifier(cfg.Interception.HTTPSClassifier, p.cacheManager)
-				if err != nil {
-					logger.Error("Failed to compile HTTPS classifier for server %s: %v", serverCfg.ListenAddress, err)
-				} else {
-					httpsClassifier = compiled
-					logger.Debug("Compiled HTTPS classifier for server %s", serverCfg.ListenAddress)
-				}
-			}
-		}
-
-		// Compile exclude classifier if configured
-		var excludeClassifier Classifier
-		if cfg.Interception.ExcludeClassifier != nil {
-			if classifierRef, ok := cfg.Interception.ExcludeClassifier.(*config.ClassifierRef); ok {
-				// First, compile all classifiers to get the full map
-				if cfg.Classifiers != nil {
-					compiledMap, err := CompileClassifiersMap(cfg.Classifiers, p.cacheManager)
-					if err != nil {
-						logger.Error("Failed to compile classifiers map for exclude classifier on server %s: %v", serverCfg.ListenAddress, err)
-					} else {
-						// Look up the specific classifier by ID
-						if compiled, exists := compiledMap[classifierRef.Id]; exists {
-							excludeClassifier = compiled
-							logger.Debug("Compiled exclude classifier '%s' for server %s", classifierRef.Id, serverCfg.ListenAddress)
-						} else {
-							logger.Warn("Exclude classifier '%s' not found in classifiers config for server %s", classifierRef.Id, serverCfg.ListenAddress)
-						}
-					}
-				} else {
-					logger.Warn("Exclude classifier '%s' configured but no classifiers defined for server %s", classifierRef.Id, serverCfg.ListenAddress)
-				}
-			} else {
-				// If it's not a ClassifierRef, try to compile it directly
-				compiled, err := CompileClassifier(cfg.Interception.ExcludeClassifier, p.cacheManager)
-				if err != nil {
-					logger.Error("Failed to compile exclude classifier for server %s: %v", serverCfg.ListenAddress, err)
-				} else {
-					excludeClassifier = compiled
-					logger.Debug("Compiled exclude classifier for server %s", serverCfg.ListenAddress)
-				}
-			}
-		}
+		httpsClassifier := p.compileServerClassifier(cfg.Interception.HTTPSClassifier, "HTTPS", serverCfg.ListenAddress)
+		excludeClassifier := p.compileServerClassifier(cfg.Interception.ExcludeClassifier, "exclude", serverCfg.ListenAddress)
 
 		server := &Server{
 			config:              cfg,
@@ -559,35 +516,7 @@ func (p *Proxy) StartWithListener(listener net.Listener) error {
 
 func (p *Server) StartWithListener(listener net.Listener) error {
 	handler := http.HandlerFunc(p.handleRequest)
-
-	p.server = &http.Server{
-		Handler:     handler,
-		ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
-		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			connUUID := uuid.New().String()
-			ctx = WithConnectionUUID(ctx, connUUID)
-			transport := &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
-						logger.Debug("[%s] DialContext: network=%s addr=%s", uuid, network, addr)
-					} else {
-						logger.Debug("DialContext: network=%s addr=%s", network, addr)
-					}
-					return p.createForwardTCPClient(ctx, addr)
-				},
-				DisableKeepAlives:     false,
-				MaxIdleConns:          p.config.MaxIdleConns,
-				MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
-				IdleConnTimeout:       90 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-			}
-			client := &http.Client{Transport: transport}
-			clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-			ctx = WithClient(ctx, client)
-			ctx = WithClientIP(ctx, clientIP)
-			return ctx
-		},
-	}
+	p.server = p.newForwardHTTPServer("", handler)
 
 	logger.Info("Starting proxy server on %s", listener.Addr().String())
 	return p.server.Serve(listener)
@@ -597,35 +526,7 @@ func (p *Server) Start() error {
 	switch p.serverConfig.Type {
 	case config.ProxyTypeStandard:
 		handler := http.HandlerFunc(p.handleRequest)
-		p.server = &http.Server{
-			Addr:        p.serverConfig.ListenAddress,
-			Handler:     handler,
-			ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
-			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-				connUUID := uuid.New().String()
-				ctx = WithConnectionUUID(ctx, connUUID)
-				transport := &http.Transport{
-					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-						if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
-							logger.Debug("[%s] DialContext: network=%s addr=%s", uuid, network, addr)
-						} else {
-							logger.Debug("DialContext: network=%s addr=%s", network, addr)
-						}
-						return p.createForwardTCPClient(ctx, addr)
-					},
-					DisableKeepAlives:     false,
-					MaxIdleConns:          p.config.MaxIdleConns,
-					MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
-					IdleConnTimeout:       90 * time.Second,
-					ExpectContinueTimeout: 1 * time.Second,
-				}
-				client := &http.Client{Transport: transport}
-				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-				ctx = WithClient(ctx, client)
-				ctx = WithClientIP(ctx, clientIP)
-				return ctx
-			},
-		}
+		p.server = p.newForwardHTTPServer(p.serverConfig.ListenAddress, handler)
 
 		logger.Info("Starting standard proxy server on %s", p.serverConfig.ListenAddress)
 		return p.server.ListenAndServe()
@@ -643,35 +544,7 @@ func (p *Server) Start() error {
 		}
 
 		handler := http.HandlerFunc(p.handleRequest)
-		p.server = &http.Server{
-			Addr:        p.serverConfig.ListenAddress,
-			Handler:     handler,
-			ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
-			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-				connUUID := uuid.New().String()
-				ctx = WithConnectionUUID(ctx, connUUID)
-				transport := &http.Transport{
-					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-						if uuid, ok := ConnectionUUIDFromContext(ctx); ok {
-							logger.Debug("[%s] DialContext: network=%s addr=%s", uuid, network, addr)
-						} else {
-							logger.Debug("DialContext: network=%s addr=%s", network, addr)
-						}
-						return p.createForwardTCPClient(ctx, addr)
-					},
-					DisableKeepAlives:     false,
-					MaxIdleConns:          p.config.MaxIdleConns,
-					MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
-					IdleConnTimeout:       90 * time.Second,
-					ExpectContinueTimeout: 1 * time.Second,
-				}
-				client := &http.Client{Transport: transport}
-				clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-				ctx = WithClient(ctx, client)
-				ctx = WithClientIP(ctx, clientIP)
-				return ctx
-			},
-		}
+		p.server = p.newForwardHTTPServer(p.serverConfig.ListenAddress, handler)
 
 		logger.Info("Starting HTTP intercepting proxy server on %s", p.serverConfig.ListenAddress)
 		return p.server.ListenAndServe()
@@ -728,6 +601,46 @@ func (p *Server) Start() error {
 		select {}
 	default:
 		return fmt.Errorf("unknown proxy type: %s", p.serverConfig.Type)
+	}
+}
+
+// newForwardHTTPServer gives each downstream connection its own upstream pool,
+// preserving connection-affinity semantics while ensuring the pool is released
+// immediately when the downstream connection closes or is hijacked.
+func (p *Server) newForwardHTTPServer(addr string, handler http.Handler) *http.Server {
+	var transports sync.Map // net.Conn -> *http.Transport
+
+	return &http.Server{
+		Addr:        addr,
+		Handler:     handler,
+		ReadTimeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			ctx = WithConnectionUUID(ctx, uuid.New().String())
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, network, targetAddr string) (net.Conn, error) {
+					logger.DebugCtx(ctx, "DialContext: network=%s addr=%s", network, targetAddr)
+					return p.createForwardTCPClient(ctx, targetAddr)
+				},
+				DisableKeepAlives:     false,
+				MaxIdleConns:          p.config.MaxIdleConns,
+				MaxIdleConnsPerHost:   p.config.MaxIdleConnsPerHost,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			}
+			transports.Store(c, transport)
+			clientIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+			ctx = WithClient(ctx, &http.Client{Transport: transport})
+			return WithClientIP(ctx, clientIP)
+		},
+		ConnState: func(c net.Conn, state http.ConnState) {
+			if state != http.StateClosed && state != http.StateHijacked {
+				return
+			}
+			if transport, ok := transports.LoadAndDelete(c); ok {
+				transport.(*http.Transport).CloseIdleConnections()
+			}
+		},
 	}
 }
 
@@ -886,9 +799,10 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			remotePort = uint16(remotePortUint64)
 		}
 		if remotePort == 0 {
-			if colon := strings.LastIndex(r.RemoteAddr, ":"); colon != -1 {
-				remotePortUint64, _ := strconv.ParseUint(r.RemoteAddr[colon+1:], 10, 16)
-				remotePort = uint16(remotePortUint64)
+			if r.Method == http.MethodConnect || (r.URL != nil && r.URL.Scheme == "https") {
+				remotePort = 443
+			} else {
+				remotePort = 80
 			}
 		}
 	}
@@ -900,6 +814,8 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	var connectionID int64
 	var startErr error
+	connectionStartedAt := time.Now()
+	closeReason := "normal"
 
 	if p.proxy.Collector != nil {
 		if connUUID, ok := ConnectionUUIDFromContext(ctx); ok {
@@ -914,8 +830,16 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if connectionID > 0 {
+		defer func() {
+			if err := p.proxy.EndConnection(ctx, connectionID, 0, 0, time.Since(connectionStartedAt), closeReason); err != nil {
+				logger.ErrorCtx(ctx, "Failed to record connection end: %v", err)
+			}
+		}()
+	}
 
 	if !p.isHostAllowed(hostname, clientIP, remotePort) {
+		closeReason = "blocked"
 		logger.WarnCtx(ctx, "Host not allowed: %s", host)
 		if p.proxy.Collector != nil {
 			if err := p.proxy.RecordBlockedRequest(ctx, clientIP, hostname, "host_not_allowed"); err != nil {
@@ -923,9 +847,6 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		http.Error(w, "Host not allowed", http.StatusForbidden)
-		if p.proxy.Collector != nil && connectionID > 0 {
-			_ = p.proxy.EndConnection(ctx, connectionID, 0, 0, 0, "blocked")
-		}
 		return
 	}
 
@@ -936,7 +857,7 @@ func (p *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodConnect {
-		p.handleConnect(w, r, connectionID, clientIP, hostname, int(remotePort))
+		p.handleConnect(w, r, int(remotePort))
 		return
 	}
 
@@ -963,7 +884,7 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 		}
 		targetURL = fmt.Sprintf("%s://%s%s", scheme, targetHost, r.URL.RequestURI())
 	}
-	req, err := http.NewRequest(r.Method, targetURL, r.Body)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
 		if p.proxy.Collector != nil && connectionID > 0 {
 			_ = p.proxy.RecordError(r.Context(), connectionID, "request_creation_error", err.Error())
@@ -1143,15 +1064,6 @@ func (p *Server) forwardRequest(w http.ResponseWriter, r *http.Request, client *
 	if _, err := copyBuffer(w, resp.Body); err != nil {
 		logger.Error("Failed to copy response body: %v", err)
 	}
-
-	// If statistics collection is enabled, proactively close idle upstream
-	// connections so trackedConn.Close triggers EndConnection in tests.
-	// This is gated by stats being enabled to avoid impacting keep-alive tests.
-	if p.proxy != nil && p.proxy.GetConfig() != nil && p.proxy.GetConfig().Statistics.Enabled {
-		if tr, ok := client.Transport.(*http.Transport); ok && tr != nil {
-			tr.CloseIdleConnections()
-		}
-	}
 }
 
 func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, resp *http.Response, client *http.Client) {
@@ -1298,7 +1210,7 @@ func (p *Server) handleWebSocketTunnel(w http.ResponseWriter, r *http.Request, r
 	logger.Debug("WebSocket tunnel closed for %s", targetHost)
 }
 
-func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectionID int64, _, _ string, remotePort int) {
+func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, remotePort int) {
 	targetAddr := r.Host
 	ctx := r.Context()
 
@@ -1383,11 +1295,6 @@ func (p *Server) handleConnect(w http.ResponseWriter, r *http.Request, connectio
 			_, err = fmt.Fprintf(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 			if err != nil {
 				logger.Error("Failed to send 200 response: %v", err)
-				if p.proxy.Collector != nil && connectionID > 0 {
-					if err := p.proxy.EndConnection(r.Context(), connectionID, 0, 0, 0, "error"); err != nil {
-						logger.Error("Failed to end connection: %v", err)
-					}
-				}
 				if closeErr := clientConn.Close(); closeErr != nil {
 					logger.Error("Error closing client connection: %v", closeErr)
 				}
@@ -1855,6 +1762,9 @@ func (p *Proxy) Close() error {
 }
 
 func (p *Server) Stop() error {
+	if p.httpInterceptor != nil {
+		p.httpInterceptor.CloseIdleConnections()
+	}
 	if p.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

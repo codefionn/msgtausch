@@ -149,9 +149,6 @@ func (p *PostgreSQLCollector) RecordHTTPResponse(ctx context.Context, connection
 
 // RecordHTTPRequestWithHeaders records an HTTP request including header size
 func (p *PostgreSQLCollector) RecordHTTPRequestWithHeaders(ctx context.Context, connectionID int64, method, url, host, userAgent string, contentLength, headerSize int64) error {
-	// First, try to add header_size column if it doesn't exist (migration)
-	_, _ = p.db.ExecContext(ctx, `ALTER TABLE http_requests ADD COLUMN header_size INTEGER DEFAULT 0`)
-
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO http_requests (connection_id, method, url, host, user_agent, content_length, header_size)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -164,9 +161,6 @@ func (p *PostgreSQLCollector) RecordHTTPRequestWithHeaders(ctx context.Context, 
 
 // RecordHTTPResponseWithHeaders records an HTTP response including header size
 func (p *PostgreSQLCollector) RecordHTTPResponseWithHeaders(ctx context.Context, connectionID int64, statusCode int, contentLength, headerSize int64) error {
-	// First, try to add header_size column if it doesn't exist (migration)
-	_, _ = p.db.ExecContext(ctx, `ALTER TABLE http_responses ADD COLUMN header_size INTEGER DEFAULT 0`)
-
 	// Get the latest request for this connection
 	var requestID int64
 	err := p.db.QueryRowContext(ctx,

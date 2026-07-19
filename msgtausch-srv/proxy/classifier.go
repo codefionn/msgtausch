@@ -621,13 +621,7 @@ detectOptimizations:
 		var urlClassifiers []Classifier
 
 		for _, domainsURLConfig := range domainsURLs {
-			urlClassifier := &ClassifierDomainsURL{
-				cacheManager: cacheManager,
-				URL:          domainsURLConfig.URL,
-				Mirrors:      domainsURLConfig.Mirrors,
-				Format:       domainsURLConfig.Format,
-				Timeout:      domainsURLConfig.Timeout,
-			}
+			urlClassifier := newClassifierDomainsURL(cacheManager, domainsURLConfig.URL, domainsURLConfig.Mirrors, domainsURLConfig.Format, domainsURLConfig.Timeout)
 			urlClassifiers = append(urlClassifiers, urlClassifier)
 		}
 
@@ -655,13 +649,7 @@ detectOptimizations:
 		var urlClassifiers []Classifier
 
 		for _, domainsURLConfig := range domainsURLs {
-			urlClassifier := &ClassifierDomainsURL{
-				cacheManager: cacheManager,
-				URL:          domainsURLConfig.URL,
-				Mirrors:      domainsURLConfig.Mirrors,
-				Format:       domainsURLConfig.Format,
-				Timeout:      domainsURLConfig.Timeout,
-			}
+			urlClassifier := newClassifierDomainsURL(cacheManager, domainsURLConfig.URL, domainsURLConfig.Mirrors, domainsURLConfig.Format, domainsURLConfig.Timeout)
 			urlClassifiers = append(urlClassifiers, urlClassifier)
 		}
 
@@ -1031,6 +1019,7 @@ func NewClassifierDomainsFile(filePath string) (*ClassifierDomainsFile, error) {
 // Uses Aho-Corasick algorithm for efficient domain matching with background caching and mirror fallback.
 type ClassifierDomainsURL struct {
 	cacheManager *CacheManager
+	cacheKey     string
 	URL          string
 	Mirrors      []string
 	Format       config.DomainsURLFormat
@@ -1047,7 +1036,13 @@ func (c *ClassifierDomainsURL) Classify(input ClassifierInput) (bool, error) {
 	}
 
 	// Get cached domains with mirror fallback
-	cacheEntry, err := c.cacheManager.GetDomainsWithMirrors(c.URL, c.Mirrors, c.Format, c.Timeout)
+	var cacheEntry *CacheEntry
+	var err error
+	if c.cacheKey == "" {
+		cacheEntry, err = c.cacheManager.GetDomainsWithMirrors(c.URL, c.Mirrors, c.Format, c.Timeout)
+	} else {
+		cacheEntry, err = c.cacheManager.getDomainsByKey(c.cacheKey, c.URL, c.Mirrors, c.Format, c.Timeout)
+	}
 	if err != nil {
 		// Log error but don't fail classification - return false instead
 		logger.Warn("Failed to get domains from cache for URLs %s: %v", c.formatURLsForLog(), err)
@@ -1133,7 +1128,14 @@ func NewClassifierDomainsURL(cacheManager *CacheManager, url string, format conf
 // The actual fetching is done lazily and cached by the cache manager.
 func NewClassifierDomainsURLWithMirrors(cacheManager *CacheManager, url string, mirrors []string, format config.DomainsURLFormat, timeout int) (*ClassifierDomainsURL, error) {
 	logger.Debug("NewClassifierDomainsURL called with URL: %s, mirrors: %v, format: %s, timeout: %d", url, mirrors, format, timeout)
+	classifier := newClassifierDomainsURL(cacheManager, url, mirrors, format, timeout)
 
+	logger.Info("Created domains-url classifier for: %s (format: %s, mirrors: %d)", url, format, len(mirrors))
+
+	return classifier, nil
+}
+
+func newClassifierDomainsURL(cacheManager *CacheManager, url string, mirrors []string, format config.DomainsURLFormat, timeout int) *ClassifierDomainsURL {
 	// Use global cache manager if nil is passed
 	if cacheManager == nil {
 		cacheManager = GetGlobalCacheManager()
@@ -1144,17 +1146,14 @@ func NewClassifierDomainsURLWithMirrors(cacheManager *CacheManager, url string, 
 		timeout = 30
 	}
 
-	classifier := &ClassifierDomainsURL{
+	return &ClassifierDomainsURL{
 		cacheManager: cacheManager,
+		cacheKey:     cacheManager.generateCacheKey(url, mirrors, format),
 		URL:          url,
 		Mirrors:      mirrors,
 		Format:       format,
 		Timeout:      timeout,
 	}
-
-	logger.Info("Created domains-url classifier for: %s (format: %s, mirrors: %d)", url, format, len(mirrors))
-
-	return classifier, nil
 }
 
 // parseDomainsFromContent parses domain content based on the specified format

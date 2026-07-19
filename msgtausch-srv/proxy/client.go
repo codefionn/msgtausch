@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefionn/msgtausch/msgtausch-srv/config"
 	"github.com/codefionn/msgtausch/msgtausch-srv/logger"
+	"github.com/codefionn/msgtausch/msgtausch-srv/resolver"
 	"golang.org/x/net/proxy"
 )
 
@@ -101,7 +102,8 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 
 	// 2. Establish connection based on selected forward (or default)
 	dialerCtx := &net.Dialer{
-		Timeout: time.Duration(p.config.TimeoutSeconds) * time.Second,
+		Timeout:  time.Duration(p.config.TimeoutSeconds) * time.Second,
+		Resolver: resolver.GetResolver(p.config.DNS),
 	}
 
 	// Check if we need to force IPv4 for the selected forward
@@ -122,6 +124,7 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 		dialerCtx = &net.Dialer{
 			Timeout:       time.Duration(p.config.TimeoutSeconds) * time.Second,
 			FallbackDelay: -1, // Disable IPv6 fallback
+			Resolver:      resolver.GetResolver(p.config.DNS),
 		}
 	}
 
@@ -173,9 +176,10 @@ func (p *Proxy) createForwardTCPClient(ctx context.Context, addr string) (net.Co
 	logger.DebugCtx(ctx, "Successfully established connection to %s (via %T)", addr, selectedForward)
 	connErr = nil // Disarm the defer
 
-	// Only wrap connection with tracking if statistics collection is enabled
-	// to avoid mutex overhead on every Read/Write operation
-	if p.Collector != nil {
+	// Keep the statistics-disabled path completely transparent. NewProxy leaves
+	// Collector nil when statistics are disabled, avoiding atomics and wrapper
+	// allocations on every network read and write.
+	if p.config.Statistics.Enabled && p.Collector != nil {
 		return newTrackedConn(ctx, targetConn, p, connectionID), nil
 	}
 
@@ -200,6 +204,7 @@ func (p *Proxy) dialSocks5(ctx context.Context, dialerCtx *net.Dialer, fwd *conf
 	contextDialer := &net.Dialer{
 		Timeout:   dialerCtx.Timeout,
 		KeepAlive: dialerCtx.KeepAlive,
+		Resolver:  dialerCtx.Resolver,
 	}
 
 	// Force IPv4 if configured

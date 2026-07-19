@@ -13,6 +13,7 @@ import (
 type AtomicBufferedCollector struct {
 	underlying Collector
 	interval   time.Duration
+	flushMu    sync.Mutex
 
 	// Atomic counters for frequently accessed metrics
 	counters *AtomicCounters
@@ -27,6 +28,7 @@ type AtomicBufferedCollector struct {
 		dataTransfers        []dataTransferData
 		security             []securityEventData
 		mu                   sync.RWMutex
+		pendingMu            sync.Mutex
 		bufferFull           AtomicBool
 	}
 
@@ -105,7 +107,10 @@ func (a *AtomicBufferedCollector) StartConnection(ctx context.Context, clientIP,
 	a.counters.TotalConnections.Add(1)
 	a.counters.ActiveConnections.Add(1)
 
-	// Add to pending connections using atomic value
+	// Serialize copy-on-write map updates. atomic.Value makes publishing a map
+	// safe, but a read-copy-store sequence is not atomic by itself.
+	a.buffer.pendingMu.Lock()
+	defer a.buffer.pendingMu.Unlock()
 	pendingConns := a.buffer.pendingConnections.Load().(map[int64]*connectionData)
 	newPendingConns := make(map[int64]*connectionData, len(pendingConns)+1)
 
@@ -140,7 +145,8 @@ func (a *AtomicBufferedCollector) StartConnectionWithUUID(ctx context.Context, c
 	a.counters.TotalConnections.Add(1)
 	a.counters.ActiveConnections.Add(1)
 
-	// Add to pending connections using atomic value
+	a.buffer.pendingMu.Lock()
+	defer a.buffer.pendingMu.Unlock()
 	pendingConns := a.buffer.pendingConnections.Load().(map[int64]*connectionData)
 	newPendingConns := make(map[int64]*connectionData, len(pendingConns)+1)
 
@@ -166,48 +172,47 @@ func (a *AtomicBufferedCollector) StartConnectionWithUUID(ctx context.Context, c
 
 // EndConnection records the end of a connection with atomic operations
 func (a *AtomicBufferedCollector) EndConnection(ctx context.Context, connectionID, bytesSent, bytesReceived int64, duration time.Duration, closeReason string) error {
-	// Update atomic counters
+	// Move from pending to completed with a serialized copy-on-write update.
+	a.buffer.pendingMu.Lock()
+	pendingConns := a.buffer.pendingConnections.Load().(map[int64]*connectionData)
+	conn, exists := pendingConns[connectionID]
+	if !exists {
+		a.buffer.pendingMu.Unlock()
+		return nil
+	}
+	newPendingConns := make(map[int64]*connectionData, len(pendingConns)-1)
+	for k, v := range pendingConns {
+		if k != connectionID {
+			newPendingConns[k] = v
+		}
+	}
+	a.buffer.pendingConnections.Store(newPendingConns)
+	a.buffer.pendingMu.Unlock()
+
 	a.counters.ActiveConnections.Add(-1)
 	a.counters.TotalBytesIn.Add(bytesReceived)
 	a.counters.TotalBytesOut.Add(bytesSent)
-
-	// Handle error tracking
 	if closeReason != "normal" {
 		a.counters.ConnectionErrors.Add(1)
 		a.counters.TotalErrors.Add(1)
 	}
 
-	// Move from pending to completed using lock-free approach
-	pendingConns := a.buffer.pendingConnections.Load().(map[int64]*connectionData)
-
-	if conn, exists := pendingConns[connectionID]; exists {
-		// Create new pending connections map without this connection
-		newPendingConns := make(map[int64]*connectionData, len(pendingConns))
-		for k, v := range pendingConns {
-			if k != connectionID {
-				newPendingConns[k] = v
-			}
-		}
-		a.buffer.pendingConnections.Store(newPendingConns)
-
-		// Add to completed connections (requires mutex for slice operations)
-		a.buffer.mu.Lock()
-		a.buffer.completedConnections = append(a.buffer.completedConnections, completedConnectionData{
-			connectionID:   connectionID,
-			connectionUUID: conn.connectionUUID,
-			clientIP:       conn.clientIP,
-			targetHost:     conn.targetHost,
-			targetPort:     conn.targetPort,
-			protocol:       conn.protocol,
-			startedAt:      conn.startedAt,
-			endedAt:        time.Now(),
-			bytesSent:      bytesSent,
-			bytesReceived:  bytesReceived,
-			duration:       duration,
-			closeReason:    closeReason,
-		})
-		a.buffer.mu.Unlock()
-	}
+	a.buffer.mu.Lock()
+	a.buffer.completedConnections = append(a.buffer.completedConnections, completedConnectionData{
+		connectionID:   connectionID,
+		connectionUUID: conn.connectionUUID,
+		clientIP:       conn.clientIP,
+		targetHost:     conn.targetHost,
+		targetPort:     conn.targetPort,
+		protocol:       conn.protocol,
+		startedAt:      conn.startedAt,
+		endedAt:        time.Now(),
+		bytesSent:      bytesSent,
+		bytesReceived:  bytesReceived,
+		duration:       duration,
+		closeReason:    closeReason,
+	})
+	a.buffer.mu.Unlock()
 
 	return nil
 }
@@ -394,18 +399,6 @@ func (a *AtomicBufferedCollector) GetOverviewStats(ctx context.Context) (*Overvi
 		return nil, err
 	}
 
-	// Adjust active connection count
-	a.buffer.mu.RLock()
-	completed := int64(len(a.buffer.completedConnections))
-	a.buffer.mu.RUnlock()
-	if completed > 0 {
-		if snapshot.ActiveConnections > completed {
-			snapshot.ActiveConnections -= completed
-		} else {
-			snapshot.ActiveConnections = 0
-		}
-	}
-
 	return &OverviewStats{
 		TotalConnections:  snapshot.TotalConnections,
 		ActiveConnections: snapshot.ActiveConnections,
@@ -456,11 +449,12 @@ func (a *AtomicBufferedCollector) HealthCheck(ctx context.Context) error {
 
 // flush writes all buffered data to the underlying collector
 func (a *AtomicBufferedCollector) flush() {
-	a.buffer.mu.Lock()
-	defer a.buffer.mu.Unlock()
+	a.flushMu.Lock()
+	defer a.flushMu.Unlock()
 
-	sumStats := len(a.buffer.pendingConnections.Load().(map[int64]*connectionData)) +
-		len(a.buffer.completedConnections) +
+	a.buffer.mu.Lock()
+
+	sumStats := len(a.buffer.completedConnections) +
 		len(a.buffer.httpRequests) +
 		len(a.buffer.httpResponses) +
 		len(a.buffer.errors) +
@@ -468,23 +462,30 @@ func (a *AtomicBufferedCollector) flush() {
 		len(a.buffer.security)
 
 	if sumStats == 0 {
+		a.buffer.mu.Unlock()
 		return
 	}
+
+	completedConnections := a.buffer.completedConnections
+	httpRequests := a.buffer.httpRequests
+	httpResponses := a.buffer.httpResponses
+	errorsToFlush := a.buffer.errors
+	dataTransfers := a.buffer.dataTransfers
+	securityEvents := a.buffer.security
+	a.buffer.completedConnections = make([]completedConnectionData, 0, max(1000, cap(completedConnections)))
+	a.buffer.httpRequests = make([]httpRequestData, 0, max(1000, cap(httpRequests)))
+	a.buffer.httpResponses = make([]httpResponseData, 0, max(1000, cap(httpResponses)))
+	a.buffer.errors = make([]errorData, 0, max(100, cap(errorsToFlush)))
+	a.buffer.dataTransfers = make([]dataTransferData, 0, max(1000, cap(dataTransfers)))
+	a.buffer.security = make([]securityEventData, 0, max(100, cap(securityEvents)))
+	a.buffer.mu.Unlock()
 
 	logger.Debug("Flushing atomic buffered stats data %d", sumStats)
 
 	ctx := context.Background()
 
-	// Process completed connections
-	for i := range a.buffer.completedConnections {
-		conn := &a.buffer.completedConnections[i]
-		if err := a.underlying.EndConnection(ctx, conn.connectionID, conn.bytesSent, conn.bytesReceived, conn.duration, conn.closeReason); err != nil {
-			_ = err
-		}
-	}
-
 	// Process HTTP requests
-	for _, req := range a.buffer.httpRequests {
+	for _, req := range httpRequests {
 		if req.headerSize > 0 {
 			if err := a.underlying.RecordHTTPRequestWithHeaders(ctx, req.connectionID, req.method, req.url, req.host, req.userAgent, req.contentLength, req.headerSize); err != nil {
 				_ = err
@@ -497,7 +498,7 @@ func (a *AtomicBufferedCollector) flush() {
 	}
 
 	// Process HTTP responses
-	for _, resp := range a.buffer.httpResponses {
+	for _, resp := range httpResponses {
 		if resp.headerSize > 0 {
 			if err := a.underlying.RecordHTTPResponseWithHeaders(ctx, resp.connectionID, resp.statusCode, resp.contentLength, resp.headerSize); err != nil {
 				_ = err
@@ -510,19 +511,19 @@ func (a *AtomicBufferedCollector) flush() {
 	}
 
 	// Process other buffered data (errors, data transfers, security events)
-	for _, errData := range a.buffer.errors {
+	for _, errData := range errorsToFlush {
 		if err := a.underlying.RecordError(ctx, errData.connectionID, errData.errorType, errData.errorMessage); err != nil {
 			_ = err
 		}
 	}
 
-	for _, dt := range a.buffer.dataTransfers {
+	for _, dt := range dataTransfers {
 		if err := a.underlying.RecordDataTransfer(ctx, dt.connectionID, dt.bytesSent, dt.bytesReceived); err != nil {
 			_ = err
 		}
 	}
 
-	for _, event := range a.buffer.security {
+	for _, event := range securityEvents {
 		if event.eventType == "blocked" {
 			if err := a.underlying.RecordBlockedRequest(ctx, event.clientIP, event.targetHost, event.reason); err != nil {
 				_ = err
@@ -534,14 +535,13 @@ func (a *AtomicBufferedCollector) flush() {
 		}
 	}
 
-	// Clear buffers
-	a.buffer.pendingConnections.Store(make(map[int64]*connectionData))
-	a.buffer.completedConnections = a.buffer.completedConnections[:0]
-	a.buffer.httpRequests = a.buffer.httpRequests[:0]
-	a.buffer.httpResponses = a.buffer.httpResponses[:0]
-	a.buffer.errors = a.buffer.errors[:0]
-	a.buffer.dataTransfers = a.buffer.dataTransfers[:0]
-	a.buffer.security = a.buffer.security[:0]
+	// Final totals overwrite previously flushed deltas, avoiding double counts.
+	for i := range completedConnections {
+		conn := &completedConnections[i]
+		if err := a.underlying.EndConnection(ctx, conn.connectionID, conn.bytesSent, conn.bytesReceived, conn.duration, conn.closeReason); err != nil {
+			logger.Error("Failed to flush completed connection %d: %v", conn.connectionID, err)
+		}
+	}
 }
 
 // Close stops the flusher and writes any remaining data

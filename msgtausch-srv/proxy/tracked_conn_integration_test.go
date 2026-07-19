@@ -823,11 +823,12 @@ func TestProxyLargeDataTransferTracking(t *testing.T) {
 	// Make request for large data
 	resp, err := client.Get(testServer.URL)
 	require.NoError(t, err)
-	defer resp.Body.Close()
 
 	// Read the entire response
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	client.CloseIdleConnections()
 	assert.Equal(t, largeData, string(body))
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -920,11 +921,12 @@ func TestProxyPOSTRequestWithConnectionTracking(t *testing.T) {
 	// Make POST request through proxy
 	resp, err := client.Post(testServer.URL, "application/json", strings.NewReader(string(postBody)))
 	require.NoError(t, err)
-	defer resp.Body.Close()
 
 	// Read response body
 	responseBody, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	client.CloseIdleConnections()
 	assert.Equal(t, string(postBody), string(responseBody))
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 

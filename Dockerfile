@@ -142,4 +142,4 @@ COPY flake.lock .
 RUN nix --extra-experimental-features 'nix-command flakes' flake check .
 COPY . .
 RUN nix --extra-experimental-features 'nix-command flakes' build .#msgtausch
-RUN ls -lh result/bin/ && (file result/bin/msgtausch || file result/bin/msgtausch-linux-amd64 || echo "Binary not found") && (result/bin/msgtausch --help || true)
+RUN test -x result/bin/msgtausch && ls -lh result/bin/msgtausch && result/bin/msgtausch --help

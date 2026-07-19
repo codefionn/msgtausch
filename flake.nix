@@ -2,7 +2,7 @@
   description = "msgtausch: Go proxy with Docker/Nix support";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -14,32 +14,37 @@
     }:
     let
       # Custom templ package with exact version
-      buildTemplPkg = { pkgs }: pkgs.buildGo124Module {
+      buildTemplPkg = { pkgs }: pkgs.buildGo125Module {
         pname = "templ";
-        version = "0.3.906";
+        version = "0.3.1020";
         src = pkgs.fetchFromGitHub {
           owner = "a-h";
           repo = "templ";
-          rev = "v0.3.906";
-          hash = "sha256-Og1FPCEkBnyt1nz45imDiDNZ4CuWSJJPxGYcPzRgBE8=";
+          rev = "v0.3.1020";
+          hash = "sha256-wv7qKZfnavz8lxfaOaIJJySNsXsjke1ADJuv2kgQOHE=";
         };
-        vendorHash = "sha256-oObzlisjvS9LeMYh3DzP+l7rgqBo9bQcbNjKCUJ8rcY=";
+        vendorHash = "sha256-i4uDGZb3VZUvIyO2Tt53VR1Do/3OYtj6JccGoFnnlbs=";
         subPackages = [ "cmd/templ" ];
-        go = pkgs.go_1_24;
+        go = pkgs.go_1_25;
       };
 
       # Shared msgtausch package definition
-      buildMsgtauschPkg = { pkgs, version ? "dev", src ? pkgs.lib.cleanSource ./. }: 
+      buildMsgtauschPkg = {
+        pkgs,
+        version ? "dev",
+        src ? pkgs.lib.cleanSource ./.,
+        doCheck ? false,
+      }:
         let
           customTempl = buildTemplPkg { inherit pkgs; };
         in
-        pkgs.buildGo124Module {
+        pkgs.buildGo125Module {
           pname = "msgtausch";
           inherit version src;
-          go = pkgs.go_1_24;
-          goVersion = "1.24";
+          go = pkgs.go_1_25;
+          goVersion = "1.25";
           # Let the builder vendor dependencies internally, but ignore any in-tree vendor/
-          vendorHash = "sha256-aoB6rkjiATKoEP+aZ+2lMBdniFjkrLwHeN0ntKsNi7Y=";
+          vendorHash = "sha256-mhgoBF9q0QFE9M3funQygmmiTa2nBqP6qfO4SOWmoOo=";
           stripVendor = true;
           subPackages = [ "." ];
           env.CGO_ENABLED = 1;
@@ -47,10 +52,15 @@
           ldflags = [
             "-X main.version=${version} -s -w"
           ];
-          doCheck = false;
+          inherit doCheck;
+          checkPhase = pkgs.lib.optionalString doCheck ''
+            runHook preCheck
+            go test ./...
+            runHook postCheck
+          '';
           outputs = [ "out" ];
           preBuild = ''
-            # Generate templates using the nixpkgs templ package
+            # Generate templates using the pinned templ package
             templ generate
           '';
           postInstall = ''
@@ -63,8 +73,7 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        gopkgs = (import nixpkgs { inherit system; }).go_1_24;
-        goVersion = "1.24";
+        gopkgs = pkgs.go_1_25;
         version =
           let
             v = builtins.getEnv "VERSION";
@@ -80,7 +89,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = [
             gopkgs
-            pkgs.docker
+            pkgs.docker_29
             pkgs.git
             pkgs.gnumake
             pkgs.gotools
@@ -94,21 +103,10 @@
         };
 
         # Run tests: nix build .#test
-        packages.test = pkgs.stdenv.mkDerivation {
-          name = "msgtausch-tests";
-          src = src;
-          buildInputs = [
-            gopkgs
-            pkgs.git
-          ];
-          buildPhase = ''
-            export GOFLAGS="-mod=mod"
-            ${gopkgs}/bin/go test -v ./...
-          '';
-          installPhase = ''
-            mkdir -p $out
-            touch $out/tests-done
-          '';
+        packages.test = buildMsgtauschPkg {
+          inherit pkgs src;
+          version = "test";
+          doCheck = true;
         };
       }
     ) // {

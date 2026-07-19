@@ -564,8 +564,10 @@ func (ts *TestSuite) testSearchEngine(testURL string) TestResult {
 		}
 	}
 
-	// Check for successful response and some expected content
-	success := resp.StatusCode == 200 && len(body) > 1000
+	// Search providers may return another successful 2xx response (for example,
+	// DuckDuckGo uses 202 for its bot-challenge page). This test verifies that
+	// the proxy can transport a non-empty HTTPS response, not search semantics.
+	success := resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && len(body) > 1000
 
 	logger.Debug("Search engine response for %s: %d bytes, status %d", testURL, len(body), resp.StatusCode)
 

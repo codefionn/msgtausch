@@ -32,6 +32,7 @@ type contextKey struct {
 var clientKey = &contextKey{name: "http-client"}
 var clientIPKey = &contextKey{name: "client-ip"}
 var connectionUUIDKey = &contextKey{name: "connection-uuid"}
+var loggerContextExtractorOnce sync.Once
 
 // PEM decryption helpers moved to pem_decrypt.go to keep this file focused
 
@@ -272,8 +273,7 @@ func NewProxy(cfg *config.Config) *Proxy {
 	// Use a single cache manager instance. Previously this also created a
 	// separate NewCacheManagerWithConfigAndDNS, so any code path hitting the
 	// global manager built a second full copy of every blocklist trie.
-	InitGlobalCacheManagerWithDNS(cacheConfig, cfg.DNS)
-	cacheManager := GetGlobalCacheManager()
+	cacheManager := GetGlobalCacheManagerWithConfig(cacheConfig, cfg.DNS)
 
 	p := &Proxy{
 		config:       cfg,
@@ -282,7 +282,9 @@ func NewProxy(cfg *config.Config) *Proxy {
 	}
 
 	// Set up logger to extract connection UUIDs from context
-	logger.ConnectionUUIDExtractor = ConnectionUUIDFromContext
+	loggerContextExtractorOnce.Do(func() {
+		logger.ConnectionUUIDExtractor = ConnectionUUIDFromContext
+	})
 
 	// Initialize DNS resolver with configuration
 	_ = resolver.GetResolver(cfg.DNS)

@@ -34,8 +34,8 @@ For comprehensive configuration documentation, see [docs/configuration.md](docs/
 ## Project overview
 
 - **cmd/proxy-test/main.go** - Testing the proxy in the real world
-- **cmd/simulation/main.go** - Attempt for implementing simulation tests that kinda work
-  (kinda like fuzzy testing but way cooler)
+- **cmd/simulation/main.go** - Seeded feature simulation for HTTP methods, request
+  integrity, WebSockets, TLS, failures, and SOCKS5/HTTP forward routing
 - **cmd/throughput-test/main.go** - Testing throughput on localhost
   (May your downloads be fast)
 - **main.go** - Main program for running the proxy

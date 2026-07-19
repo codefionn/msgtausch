@@ -445,11 +445,14 @@ func (cm *CacheManager) GetCacheStats() map[string]interface{} {
 // Global cache manager instance
 var globalCacheManager *CacheManager
 var cacheManagerOnce sync.Once
+var cacheManagerMu sync.Mutex
 var cacheManagerConfig config.CacheConfig
 var cacheManagerDNSConfig config.DNSConfig
 
 // ResetGlobalCacheManager resets the global cache manager for testing
 func ResetGlobalCacheManager() {
+	cacheManagerMu.Lock()
+	defer cacheManagerMu.Unlock()
 	if globalCacheManager != nil {
 		globalCacheManager.Stop()
 		globalCacheManager = nil
@@ -461,6 +464,8 @@ func ResetGlobalCacheManager() {
 // Blocklist downloads use the system DNS resolver. Use
 // InitGlobalCacheManagerWithDNS to route lookups through a custom resolver.
 func InitGlobalCacheManager(cfg config.CacheConfig) {
+	cacheManagerMu.Lock()
+	defer cacheManagerMu.Unlock()
 	cacheManagerConfig = cfg
 	cacheManagerDNSConfig = config.DNSConfig{}
 }
@@ -468,12 +473,31 @@ func InitGlobalCacheManager(cfg config.CacheConfig) {
 // InitGlobalCacheManagerWithDNS initializes the global cache manager and
 // routes blocklist HTTP downloads through the given DNS resolver configuration.
 func InitGlobalCacheManagerWithDNS(cfg config.CacheConfig, dnsCfg config.DNSConfig) {
+	cacheManagerMu.Lock()
+	defer cacheManagerMu.Unlock()
 	cacheManagerConfig = cfg
 	cacheManagerDNSConfig = dnsCfg
 }
 
 // GetGlobalCacheManager returns the global cache manager instance
 func GetGlobalCacheManager() *CacheManager {
+	cacheManagerMu.Lock()
+	defer cacheManagerMu.Unlock()
+	return getGlobalCacheManagerLocked()
+}
+
+// GetGlobalCacheManagerWithConfig atomically configures and retrieves the
+// process-wide cache manager. If it is already running, its original
+// configuration remains in effect.
+func GetGlobalCacheManagerWithConfig(cfg config.CacheConfig, dnsCfg config.DNSConfig) *CacheManager {
+	cacheManagerMu.Lock()
+	defer cacheManagerMu.Unlock()
+	cacheManagerConfig = cfg
+	cacheManagerDNSConfig = dnsCfg
+	return getGlobalCacheManagerLocked()
+}
+
+func getGlobalCacheManagerLocked() *CacheManager {
 	cacheManagerOnce.Do(func() {
 		if cacheManagerConfig.Enabled {
 			globalCacheManager = NewCacheManagerWithConfigAndDNS(cacheManagerConfig, cacheManagerDNSConfig)
@@ -491,6 +515,8 @@ func GetGlobalCacheManager() *CacheManager {
 
 // StopGlobalCacheManager stops the global cache manager
 func StopGlobalCacheManager() {
+	cacheManagerMu.Lock()
+	defer cacheManagerMu.Unlock()
 	if globalCacheManager != nil {
 		globalCacheManager.Stop()
 	}

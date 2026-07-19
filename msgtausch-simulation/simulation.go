@@ -31,15 +31,19 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Global variable to store the last simulation statistics
-var lastSimulationStats *SimulationStats
-
 // SimulationStats contains detailed statistics from a simulation run
 type SimulationStats struct {
 	Seed                   int64                                  `json:"seed"`
 	TotalRequests          int                                    `json:"total_requests"`
 	RequestsNotForwarded   int                                    `json:"requests_not_forwarded"`
+	ForwardedRequests      int                                    `json:"forwarded_requests"`
+	ConfiguredForwards     int                                    `json:"configured_forwards"`
 	ForwardsUsed           int                                    `json:"forwards_used"`
+	ForwardConnections     map[string]int64                       `json:"forward_connections"`
+	HTTPMethodCounts       map[string]int                         `json:"http_method_counts"`
+	ProtocolCounts         map[string]int                         `json:"protocol_counts"`
+	ValidatedHTTPResponses int64                                  `json:"validated_http_responses"`
+	WebSocketMessages      int64                                  `json:"websocket_messages"`
 	UnrecoverableErrors    int64                                  `json:"unrecoverable_errors"`
 	WebSocketConnections   int64                                  `json:"websocket_connections"`
 	ExpectedWebSocketConns int64                                  `json:"expected_websocket_connections"`
@@ -189,6 +193,7 @@ const (
 type SimulationTestCase struct {
 	Seed         int64 `json:"seed"`
 	AllowTimeout bool  `json:"allowTimeout"`
+	DisableError bool  `json:"disableError,omitempty"`
 }
 
 // RandomSimulationTestCase generates a SimulationTestCase with random values based on the given seed.
@@ -207,9 +212,12 @@ type SimulatedTargetServer struct {
 	errorRate          float32
 	errorCounts        sync.Map           // Thread-safe map to track errors by type
 	requestCount       atomic.Int64       // Counter for actual requests received
+	allRequestCount    atomic.Int64       // Counter including requests routed through forwards
 	websocketUpgrader  websocket.Upgrader // Upgrader for websocket connections
 	websocketConnCount atomic.Int64       // Counter for actual websocket connections made
+	allWebsocketConns  atomic.Int64       // Counter including connections routed through forwards
 	receivedRequestIDs sync.Map           // Debug: track X-Sim-Req IDs received (for diagnosing tally mismatches)
+	errorCountsMu      sync.Mutex
 }
 
 // SimulatedSocks5Proxy represents a simulated SOCKS5 proxy (mocked for testing).
@@ -218,6 +226,7 @@ type SimulatedSocks5Proxy struct {
 	Server   *socks5.Server
 	Listener net.Listener
 	done     chan struct{}
+	accepted *atomic.Int64
 }
 
 // SimulatedMsgtauschProxy represents a running msgtausch proxy instance for simulation/testing.
@@ -228,15 +237,47 @@ type SimulatedMsgtauschProxy struct {
 	Listener net.Listener
 	Config   *msgtauschconfig.Config
 	done     chan struct{}
+	accepted *atomic.Int64
+}
+
+type countingListener struct {
+	net.Listener
+	accepted *atomic.Int64
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+	return conn, err
+}
+
+func (p *SimulatedSocks5Proxy) acceptedConnections() int64 {
+	return p.accepted.Load()
+}
+
+func (p *SimulatedMsgtauschProxy) acceptedConnections() int64 {
+	return p.accepted.Load()
 }
 
 // RunSimulation runs a simulation with random requests, proxies, and targets. It validates error accounting.
 //
-// The seed allow the reproduction of problematic runs
+// The seed allows reproduction of problematic runs.
 func RunSimulation(seed int64, enableForwards bool) error {
+	_, err := runSimulation(seed, enableForwards)
+	return err
+}
+
+func runSimulation(seed int64, enableForwards bool) (*SimulationStats, error) {
 	rng := rand.New(rand.NewSource(seed))
 	// 1. Create random forwards (SOCKS5 and msgtausch)
-	socksProxies := CreateRandomSocks5Proxies(rng.Int63())
+	var socksProxies []*SimulatedSocks5Proxy
+	var msgtauschProxies []*SimulatedMsgtauschProxy
+	if enableForwards {
+		socksProxies = CreateRandomSocks5Proxies(rng.Int63())
+		msgtauschProxies = CreateRandomMsgtauschProxies(rng.Int63())
+	}
 	defer func() {
 		for _, p := range socksProxies {
 			p.Listener.Close()
@@ -250,7 +291,6 @@ func RunSimulation(seed int64, enableForwards bool) error {
 			}
 		}
 	}()
-	msgtauschProxies := CreateRandomMsgtauschProxies(rng.Int63())
 	defer func() {
 		for _, p := range msgtauschProxies {
 			if err := p.Proxy.Stop(); err != nil {
@@ -266,8 +306,6 @@ func RunSimulation(seed int64, enableForwards bool) error {
 			}
 		}
 	}()
-
-	time.Sleep(time.Duration(1) * time.Second)
 
 	// Initialize total counters for websocket connections and requests
 	expectedWebsocketConns := make(map[string]int64)
@@ -297,17 +335,18 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		for i, sp := range socksProxies {
 			var fwd msgtauschconfig.Forward = &msgtauschconfig.ForwardSocks5{
 				ClassifierData: &msgtauschconfig.ClassifierPort{
-					Port: sp.Port + 10000 + i, // Use a specific port that won't be hit by accident
+					Port: targetServerPort(targets[i]),
 				},
 				Address: fmt.Sprintf("127.0.0.1:%d", sp.Port),
 			}
 			forwards = append(forwards, fwd)
 			usedForwards++
 		}
-		for _, mp := range msgtauschProxies {
+		for i, mp := range msgtauschProxies {
+			targetIdx := len(socksProxies) + i
 			var fwd msgtauschconfig.Forward = &msgtauschconfig.ForwardProxy{
 				ClassifierData: &msgtauschconfig.ClassifierPort{
-					Port: mp.Port,
+					Port: targetServerPort(targets[targetIdx]),
 				},
 				Address: fmt.Sprintf("127.0.0.1:%d", mp.Port),
 			}
@@ -336,11 +375,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 
 	listener, err := net.Listen("tcp", cfg.Servers[0].ListenAddress)
 	if err != nil {
-		return fmt.Errorf("failed to start simulation proxy: %w", err)
+		return nil, fmt.Errorf("failed to start simulation proxy: %w", err)
 	}
 	urlForProxy, err := url.Parse("http://" + listener.Addr().String())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	defer func() {
@@ -362,11 +401,16 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	responseTimes := make([]time.Duration, 0, nRequests)
 	mutexResponseTimes := sync.Mutex{}
 	// Optionally trust a custom CA for HTTPS targets
-	var tlsRootCAs *x509.CertPool
+	tlsRootCAs, err := x509.SystemCertPool()
+	if err != nil {
+		tlsRootCAs = x509.NewCertPool()
+	}
 	if caPEM := os.Getenv("SIM_TLS_CA_CERT_PEM"); caPEM != "" {
-		pool := x509.NewCertPool()
-		if ok := pool.AppendCertsFromPEM([]byte(caPEM)); ok {
-			tlsRootCAs = pool
+		tlsRootCAs.AppendCertsFromPEM([]byte(caPEM))
+	}
+	for _, target := range targets {
+		if cert := target.server.Certificate(); cert != nil {
+			tlsRootCAs.AddCert(cert)
 		}
 	}
 
@@ -400,19 +444,48 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	unrecoverableErrorCount := atomic.Int64{}
 	httpAttempts := atomic.Int64{}
 	httpAccounted := atomic.Int64{}
+	validatedHTTPResponses := atomic.Int64{}
 	wsAttempts := atomic.Int64{}
+	wsMessages := atomic.Int64{}
 	inFlight := atomic.Int64{}
+	httpMethods := []string{
+		http.MethodGet,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+		http.MethodHead,
+		http.MethodOptions,
+	}
+	httpMethodCounts := make(map[string]int, len(httpMethods))
+	protocolCounts := make(map[string]int, 4)
 
 	for i := range nRequests {
 		initialWait := time.Duration(10+rng.Intn(40)) * time.Millisecond
 
 		targetIdx := rng.Intn(len(targets))
+		if i < len(targets) {
+			// Guarantee at least one request per target. Forward-enabled runs use
+			// this deterministic prefix to exercise every configured route.
+			targetIdx = i
+		}
 		target := targets[targetIdx]
 		targetURL := target.URL()
 
 		// Decide whether to use HTTP or WebSocket (20% chance for WebSocket)
-		useWebSocket := rng.Float64() < 0.2
+		useWebSocket := i == len(httpMethods) || (i > len(httpMethods) && rng.Float64() < 0.2)
 		usesForward := targetIdx < len(forwards)
+		protocol := "http"
+		if strings.HasPrefix(targetURL, "https://") {
+			protocol = "https"
+		}
+		if useWebSocket {
+			protocol = "ws"
+			if strings.HasPrefix(targetURL, "https://") {
+				protocol = "wss"
+			}
+		}
+		protocolCounts[protocol]++
 
 		if !usesForward {
 			mutexTotalRequests.Lock()
@@ -427,6 +500,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		mutexTarget.Lock()
 
 		tc := RandomSimulationTestCase(rng.Int63())
+		if i <= len(httpMethods) {
+			// The deterministic feature floor must reach the target so request and
+			// response integrity can be checked. Later requests retain random faults.
+			tc.DisableError = true
+		}
 		tcJSON, err := json.Marshal(tc)
 		if err != nil {
 			msgtauschlogger.Error("Test case could not be converted to JSON")
@@ -449,12 +527,10 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
 			}
 
-			// Increment the expected websocket connection count for this target
-			if !usesForward {
-				mutexTotalRequests.Lock()
-				expectedWebsocketConns[targetURL]++
-				mutexTotalRequests.Unlock()
-			}
+			// Increment the expected websocket connection count for this target.
+			mutexTotalRequests.Lock()
+			expectedWebsocketConns[targetURL]++
+			mutexTotalRequests.Unlock()
 
 			go func(wsURL string, usesForward bool, reqIndex int, initialWait time.Duration, mutexTarget *sync.Mutex) {
 				time.Sleep(initialWait)
@@ -483,6 +559,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 				}
 				if err != nil {
 					msgtauschlogger.Error("Error connecting to WebSocket: %v", err)
+					unrecoverableErrorCount.Add(1)
 					return
 				}
 				defer func() {
@@ -491,35 +568,59 @@ func RunSimulation(seed int64, enableForwards bool) error {
 					}
 				}()
 
-				// Send a test message
-				message := fmt.Sprintf("%t-ws-req-%d", usesForward, reqIndex)
-				err = conn.WriteMessage(websocket.TextMessage, []byte(message))
-				if err != nil {
-					msgtauschlogger.Error("Error sending WebSocket message: %v", err)
-					return
-				}
+				// Exercise both text and binary frames, and verify multiple messages
+				// can travel over the same upgraded connection.
+				for messageIndex, messageType := range []int{websocket.TextMessage, websocket.BinaryMessage} {
+					message := []byte(fmt.Sprintf("%t-ws-req-%d-message-%d", usesForward, reqIndex, messageIndex))
+					if err = conn.WriteMessage(messageType, message); err != nil {
+						msgtauschlogger.Error("Error sending WebSocket message: %v", err)
+						unrecoverableErrorCount.Add(1)
+						return
+					}
 
-				// Read response
-				_, respMsg, err := conn.ReadMessage()
-				if err != nil {
-					msgtauschlogger.Error("Error reading WebSocket message: %v", err)
-					unrecoverableErrorCount.Add(1)
-					return
-				}
+					responseType, respMsg, readErr := conn.ReadMessage()
+					if readErr != nil {
+						msgtauschlogger.Error("Error reading WebSocket message: %v", readErr)
+						unrecoverableErrorCount.Add(1)
+						return
+					}
 
-				if !bytes.Equal(respMsg, []byte(message)) {
-					msgtauschlogger.Error("WebSocket echo mismatch for request %d: want %q, got %q", reqIndex, message, string(respMsg))
-					unrecoverableErrorCount.Add(1)
+					if responseType != messageType || !bytes.Equal(respMsg, message) {
+						msgtauschlogger.Error("WebSocket echo mismatch for request %d: want type %d body %q, got type %d body %q", reqIndex, messageType, message, responseType, respMsg)
+						unrecoverableErrorCount.Add(1)
+						return
+					}
+					wsMessages.Add(1)
 				}
 			}(wsURL, usesForward, i, initialWait, mutexTarget)
 		} else {
 			httpAttempts.Add(1)
 			inFlight.Add(1)
-			// Build HTTP request
-			req, _ := http.NewRequest("GET", targetURL, http.NoBody)
+			method := httpMethods[i%len(httpMethods)]
+			httpMethodCounts[method]++
+			payload := fmt.Sprintf("simulation-payload-%d-%d", seed, i)
+			expectedResponse := fmt.Sprintf("simulation-response-%d-%d", seed, i)
+			var requestBody io.Reader = http.NoBody
+			if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
+				requestBody = strings.NewReader(payload)
+				expectedResponse = payload
+			}
+			requestURL := fmt.Sprintf("%s?test_id=%d&seed=%d", targetURL, i, seed)
+			req, reqErr := http.NewRequest(method, requestURL, requestBody)
+			if reqErr != nil {
+				mutexTarget.Unlock()
+				wg.Done()
+				return nil, fmt.Errorf("create request %d: %w", i, reqErr)
+			}
+			if method == http.MethodPatch {
+				// An unknown content length makes net/http use chunked transfer encoding.
+				req.ContentLength = -1
+			}
 			setHeader(req.Header)
+			req.Header.Set("X-Sim-Feature", fmt.Sprintf("feature-%d", i))
+			req.Header.Set("X-Sim-Expected-Response", expectedResponse)
 
-			go func(req *http.Request, usesForward bool, targetURL string, initialWait time.Duration, mutexTarget *sync.Mutex) {
+			go func(req *http.Request, usesForward bool, targetURL, expectedResponse string, requestIndex int, initialWait time.Duration, mutexTarget *sync.Mutex) {
 				time.Sleep(initialWait)
 
 				defer func() {
@@ -607,33 +708,39 @@ func RunSimulation(seed int64, enableForwards bool) error {
 					}
 					accounted = true
 				} else {
+					if validationErr := validateSuccessfulHTTPResponse(resp, req, expectedResponse, requestIndex); validationErr != nil {
+						msgtauschlogger.Error("HTTP feature validation failed: %v", validationErr)
+						unrecoverableErrorCount.Add(1)
+						return
+					}
+					validatedHTTPResponses.Add(1)
 					accounted = true
 				}
 
 				if accounted {
 					httpAccounted.Add(1)
 				}
-			}(req, usesForward, targetURL, initialWait, mutexTarget)
+			}(req, usesForward, targetURL, expectedResponse, i, initialWait, mutexTarget)
 		}
 	}
 
 	wg.Wait()
 
 	if inFlight.Load() != 0 {
-		return fmt.Errorf("in-flight goroutines remaining after wait: %d", inFlight.Load())
+		return nil, fmt.Errorf("in-flight goroutines remaining after wait: %d", inFlight.Load())
 	}
 
 	msgtauschlogger.Info("Simulation completed with %d requests (%d forwards used)", nRequests, usedForwards)
 
 	if unrecoverableErrorCount.Load() > 0 {
-		return fmt.Errorf("%d unrecoverable errors occurred", unrecoverableErrorCount.Load())
+		return nil, fmt.Errorf("%d unrecoverable errors occurred", unrecoverableErrorCount.Load())
 	}
 
 	// Verify websocket connection counts
 	for _, t := range targets {
-		if t.websocketConnCount.Load() != expectedWebsocketConns[t.server.URL] {
-			return fmt.Errorf("websocket connection count mismatch for %s: expected %d, got %d",
-				t.server.URL, expectedWebsocketConns[t.server.URL], t.websocketConnCount.Load())
+		if t.allWebsocketConns.Load() != expectedWebsocketConns[t.server.URL] {
+			return nil, fmt.Errorf("websocket connection count mismatch for %s: expected %d, got %d",
+				t.server.URL, expectedWebsocketConns[t.server.URL], t.allWebsocketConns.Load())
 		}
 	}
 
@@ -653,11 +760,11 @@ func RunSimulation(seed int64, enableForwards bool) error {
 	// Validate both error counts and request counts
 	err = validateRequestCounts(nRequestsNotForwarded, totalRequests, targets)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	err = validateErrorCounts(errCounts, targets, len(forwards))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	msgtauschlogger.Info("=== After validation, before stats collection ===")
@@ -665,29 +772,61 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		msgtauschlogger.Info("  Target %s: requestCount=%d", t.server.URL, t.getRequestCount())
 	}
 
-	// Store simulation metadata in a global for stats collection
-	lastSimulationStats = &SimulationStats{
-		Seed:                 seed,
-		TotalRequests:        nRequests,
-		RequestsNotForwarded: nRequestsNotForwarded,
-		ForwardsUsed:         usedForwards,
-		UnrecoverableErrors:  unrecoverableErrorCount.Load(),
-		ProxyChainLength:     len(forwards),
-		ErrorCountsByTarget:  errCounts,
-		TargetServerStats:    make([]TargetServerStats, len(targets)),
+	forwardConnections := map[string]int64{
+		"socks5":     0,
+		"http-proxy": 0,
+	}
+	actualForwardsUsed := 0
+	for i, socksProxy := range socksProxies {
+		connections := socksProxy.acceptedConnections()
+		forwardConnections["socks5"] += connections
+		if connections == 0 {
+			return nil, fmt.Errorf("SOCKS5 forward %d was configured but received no connections", i)
+		}
+		actualForwardsUsed++
+	}
+	for i, httpProxy := range msgtauschProxies {
+		connections := httpProxy.acceptedConnections()
+		forwardConnections["http-proxy"] += connections
+		if connections == 0 {
+			return nil, fmt.Errorf("HTTP proxy forward %d was configured but received no connections", i)
+		}
+		actualForwardsUsed++
+	}
+
+	simulationStats := &SimulationStats{
+		Seed:                   seed,
+		TotalRequests:          nRequests,
+		RequestsNotForwarded:   nRequestsNotForwarded,
+		ForwardedRequests:      nRequests - nRequestsNotForwarded,
+		ConfiguredForwards:     usedForwards,
+		ForwardsUsed:           actualForwardsUsed,
+		ForwardConnections:     forwardConnections,
+		HTTPMethodCounts:       httpMethodCounts,
+		ProtocolCounts:         protocolCounts,
+		ValidatedHTTPResponses: validatedHTTPResponses.Load(),
+		WebSocketMessages:      wsMessages.Load(),
+		UnrecoverableErrors:    unrecoverableErrorCount.Load(),
+		ProxyChainLength:       1,
+		ErrorCountsByTarget:    errCounts,
+		TargetServerStats:      make([]TargetServerStats, len(targets)),
+	}
+	if actualForwardsUsed > 0 {
+		// A forwarded request traverses the main proxy and one selected upstream.
+		simulationStats.ProxyChainLength = 2
 	}
 
 	// Collect target server statistics
 	var totalWebSockets int64
 	var expectedWebSocketTotal int64
 	for i, t := range targets {
-		lastSimulationStats.TargetServerStats[i] = TargetServerStats{
+		simulationStats.TargetServerStats[i] = TargetServerStats{
 			URL:                t.server.URL,
-			RequestCount:       t.getRequestCount(),
-			WebSocketConnCount: t.websocketConnCount.Load(),
+			RequestCount:       t.allRequestCount.Load(),
+			WebSocketConnCount: t.allWebsocketConns.Load(),
 			ErrorCounts:        make(map[SimulationErrorType]int),
 		}
-		totalWebSockets += t.websocketConnCount.Load()
+		totalWebSockets += t.allWebsocketConns.Load()
 
 		// Collect error counts for this target
 		for _, errorType := range []SimulationErrorType{
@@ -695,7 +834,7 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		} {
 			count := t.getErrorCount(errorType)
 			if count > 0 {
-				lastSimulationStats.TargetServerStats[i].ErrorCounts[errorType] = count
+				simulationStats.TargetServerStats[i].ErrorCounts[errorType] = count
 			}
 		}
 	}
@@ -704,40 +843,40 @@ func RunSimulation(seed int64, enableForwards bool) error {
 		expectedWebSocketTotal += count
 	}
 
-	lastSimulationStats.WebSocketConnections = totalWebSockets
-	lastSimulationStats.ExpectedWebSocketConns = expectedWebSocketTotal
+	simulationStats.WebSocketConnections = totalWebSockets
+	simulationStats.ExpectedWebSocketConns = expectedWebSocketTotal
 
 	// Calculate percentiles from response times
-	lastSimulationStats.ResponseTimes = responseTimes
-	calculatePercentiles(lastSimulationStats)
+	simulationStats.ResponseTimes = responseTimes
+	calculatePercentiles(simulationStats)
 
 	if httpAccounted.Load() != httpAttempts.Load() {
-		return fmt.Errorf("http accounting mismatch: attempts %d accounted %d", httpAttempts.Load(), httpAccounted.Load())
+		return simulationStats, fmt.Errorf("http accounting mismatch: attempts %d accounted %d", httpAttempts.Load(), httpAccounted.Load())
 	}
 	if httpAttempts.Load()+wsAttempts.Load() != int64(nRequests) {
-		return fmt.Errorf("request mix mismatch: http %d + ws %d != total %d", httpAttempts.Load(), wsAttempts.Load(), nRequests)
+		return simulationStats, fmt.Errorf("request mix mismatch: http %d + ws %d != total %d", httpAttempts.Load(), wsAttempts.Load(), nRequests)
 	}
 
 	// Additional invariants on collected stats
 	msgtauschlogger.Info("=== Final check (stats collection) ===")
 	var sumRequests int64
-	for i, tss := range lastSimulationStats.TargetServerStats {
+	for i, tss := range simulationStats.TargetServerStats {
 		msgtauschlogger.Info("  Target %s: statsRequestCount=%d, liveRequestCount=%d",
-			tss.URL, tss.RequestCount, targets[i].getRequestCount())
+			tss.URL, tss.RequestCount, targets[i].allRequestCount.Load())
 		sumRequests += tss.RequestCount
 		var sumErrors int
 		for _, c := range tss.ErrorCounts {
 			sumErrors += c
 		}
 		if int64(sumErrors) > tss.RequestCount {
-			return fmt.Errorf("error/request mismatch for %s: errors %d exceed requests %d", tss.URL, sumErrors, tss.RequestCount)
+			return simulationStats, fmt.Errorf("error/request mismatch for %s: errors %d exceed requests %d", tss.URL, sumErrors, tss.RequestCount)
 		}
 	}
-	if sumRequests != int64(nRequestsNotForwarded) {
-		return fmt.Errorf("request tally mismatch: targets saw %d non-forwarded vs expected %d", sumRequests, nRequestsNotForwarded)
+	if sumRequests != int64(nRequests) {
+		return simulationStats, fmt.Errorf("request tally mismatch: targets saw %d requests vs expected %d", sumRequests, nRequests)
 	}
 
-	return err
+	return simulationStats, nil
 }
 
 // calculatePercentiles calculates percentile statistics from response times
@@ -803,21 +942,52 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 
 // RunSimulationWithStats runs a simulation and returns detailed statistics along with any error
 func RunSimulationWithStats(seed int64, enableForwards bool) (*SimulationStats, error) {
-	// Call the original function which now populates lastSimulationStats
-	err := RunSimulation(seed, enableForwards)
+	return runSimulation(seed, enableForwards)
+}
 
-	// Return a copy of the statistics
-	if lastSimulationStats != nil {
-		return lastSimulationStats, err
+func targetServerPort(target *SimulatedTargetServer) int {
+	targetURL, err := url.Parse(target.URL())
+	if err != nil {
+		panic(fmt.Sprintf("invalid simulated target URL %q: %v", target.URL(), err))
+	}
+	port, err := strconv.Atoi(targetURL.Port())
+	if err != nil {
+		panic(fmt.Sprintf("invalid simulated target port in %q: %v", target.URL(), err))
+	}
+	return port
+}
+
+func validateSuccessfulHTTPResponse(resp *http.Response, req *http.Request, expectedBody string, requestIndex int) error {
+	expectedHeaders := map[string]string{
+		"X-Test-Header":    "test-value",
+		"X-Request-Method": req.Method,
+		"X-Test-ID":        strconv.Itoa(requestIndex),
+		"X-Sim-Feature":    req.Header.Get("X-Sim-Feature"),
+		"X-Sim-Seed":       req.URL.Query().Get("seed"),
+	}
+	if req.Method == http.MethodPatch && !strings.Contains(resp.Header.Get("X-Sim-Transfer-Encoding"), "chunked") {
+		return fmt.Errorf("request %d PATCH did not arrive with chunked transfer encoding", requestIndex)
+	}
+	for name, want := range expectedHeaders {
+		if got := resp.Header.Get(name); got != want {
+			return fmt.Errorf("request %d %s header %s: want %q, got %q", requestIndex, req.Method, name, want, got)
+		}
 	}
 
-	// Fallback if stats weren't populated
-	stats := &SimulationStats{
-		Seed:                seed,
-		ErrorCountsByTarget: make(map[string]map[SimulationErrorType]int),
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("request %d %s read response body: %w", requestIndex, req.Method, err)
 	}
-
-	return stats, err
+	if req.Method == http.MethodHead {
+		if len(body) != 0 {
+			return fmt.Errorf("request %d HEAD returned a body of %d bytes", requestIndex, len(body))
+		}
+		return nil
+	}
+	if string(body) != expectedBody {
+		return fmt.Errorf("request %d %s body: want %q, got %q", requestIndex, req.Method, expectedBody, body)
+	}
+	return nil
 }
 
 // validateErrorCounts checks that all expected errors were accounted for
@@ -918,6 +1088,8 @@ func CreateRandomMsgtauschProxies(seed int64) []*SimulatedMsgtauschProxy {
 		port := listener.Addr().(*net.TCPAddr).Port
 		cfg.Servers[0].ListenAddress = fmt.Sprintf("127.0.0.1:%d", port)
 		proxy := msgtauschproxy.NewProxy(cfg)
+		accepted := &atomic.Int64{}
+		trackedListener := &countingListener{Listener: listener, accepted: accepted}
 		// Create done channel for graceful shutdown
 		done := make(chan struct{})
 
@@ -928,15 +1100,16 @@ func CreateRandomMsgtauschProxies(seed int64) []*SimulatedMsgtauschProxy {
 			if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 				msgtauschlogger.Error("Proxy server exited with error: %v", err)
 			}
-		}(proxy, listener, done)
+		}(proxy, trackedListener, done)
 
 		proxies[i] = &SimulatedMsgtauschProxy{
 			Port:     port,
 			Seed:     rng.Int63(),
 			Proxy:    proxy,
-			Listener: listener,
+			Listener: trackedListener,
 			Config:   cfg,
 			done:     done,
+			accepted: accepted,
 		}
 	}
 	return proxies
@@ -962,6 +1135,8 @@ func CreateRandomSocks5Proxies(seed int64) []*SimulatedSocks5Proxy {
 		}
 		// Create done channel for graceful shutdown
 		done := make(chan struct{})
+		accepted := &atomic.Int64{}
+		trackedListener := &countingListener{Listener: listener, accepted: accepted}
 
 		// Start the SOCKS5 server in a goroutine with proper cleanup
 		go func(s *socks5.Server, l net.Listener, done chan struct{}) {
@@ -970,13 +1145,14 @@ func CreateRandomSocks5Proxies(seed int64) []*SimulatedSocks5Proxy {
 			if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 				msgtauschlogger.Error("SOCKS5 server error: %v", err)
 			}
-		}(server, listener, done)
+		}(server, trackedListener, done)
 
 		proxies[i] = &SimulatedSocks5Proxy{
 			Port:     listener.Addr().(*net.TCPAddr).Port,
 			Server:   server,
-			Listener: listener,
+			Listener: trackedListener,
 			done:     done,
+			accepted: accepted,
 		}
 	}
 	return proxies
@@ -1007,6 +1183,8 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 
 		// Check if this is a WebSocket upgrade request
 		if websocket.IsWebSocketUpgrade(r) {
+			sts.allRequestCount.Add(1)
+			sts.allWebsocketConns.Add(1)
 			if !usesForward {
 				// Increment request counter for each request received
 				newCount := sts.requestCount.Add(1)
@@ -1050,6 +1228,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 		}
 
 		// Count ALL requests that reach the server, regardless of what happens next
+		sts.allRequestCount.Add(1)
 		if !usesForward {
 			newCount := sts.requestCount.Add(1)
 			sts.receivedRequestIDs.Store(simReqID, true)
@@ -1072,7 +1251,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 		rng := rand.New(rand.NewSource(tc.Seed))
 
 		// Determine if we should introduce an error
-		if rng.Float32() < sts.errorRate {
+		if !tc.DisableError && rng.Float32() < sts.errorRate {
 			// Choose an error type
 			errorTypes := []SimulationErrorType{
 				ErrorTCP,
@@ -1143,15 +1322,19 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 			// Normal response
 			w.Header().Set("X-Test-Header", "test-value")
 			w.Header().Set("X-Request-Method", r.Method)
+			w.Header().Set("X-Sim-Feature", r.Header.Get("X-Sim-Feature"))
+			w.Header().Set("X-Sim-Seed", r.URL.Query().Get("seed"))
+			w.Header().Set("X-Sim-Transfer-Encoding", strings.Join(r.TransferEncoding, ","))
 
 			// Extract test case ID from URL if present
 			if testIDStr := r.URL.Query().Get("test_id"); testIDStr != "" {
 				w.Header().Set("X-Test-ID", testIDStr)
 			}
 
-			// Handle different HTTP methods
+			// Echo request bodies for upload methods and a request-specific token
+			// for the remaining methods. The client validates both paths.
 			switch r.Method {
-			case "POST":
+			case http.MethodPost, http.MethodPut, http.MethodPatch:
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
 					w.WriteHeader(http.StatusInternalServerError)
@@ -1161,7 +1344,7 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 					log.Printf("Error writing response body: %v", err)
 				}
 			default:
-				if _, err := fmt.Fprintf(w, "Hello from SimulatedServer! Seed: %d", rng.Int63()); err != nil {
+				if _, err := io.WriteString(w, r.Header.Get("X-Sim-Expected-Response")); err != nil {
 					log.Printf("Error writing response: %v", err)
 				}
 			}
@@ -1212,6 +1395,8 @@ func NewSimulatedTargetServer(seed int64) *SimulatedTargetServer {
 
 // incrementErrorCount atomically increments the error count for a specific error type
 func (s *SimulatedTargetServer) incrementErrorCount(errorType SimulationErrorType) {
+	s.errorCountsMu.Lock()
+	defer s.errorCountsMu.Unlock()
 	value, _ := s.errorCounts.LoadOrStore(errorType, 0)
 	count := value.(int)
 	s.errorCounts.Store(errorType, count+1)
@@ -1219,6 +1404,8 @@ func (s *SimulatedTargetServer) incrementErrorCount(errorType SimulationErrorTyp
 
 // getErrorCount atomically gets the error count for a specific error type
 func (s *SimulatedTargetServer) getErrorCount(errorType SimulationErrorType) int {
+	s.errorCountsMu.Lock()
+	defer s.errorCountsMu.Unlock()
 	value, found := s.errorCounts.Load(errorType)
 	if !found {
 		return 0

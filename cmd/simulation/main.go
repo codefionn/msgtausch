@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -215,10 +216,26 @@ func printDetailedStats(stats *msgtausch_simulation.SimulationStats) {
 	fmt.Printf("\n=== Simulation Statistics (Seed: %d) ===\n", stats.Seed)
 	fmt.Printf("Total Requests: %d\n", stats.TotalRequests)
 	fmt.Printf("Requests Not Forwarded: %d\n", stats.RequestsNotForwarded)
-	fmt.Printf("Forwards Used: %d\n", stats.ForwardsUsed)
+	fmt.Printf("Forwarded Requests: %d\n", stats.ForwardedRequests)
+	fmt.Printf("Forwards Used: %d/%d\n", stats.ForwardsUsed, stats.ConfiguredForwards)
 	fmt.Printf("Proxy Chain Length: %d\n", stats.ProxyChainLength)
 	fmt.Printf("WebSocket Connections: %d (Expected: %d)\n", stats.WebSocketConnections, stats.ExpectedWebSocketConns)
+	fmt.Printf("Validated WebSocket Messages: %d\n", stats.WebSocketMessages)
+	fmt.Printf("Validated HTTP Responses: %d\n", stats.ValidatedHTTPResponses)
 	fmt.Printf("Unrecoverable Errors: %d\n", stats.UnrecoverableErrors)
+	printIntCounts("HTTP Method Coverage", stats.HTTPMethodCounts)
+	printIntCounts("Protocol Coverage", stats.ProtocolCounts)
+	if len(stats.ForwardConnections) > 0 {
+		fmt.Printf("\n--- Forward Connections ---\n")
+		keys := make([]string, 0, len(stats.ForwardConnections))
+		for key := range stats.ForwardConnections {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Printf("%s: %d\n", key, stats.ForwardConnections[key])
+		}
+	}
 
 	// Print response time statistics
 	if len(stats.ResponseTimes) > 0 {
@@ -259,6 +276,21 @@ func printDetailedStats(stats *msgtausch_simulation.SimulationStats) {
 		}
 	}
 	fmt.Printf("==========================================\n\n")
+}
+
+func printIntCounts(title string, counts map[string]int) {
+	if len(counts) == 0 {
+		return
+	}
+	fmt.Printf("\n--- %s ---\n", title)
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Printf("%s: %d\n", key, counts[key])
+	}
 }
 
 // generateAndExportSimCerts creates a root CA and a server certificate/key for

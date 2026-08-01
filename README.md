@@ -77,6 +77,10 @@ VERSION=v1.0.0 docker buildx bake release --set=*.output=type=cacheonly --set=*.
 docker buildx bake simulation --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=
 ```
 
+## AI Disclosure
+
+This project is being developed with AI assistance.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 (GPL-3.0). This means:

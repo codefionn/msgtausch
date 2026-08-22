@@ -20,6 +20,7 @@
           cargoBuildFlags = [ "--package" "msgtausch-cli" ];
           cargoTestFlags = [ "--workspace" ];
           nativeBuildInputs = [ pkgs.pkg-config pkgs.protobuf ];
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           doCheck = true;
           preBuild = ''
             export MSGTAUSCH_VERSION=${version}

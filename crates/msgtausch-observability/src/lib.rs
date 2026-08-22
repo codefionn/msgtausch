@@ -66,6 +66,7 @@ pub struct Observability {
     bytes_sent: Counter,
     bytes_received: Counter,
     tunnel_duration: Histogram,
+    dns_cache_queries: Counter,
 }
 
 impl Observability {
@@ -81,6 +82,7 @@ impl Observability {
         let bytes_sent = Counter::default();
         let bytes_received = Counter::default();
         let tunnel_duration = Histogram::new(exponential_buckets(0.001, 2.0, 18));
+        let dns_cache_queries = Counter::default();
 
         let mut registry = Registry::with_prefix("msgtausch");
         registry.register(
@@ -134,6 +136,11 @@ impl Observability {
             "CONNECT and upgrade tunnel duration.",
             tunnel_duration.clone(),
         );
+        registry.register(
+            "dns_cache_queries",
+            "DNS lookups answered from the cache.",
+            dns_cache_queries.clone(),
+        );
 
         Arc::new(Self {
             registry: Mutex::new(registry),
@@ -148,6 +155,7 @@ impl Observability {
             bytes_sent,
             bytes_received,
             tunnel_duration,
+            dns_cache_queries,
         })
     }
 
@@ -269,6 +277,10 @@ impl ProxyMetrics for Observability {
         self.bytes_sent.inc_by(sent);
         self.bytes_received.inc_by(received);
         self.tunnel_duration.observe(duration.as_secs_f64());
+    }
+
+    fn dns_cache_query(&self) {
+        self.dns_cache_queries.inc();
     }
 }
 
@@ -472,6 +484,7 @@ mod tests {
         metrics.proxy_error("connect");
         metrics.proxy_error("unbounded-error");
         metrics.tunnel_finished(123, 456, Duration::from_millis(11));
+        metrics.dns_cache_query();
         let output = metrics.encode().unwrap();
 
         assert!(output.contains("msgtausch_connections_active 0"));
@@ -492,6 +505,7 @@ mod tests {
         assert!(output.contains("msgtausch_tunnel_bytes_sent_total 123"));
         assert!(output.contains("msgtausch_tunnel_bytes_received_total 456"));
         assert!(output.contains("msgtausch_tunnel_duration_seconds_count 1"));
+        assert!(output.contains("msgtausch_dns_cache_queries_total 1"));
         assert!(!output.contains("unbounded-route"));
         assert!(!output.contains("unbounded-error"));
     }

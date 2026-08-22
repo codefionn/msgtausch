@@ -88,6 +88,7 @@ impl AddressHints {
 pub trait RouteMetrics: Send + Sync + 'static {
     fn route_selected(&self, route: &'static str);
     fn route_error(&self, route: &'static str);
+    fn dns_cache_query(&self) {}
 }
 
 #[derive(Default)]
@@ -128,7 +129,12 @@ impl RoutePlanner {
     /// Select explicit DNS servers for route connections. Existing callers can
     /// keep using `new` and therefore retain system resolution.
     pub fn with_dns(mut self, config: &DnsConfig) -> Self {
-        self.resolver = Resolver::new(config).map(Arc::new);
+        let metrics = self.metrics.clone();
+        self.resolver = Resolver::new(config).map(|resolver| {
+            Arc::new(resolver.with_cache_query_callback(Arc::new(move || {
+                metrics.dns_cache_query();
+            })))
+        });
         self.happy_eyeballs_delay = Duration::from_millis(config.happy_eyeballs_delay_millis);
         self.address_hints = Arc::new(Mutex::new(AddressHints::new(config.cache_capacity)));
         self

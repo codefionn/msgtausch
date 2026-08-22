@@ -340,7 +340,7 @@ fn run_scenario(mut scenario: Scenario, options: &RunOptions) -> Result<Simulati
                 reconcile_metrics(&baseline_metrics, &metrics, &scenario, &origins, &exchanges)?;
             reconcile_forwards(&scenario, socks.as_ref(), http_forward.as_ref())?;
             if let Some(dns) = &dns {
-                reconcile_dns(&scenario, dns)?;
+                reconcile_dns(&scenario, dns, &baseline_metrics, &metrics)?;
             }
             if let Some(domain_list) = &domain_list {
                 ensure!(
@@ -958,7 +958,27 @@ fn reconcile_forwards(
     Ok(())
 }
 
-fn reconcile_dns(scenario: &Scenario, dns: &DnsFixture) -> Result<()> {
+fn reconcile_dns(
+    scenario: &Scenario,
+    dns: &DnsFixture,
+    baseline_metrics: &str,
+    metrics: &str,
+) -> Result<()> {
+    let cache_queries = metric_delta(
+        baseline_metrics,
+        metrics,
+        "msgtausch_dns_cache_queries_total",
+        &[],
+    )?;
+    reconcile_dns_queries(scenario, &dns.questions(), dns.queries(), cache_queries)
+}
+
+fn reconcile_dns_queries(
+    scenario: &Scenario,
+    questions: &[(String, u16)],
+    wire_queries: u64,
+    cache_queries: f64,
+) -> Result<()> {
     let expected_lookups = scenario
         .operations
         .iter()
@@ -967,7 +987,6 @@ fn reconcile_dns(scenario: &Scenario, dns: &DnsFixture) -> Result<()> {
                 && operation.outcome != ExpectedOutcome::Blocked
         })
         .count() as u64;
-    let questions = dns.questions();
     let observed_names = questions
         .iter()
         .map(|(name, _)| name.as_str())
@@ -976,20 +995,26 @@ fn reconcile_dns(scenario: &Scenario, dns: &DnsFixture) -> Result<()> {
         observed_names == BTreeSet::from(["policy.msgtausch.test"]),
         "DNS fixture observed unexpected names {observed_names:?}"
     );
-    for query_type in [1, 28] {
-        let actual = questions
-            .iter()
-            .filter(|(_, observed_type)| *observed_type == query_type)
-            .count() as u64;
-        ensure!(
-            actual == expected_lookups,
-            "DNS type {query_type} query count is {actual}, expected {expected_lookups}"
-        );
-    }
+    let a_queries = questions
+        .iter()
+        .filter(|(_, query_type)| *query_type == 1)
+        .count() as u64;
+    let aaaa_queries = questions
+        .iter()
+        .filter(|(_, query_type)| *query_type == 28)
+        .count() as u64;
     ensure!(
-        dns.queries() == expected_lookups * 2,
-        "DNS fixture observed {} total queries, expected {}",
-        dns.queries(),
+        a_queries == aaaa_queries,
+        "DNS fixture observed {a_queries} A queries and {aaaa_queries} AAAA queries"
+    );
+    ensure!(
+        cache_queries >= 0.0 && cache_queries.fract() == 0.0,
+        "DNS cache query metric changed by {cache_queries}, expected a non-negative integer"
+    );
+    let logical_queries = wire_queries + 2 * cache_queries as u64;
+    ensure!(
+        logical_queries == expected_lookups * 2,
+        "DNS fixture observed {wire_queries} wire queries and the cache recorded {cache_queries} queries, totaling {logical_queries}, expected {}",
         expected_lookups * 2
     );
     Ok(())
@@ -2002,6 +2027,63 @@ mod tests {
             metric_number(current, "msgtausch_http_request_duration_seconds_sum", &[]).unwrap(),
             0.0125
         );
+    }
+
+    #[test]
+    fn dns_reconciliation_combines_wire_and_cache_queries() {
+        let operation = |id, outcome| Operation {
+            id,
+            protocol: Protocol::Http,
+            method: "GET".into(),
+            path: "/".into(),
+            body: String::new(),
+            route: ExpectedRoute::Direct,
+            outcome,
+        };
+        let scenario = Scenario {
+            schema_version: SCHEMA_VERSION,
+            seed: 1,
+            concurrency: 1,
+            operations: vec![
+                operation(1, ExpectedOutcome::Success),
+                operation(2, ExpectedOutcome::RouteFailure),
+                operation(3, ExpectedOutcome::Success),
+                operation(4, ExpectedOutcome::Blocked),
+            ],
+        };
+        let questions = vec![
+            ("policy.msgtausch.test".into(), 1),
+            ("policy.msgtausch.test".into(), 28),
+            ("policy.msgtausch.test".into(), 1),
+            ("policy.msgtausch.test".into(), 28),
+        ];
+
+        reconcile_dns_queries(&scenario, &questions, 4, 1.0).unwrap();
+    }
+
+    #[test]
+    fn dns_reconciliation_requires_balanced_wire_query_types() {
+        let scenario = Scenario {
+            schema_version: SCHEMA_VERSION,
+            seed: 1,
+            concurrency: 1,
+            operations: vec![Operation {
+                id: 1,
+                protocol: Protocol::Http,
+                method: "GET".into(),
+                path: "/".into(),
+                body: String::new(),
+                route: ExpectedRoute::Direct,
+                outcome: ExpectedOutcome::Success,
+            }],
+        };
+        let questions = vec![
+            ("policy.msgtausch.test".into(), 1),
+            ("policy.msgtausch.test".into(), 1),
+        ];
+
+        let error = reconcile_dns_queries(&scenario, &questions, 2, 0.0).unwrap_err();
+        assert!(format!("{error:#}").contains("A queries and 0 AAAA queries"));
     }
 
     #[test]

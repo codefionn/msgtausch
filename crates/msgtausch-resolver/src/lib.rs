@@ -10,7 +10,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num::NonZeroUsize,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -110,6 +110,7 @@ pub struct Resolver {
     cache_enabled: bool,
     cache_max_ttl: Duration,
     negative_cache_ttl: Duration,
+    cache_query: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Resolver {
@@ -122,7 +123,15 @@ impl Resolver {
             cache_enabled: config.cache_enabled && config.cache_capacity > 0,
             cache_max_ttl: Duration::from_secs(config.cache_max_ttl_seconds),
             negative_cache_ttl: Duration::from_secs(config.negative_cache_ttl_seconds),
+            cache_query: Arc::new(|| {}),
         })
+    }
+
+    /// Record a logical lookup served by the DNS cache. The callback is
+    /// invoked once for either a positive or negative cache hit.
+    pub fn with_cache_query_callback(mut self, callback: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.cache_query = callback;
+        self
     }
 
     pub async fn lookup(&self, host: &str) -> Result<Vec<IpAddr>> {
@@ -148,8 +157,14 @@ impl Resolver {
                 .expect("DNS cache lock poisoned")
                 .get(&host, now);
             match cached {
-                Some(CacheEntry::Positive(answer)) => return Ok(answer),
-                Some(CacheEntry::Negative { .. }) => return Err(NoRecords.into()),
+                Some(CacheEntry::Positive(answer)) => {
+                    (self.cache_query)();
+                    return Ok(answer);
+                }
+                Some(CacheEntry::Negative { .. }) => {
+                    (self.cache_query)();
+                    return Err(NoRecords.into());
+                }
                 None => {}
             }
         }
@@ -769,6 +784,7 @@ mod tests {
                 cache_enabled: false,
                 cache_max_ttl: Duration::from_secs(60),
                 negative_cache_ttl: Duration::from_secs(5),
+                cache_query: Arc::new(|| {}),
             };
             assert_eq!(
                 resolver.lookup("example.test").await.unwrap(),
@@ -779,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_udp_lookup_reuses_the_original_query_pair() {
+    fn warm_udp_lookup_reuses_the_original_query_pair_and_counts_one_cache_query() {
         runtime::Runtime::new().unwrap().block_on(async {
             let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let address = server.local_addr().unwrap();
@@ -813,6 +829,7 @@ mod tests {
                     result.unwrap();
                 }
             });
+            let cache_queries = Arc::new(AtomicUsize::new(0));
             let resolver = Resolver {
                 servers: vec![DnsServerConfig {
                     address: address.to_string(),
@@ -826,10 +843,18 @@ mod tests {
                 cache_enabled: true,
                 cache_max_ttl: Duration::from_secs(60),
                 negative_cache_ttl: Duration::from_secs(5),
+                cache_query: {
+                    let cache_queries = cache_queries.clone();
+                    Arc::new(move || {
+                        cache_queries.fetch_add(1, Ordering::Relaxed);
+                    })
+                },
             };
             let first = resolver.lookup("cache.test").await.unwrap();
+            assert_eq!(cache_queries.load(Ordering::Relaxed), 0);
             let second = resolver.lookup("CACHE.TEST.").await.unwrap();
             assert_eq!(first, second);
+            assert_eq!(cache_queries.load(Ordering::Relaxed), 1);
             task.await.unwrap();
         });
     }

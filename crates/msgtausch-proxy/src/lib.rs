@@ -85,6 +85,7 @@ pub trait ProxyMetrics: Send + Sync + 'static {
     fn proxy_error(&self, _kind: &'static str) {}
     fn route_selected(&self, _route: &'static str) {}
     fn route_error(&self, _route: &'static str) {}
+    fn dns_cache_query(&self) {}
 }
 
 #[derive(Default)]
@@ -98,6 +99,9 @@ impl RouteMetrics for ProxyRouteMetrics {
     }
     fn route_error(&self, route: &'static str) {
         self.0.route_error(route);
+    }
+    fn dns_cache_query(&self) {
+        self.0.dns_cache_query();
     }
 }
 

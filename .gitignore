@@ -1,83 +1,40 @@
-# Go specific
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-go.work
-go.work.sum
-
-# Go workspace files
+# Rust build and package output
+/target/
+/bin/
+/dist/
+/result/
 /out
+/simulation-artifacts/
+
+# Local binaries and diagnostics
 /msgtausch
 /throughput-test
 /simulation-test
-/cmd/proxy-test/proxy-test
-/vendor/
-/bin/
-/pkg/
-/main
-/src/vendor/
-/src/bin/
-/src/pkg/
-/release
-/memtest
-
-# Windsurf and IDE specific
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-.env
-*.log
-/.windsurfrules
-
-# Compiled Object files, Static and Dynamic libs
-*.o
-*.a
-
-# Debug files
-debug/
-debug.test
-
-# Output of the go coverage tool
-*.cover
-coverage.html
-
-# Dependency directories (remove the comment below if you want to check in your dependencies)
-# vendor/
-
-/msgtausch-srv/stats/msgtausch_stats.db
-/msgtausch_stats.*
-
-**/templates/*_templ.go
-
-/GEMINI.md
-
-/result
-
 /log.txt
 /weird_request
 /weird-request
 
-/.gocache/
-/.claude
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/secrets/
+*.secret
+*.secrets
 
-msgtausch-stats*.db
-msgtausch-stats*.db-shm
-msgtausch-stats*.db-wal
-msgtausch_stats*.db
-msgtausch_stats*.db-shm
-msgtausch_stats*.db-wal
+# Editor and tool state
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+/.windsurfrules
+/.claude/
+/.cache/
 
-test_proxy_stats*.db
-test_proxy_stats*.db-shm
-test_proxy_stats*.db-wal
-
-/proxy-test
-
-/.cache
+/result

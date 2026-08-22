@@ -1,0 +1,27 @@
+[package]
+name = "msgtausch-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+compio.workspace = true
+cyper-core.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+msgtausch-config = { path = "../msgtausch-config" }
+msgtausch-interception = { path = "../msgtausch-interception" }
+msgtausch-policy = { path = "../msgtausch-policy" }
+msgtausch-quic = { path = "../msgtausch-quic" }
+msgtausch-routing = { path = "../msgtausch-routing" }
+rustls.workspace = true
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "runtime"
+harness = false

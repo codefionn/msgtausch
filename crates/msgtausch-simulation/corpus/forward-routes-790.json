@@ -1,0 +1,11 @@
+{
+  "schema_version": 3,
+  "seed": 790,
+  "concurrency": 3,
+  "operations": [
+    {"id": 0, "protocol": "http", "method": "GET", "path": "/forward/direct", "body": "", "route": "direct"},
+    {"id": 1, "protocol": "connect", "method": "POST", "path": "/forward/socks", "body": "socks-body", "route": "socks5"},
+    {"id": 2, "protocol": "http", "method": "PUT", "path": "/forward/http", "body": "http-body", "route": "http-proxy"},
+    {"id": 4, "protocol": "connect", "method": "HEAD", "path": "/forward/http-head", "body": "", "route": "http-proxy"}
+  ]
+}

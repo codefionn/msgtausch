@@ -1,6 +1,6 @@
 Interception Tests (docker/podman compose)
 
-This harness spins up a tiny HTTP and HTTPS backend (custom Go server), the msgtausch proxy with HTTP+HTTPS interception enabled, and a client that verifies end-to-end interception using curl.
+This harness spins up a tiny HTTP and HTTPS Python backend, the msgtausch proxy with HTTP+HTTPS interception enabled, and a client that verifies end-to-end interception using curl.
 
 Usage
 
@@ -19,4 +19,4 @@ Files
 - `proxy-config.json`: Standard proxy with interception enabled; uses CA at `/ca`.
 - `ca/test_ca.crt` and `ca/test_ca.key`: Test CA (same as used in unit tests); do not use in production.
 - `client/test.sh`: Curl-based assertions; fails the compose run on error.
-- `backend/`: Minimal HTTP/HTTPS server used as upstream targets for the proxy.
+- `backend/`: Minimal Python HTTP/HTTPS server used as upstream targets for the proxy.

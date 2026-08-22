@@ -2,429 +2,188 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
+  CARGO_TERM_COLOR: always
   DOCKER_BUILDKIT: 1
 
 jobs:
-  templ-generate:
-    name: Templ Generate
+  rust:
+    name: Rust checks
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-
-      - name: Install templ
-        run: go install github.com/a-h/templ/cmd/templ@v0.3.1020
-
-      - name: Generate templ files
-        run: templ generate
-
-      - name: Check for changes
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "Generated files are not up to date. Please run 'templ generate' and commit the changes."
-            git status --porcelain
-            exit 1
-          fi
-
-  format:
-    name: Format Check
-    runs-on: ubuntu-latest
-    needs: [templ-generate]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Run format check
-        run: docker buildx bake format
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    needs: [templ-generate]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-
-      - name: Install templ
-        run: go install github.com/a-h/templ/cmd/templ@v0.3.1020
-
-      - name: Generate templ files
-        run: templ generate
-
-      - name: Install SQLite headers
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.5.0
-          args: --timeout=5m
-        env:
-          CGO_ENABLED: 1
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    needs: [templ-generate]
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: "1.25"
-
-      - name: Install templ
-        run: go install github.com/a-h/templ/cmd/templ@v0.3.1020
-
-      - name: Generate templ files
-        run: templ generate
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Run tests
-        run: docker buildx bake test
-
-  compose-intercept-test:
-    name: Compose Intercept Test
-    runs-on: ubuntu-latest
-    needs: [templ-generate]
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Run compose-intercept integration tests
-        timeout-minutes: 8
-        run: |
-          cd tests/compose-intercept
-          docker compose build
-          timeout --signal=SIGINT 300 docker compose up --build --abort-on-container-exit --exit-code-from client
-
-      - name: Run compose-intercept-stats integration tests
-        timeout-minutes: 8
-        run: |
-          cd tests/compose-intercept-stats
-          docker compose build
-          timeout --signal=SIGINT 300 docker compose up --build --abort-on-container-exit --exit-code-from client
-
-      - name: Cleanup compose stacks
-        if: always()
-        run: |
-          cd tests/compose-intercept && docker compose down -v --remove-orphans || true
-          cd "$GITHUB_WORKSPACE/tests/compose-intercept-stats" && docker compose down -v --remove-orphans || true
-
-  build-dev:
-    name: Build Development
-    runs-on: ubuntu-latest
-    needs:
-      [templ-generate, format, lint, test, compose-intercept-test, proxy-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Build development version
-        run: docker buildx bake build
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: msgtausch-dev-binaries
-          path: bin/
-          retention-days: 7
-
-  build-pr:
-    name: Build Pull Request
-    runs-on: ubuntu-latest
-    needs:
-      [templ-generate, format, lint, test, compose-intercept-test, proxy-test]
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Build pull request version
-        run: docker buildx bake build
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: msgtausch-pr-binaries-${{ github.event.number }}
-          path: bin/
-          retention-days: 1
-
-  nix-build:
-    name: Nix Build
-    runs-on: ubuntu-latest
-    needs:
-      [templ-generate, format, lint, test, compose-intercept-test, proxy-test]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Run nix build
-        run: docker buildx bake nix
-
-      - name: Upload nix artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: msgtausch-nix-binaries
-          path: result/bin/
-          retention-days: 7
-
-  proxy-test:
-    name: Proxy Test
-    runs-on: ubuntu-latest
-    needs: [templ-generate, format, lint, test, compose-intercept-test]
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Run proxy test
-        run: docker buildx bake proxy-test
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-targets
 
   simulation:
-    name: Simulation
+    name: Proxy simulation corpus
     runs-on: ubuntu-latest
-    needs: [templ-generate, format, lint, test, compose-intercept-test]
     timeout-minutes: 30
+    needs: rust
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/bake-action@v7
         with:
-          driver: docker-container
-          driver-opts: network=host
+          targets: simulation
+          set: |
+            simulation.cache-from=type=gha
+            simulation.cache-to=type=gha,mode=max
 
-      - name: Run simulation
-        run: docker buildx bake simulation
-
-  docker-release:
-    name: Docker Release
+  throughput:
+    name: Native throughput check
     runs-on: ubuntu-latest
-    needs:
-      [templ-generate, format, lint, test, compose-intercept-test, proxy-test]
-    if: startsWith(github.ref, 'refs/tags/v')
-    environment: default
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
-      QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+    timeout-minutes: 30
+    needs: rust
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/bake-action@v7
         with:
-          driver: docker-container
-          driver-opts: network=host
+          targets: throughput
+          set: |
+            throughput.cache-from=type=gha
+            throughput.cache-to=type=gha,mode=max
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+  compose:
+    name: Proxy integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: rust
+    steps:
+      - uses: actions/checkout@v7
+      - run: cd tests/compose-intercept && docker compose build
+      - run: cd tests/compose-intercept && timeout --signal=SIGINT 300 docker compose up --abort-on-container-exit --exit-code-from client
+      - if: always()
+        run: cd tests/compose-intercept && docker compose down -v --remove-orphans
+
+  nix:
+    name: Nix build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#msgtausch
+      - run: result/bin/msgtausch --help
+
+  containers:
+    name: Multi-architecture container archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [rust, simulation, compose, throughput]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          platforms: amd64,arm64
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/bake-action@v7
+        with:
+          targets: image
+          set: |
+            image.target=runtime-release
+            image.cache-from=type=gha
+            image.cache-to=type=gha,mode=max
 
-      - name: Login to Quay.io
-        uses: docker/login-action@v3
+  publish-main:
+    name: Publish main proxy image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: default
+    needs: containers
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: amd64,arm64
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: quay.io/codefionn/msgtausch
+          tags: type=raw,value=main
+      - uses: docker/bake-action@v7
+        with:
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file-tags }}
+            ${{ steps.meta.outputs.bake-file-labels }}
+          targets: release
+          set: |
+            release.target=runtime-release
+            release.args.VERSION=main
+            release.cache-from=type=gha
+            release.cache-to=type=gha,mode=max
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
+  release:
+    name: Release containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: default
+    needs: [containers, nix]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: amd64,arm64
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
         with:
           images: |
             codefionn/msgtausch
             quay.io/codefionn/msgtausch
           tags: |
-            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+      - uses: docker/bake-action@v7
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          target: runtime-release
-          build-args: |
-            VERSION=${{ github.ref_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  docker-dev:
-    name: Docker Development
-    runs-on: ubuntu-latest
-    needs:
-      [templ-generate, format, lint, test, compose-intercept-test, proxy-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
-    environment: default
-    env:
-      DOCKERHUB_USERNAME: codefionn
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      QUAY_USERNAME: codefionn
-      QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Login to Quay.io
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            codefionn/msgtausch
-            quay.io/codefionn/msgtausch
-          tags: |
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          target: runtime-dev
-          build-args: |
-            VERSION=dev
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    needs: [templ-generate, format, lint, test, docker-release]
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: network=host
-
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Build release
-        env:
-          BUILD_CONFIGURATION: release
-          VERSION: ${{ steps.version.outputs.VERSION }}
-        run: docker buildx bake release
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: msgtausch-release-${{ steps.version.outputs.VERSION }}
-          path: release/
-          retention-days: 90
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/v')
-        with:
-          files: release/*
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            ./docker-bake.hcl
+            ${{ steps.meta.outputs.bake-file-tags }}
+            ${{ steps.meta.outputs.bake-file-labels }}
+          targets: release
+          set: |
+            release.target=runtime-release
+            release.args.VERSION=${{ github.ref_name }}
+            release.cache-from=type=gha
+            release.cache-to=type=gha,mode=max

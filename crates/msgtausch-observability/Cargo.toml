@@ -1,0 +1,29 @@
+[package]
+name = "msgtausch-observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+compio.workspace = true
+hyper.workspace = true
+opentelemetry.workspace = true
+opentelemetry-http.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+prometheus-client.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+msgtausch-config = { path = "../msgtausch-config" }
+msgtausch-proxy = { path = "../msgtausch-proxy" }
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "observability"
+harness = false

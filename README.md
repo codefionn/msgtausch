@@ -2,92 +2,107 @@
 
 ![msgtausch logo](./logo.png)
 
-> This project is actively in intial development. Use at your own risk!
+msgtausch is a configurable forward proxy written in Rust on the Compio async runtime. It handles ordinary HTTP requests, HTTPS CONNECT tunnels and interception, HTTP/3, WebSocket upgrades, access rules, and per-target forwarding through direct, SOCKS5, or upstream HTTP proxy connections.
 
-A configurable forward proxy written in Go that can be configured using either JSON or environment variables.
+The proxy has no database or admin page. It reports through Prometheus and optional OTLP traces.
 
-## Features
+## Current protocol support
 
-- HTTP/HTTPS forward proxy
-- HTTP/HTTPS/QUIC interception support
-- Forward support (forward specific connections to socks5 proxy, upstream proxy
-  or default connection)
-- A single binary
+- Standard HTTP forward proxy listeners
+- HTTPS through CONNECT tunnels, with optional CA-backed interception
+- Dedicated HTTPS and HTTP/3 listeners
+- HTTP/1 upgrade and WebSocket tunnels
+- Direct, forced IPv4, SOCKS5, and upstream HTTP CONNECT routes
+- UDP, TCP, and DNS-over-TLS resolvers
+- Domain, IP, network, port, boolean, reference, file-backed, and remote-list classifiers
+- Allowlist and blocklist rules
+- Prometheus counters, gauges, and duration histograms
+- Optional OTLP trace export
+- SIGHUP configuration reload
 
-## Non-goals
+On Linux, Compio selects io_uring when the kernel supports the required operations and falls back to polling when it does not. The selected driver is written to the startup log.
 
-- HTML-Filtering
+## Run locally
 
-## Configuration
-
-**msgtausch** supports configuration in both **JSON** and **HCL** formats.
-The configuration file path can be specified via CLI or environment variable.
-Most options can also be set via environment variables.
-
-For comprehensive configuration documentation, see [docs/configuration.md](docs/configuration.md).
-
-### Format
-
-- File extension determines format: `.json` for JSON, `.hcl` for HCL.
-- For HCL, use equivalent field names (`listen-address`, etc).
-
-## Project overview
-
-- **cmd/proxy-test/main.go** - Testing the proxy in the real world
-- **cmd/simulation/main.go** - Seeded feature simulation for HTTP methods, request
-  integrity, WebSockets, TLS, failures, and SOCKS5/HTTP forward routing
-- **cmd/throughput-test/main.go** - Testing throughput on localhost
-  (May your downloads be fast)
-- **main.go** - Main program for running the proxy
-
-## Building with Docker
-
-This project uses Docker Bake for building and testing. Make sure you have Docker and `docker buildx` installed.
-
-### Supported Platforms
-
-The build system supports Linux `amd64` and `arm64` (and the containers are published as such).
-
-This project may work for other operating systems but is specialized for Linux.
-
-### Quick Start with Docker
-
-1. Run tests and build binaries:
 ```bash
-# Run default targets (test and build)
-docker buildx bake --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=
+cargo run -p msgtausch-cli -- --config examples/config.json
 ```
 
-2. Build a specific target:
-```bash
-# Only run tests
-docker buildx bake test --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=
+Legacy flag spellings are accepted too:
 
-# Only build binaries
-docker buildx bake build --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=
+```bash
+cargo run -p msgtausch-cli -- -config examples/config.json -debug
 ```
 
-3. Create a release:
+See [configuration.md](docs/configuration.md) for JSON, HCL, environment variables, routing, and observability.
+
+## Checks
+
 ```bash
-VERSION=v1.0.0 docker buildx bake release --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+cargo build -p msgtausch-cli --bin msgtausch
+cargo run -p msgtausch-internet-test
+cargo run -p msgtausch-simulation -- 9000 --binary target/debug/msgtausch --runs 4 --jobs 2 --enable-policy-fixtures --stats
+cargo run -p msgtausch-throughput -- --protocol both --requests 1000 --concurrency 32 --body-size 65536
+cargo bench --workspace
 ```
 
-4. Run simulation:
+The Docker simulation target replays every checked-in scenario, then runs four
+generated seeds across two workers. Generated cases mix HTTP and CONNECT,
+request methods and body sizes, forwarding routes, blocked requests, broken
+routes, concurrent batches, and metric reconciliation.
+
+`msgtausch-internet-test` is the opt-in public-network check. It starts the
+debug proxy and requests HTTP and HTTPS URLs from Example.com, Example.org,
+Cloudflare, GitHub, Wikipedia, and Google. Pass `--proxy` to test an existing
+instance or provide URLs as positional arguments. It is kept out of the regular
+test suite because DNS and remote sites can fail independently of the proxy.
+
+`msgtausch-throughput` starts a loopback origin and the compiled proxy by default. Pass `--proxy host:port` to measure an already-running proxy. It checks every response body, supports HTTP and CONNECT traffic, and reports request rate, IEC-scaled throughput, and p50/p95/p99 latency. Use `--requests 0 --duration 30s` for a duration-only run.
+
+## Benchmarks
+
+The microbenchmarks report elapsed time and heap allocation counts. Run the full
+set with `cargo bench --workspace`, or pass a Divan name filter after `--` to
+measure one path. The normal workspace test command runs every benchmark once
+as a smoke test without collecting statistics.
+
+See [benchmarking.md](docs/benchmarking.md) for the benchmark groups and advice
+on comparing runs.
+
+## Docker and Nix
+
 ```bash
-docker buildx bake simulation --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=
+docker buildx bake test
+docker buildx bake simulation
+docker buildx bake throughput
+docker buildx bake build
+docker buildx bake image
+nix build .#msgtausch
 ```
 
-## AI Disclosure
+`build` writes the native binaries into separate directories, `bin/linux-amd64/`
+and `bin/linux-arm64/`. `image` writes one multi-platform OCI archive to
+`dist/msgtausch-dev.oci`. It contains both Linux manifests and does not depend
+on the single-platform `docker load` format.
 
-This project is being developed with AI assistance.
+To publish the production proxy image, use a Buildx builder with amd64 and
+arm64 support, then push the manifest list:
+
+```bash
+IMAGE=registry.example/msgtausch VERSION=v1.2.3 \
+  BUILD_CONFIGURATION=release docker buildx bake release
+```
+
+The GitHub main-branch workflow publishes the two-platform
+`quay.io/codefionn/msgtausch:main` image used by both Helm charts. Tag builds
+publish version, major-minor, and major tags to Docker Hub and Quay. The GitLab
+tag pipeline publishes `${CI_COMMIT_TAG}` to its project registry.
+
+The container exposes the proxy on the addresses in the mounted config. Port 9090 is conventional for the optional Prometheus listener, but it is disabled unless configured.
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 (GPL-3.0). This means:
-
-- You are free to use, modify, and distribute this software
-- If you distribute this software or modified versions, you must provide the source code
-- Any modifications must also be licensed under the GPL-3.0
-- There is no warranty for this software
-
-See the [LICENSE](LICENSE) file for the full license text.
+msgtausch is licensed under GPL-3.0. See [LICENSE](LICENSE).

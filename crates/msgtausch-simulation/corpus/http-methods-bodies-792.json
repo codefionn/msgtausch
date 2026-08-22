@@ -1,0 +1,16 @@
+{
+  "schema_version": 3,
+  "seed": 792,
+  "concurrency": 4,
+  "operations": [
+    {"id": 0, "protocol": "http", "method": "GET", "path": "/methods/get?x=1", "body": "", "route": "direct"},
+    {"id": 1, "protocol": "connect", "method": "POST", "path": "/methods/post", "body": "p", "route": "direct"},
+    {"id": 2, "protocol": "http", "method": "PUT", "path": "/methods/put", "body": "0123456789abcdef0123456789abcdef", "route": "direct"},
+    {"id": 3, "protocol": "connect", "method": "PATCH", "path": "/methods/patch", "body": "patch-through-connect", "route": "direct"},
+    {"id": 4, "protocol": "http", "method": "DELETE", "path": "/methods/delete", "body": "delete-body", "route": "direct"},
+    {"id": 5, "protocol": "connect", "method": "HEAD", "path": "/methods/head", "body": "", "route": "direct"},
+    {"id": 6, "protocol": "http", "method": "OPTIONS", "path": "/methods/options", "body": "", "route": "direct"},
+    {"id": 7, "protocol": "connect", "method": "TRACE", "path": "/methods/trace", "body": "trace-body", "route": "direct"},
+    {"id": 8, "protocol": "http", "method": "PURGE", "path": "/methods/other", "body": "custom-method", "route": "direct"}
+  ]
+}

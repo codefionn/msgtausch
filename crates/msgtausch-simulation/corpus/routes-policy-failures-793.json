@@ -1,0 +1,21 @@
+{
+  "schema_version": 3,
+  "seed": 793,
+  "concurrency": 6,
+  "operations": [
+    {"id": 0, "protocol": "http", "method": "GET", "path": "/matrix/http-direct", "body": "", "route": "direct"},
+    {"id": 1, "protocol": "connect", "method": "POST", "path": "/matrix/connect-direct", "body": "direct", "route": "direct"},
+    {"id": 2, "protocol": "http", "method": "PATCH", "path": "/matrix/http-socks", "body": "socks-http", "route": "socks5"},
+    {"id": 3, "protocol": "connect", "method": "PUT", "path": "/matrix/connect-socks", "body": "socks-connect", "route": "socks5"},
+    {"id": 4, "protocol": "http", "method": "OPTIONS", "path": "/matrix/http-forward", "body": "", "route": "http-proxy"},
+    {"id": 5, "protocol": "connect", "method": "DELETE", "path": "/matrix/connect-forward", "body": "forward-connect", "route": "http-proxy"},
+    {"id": 6, "protocol": "http", "method": "GET", "path": "/matrix/blocked-http", "body": "", "route": "direct", "outcome": "blocked"},
+    {"id": 7, "protocol": "connect", "method": "GET", "path": "/matrix/blocked-connect", "body": "", "route": "socks5", "outcome": "blocked"},
+    {"id": 8, "protocol": "http", "method": "GET", "path": "/matrix/dead-direct-http", "body": "", "route": "direct", "outcome": "route-failure"},
+    {"id": 9, "protocol": "connect", "method": "GET", "path": "/matrix/dead-direct-connect", "body": "", "route": "direct", "outcome": "route-failure"},
+    {"id": 10, "protocol": "http", "method": "GET", "path": "/matrix/dead-socks-http", "body": "", "route": "socks5", "outcome": "route-failure"},
+    {"id": 11, "protocol": "connect", "method": "GET", "path": "/matrix/dead-socks-connect", "body": "", "route": "socks5", "outcome": "route-failure"},
+    {"id": 12, "protocol": "http", "method": "GET", "path": "/matrix/dead-forward-http", "body": "", "route": "http-proxy", "outcome": "route-failure"},
+    {"id": 13, "protocol": "connect", "method": "GET", "path": "/matrix/dead-forward-connect", "body": "", "route": "http-proxy", "outcome": "route-failure"}
+  ]
+}

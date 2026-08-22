@@ -1,0 +1,16 @@
+[package]
+name = "msgtausch-quic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+compio.workspace = true
+compio-quic.workspace = true
+hyper.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true

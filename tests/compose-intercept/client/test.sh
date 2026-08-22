@@ -8,7 +8,7 @@ CURL="curl -sS --fail --connect-timeout 5 --max-time 20"
 echo "[client] Waiting for proxy and backends to be ready..."
 ready=0
 for i in $(seq 1 60); do
-  if $CURL --proxy "$HTTP_PROXY" http://msgtausch.internal/ >/dev/null 2>&1; then
+  if $CURL --proxy "$HTTP_PROXY" http://http-backend:5678/ >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -27,8 +27,8 @@ case "$HTTP_OUT" in
 esac
 echo "[client] HTTP OK: $HTTP_OUT"
 
-echo "[client] Testing HTTPS via proxy (MITM) with test CA..."
-# Use the CA used by the proxy for MITM certs
+echo "[client] Testing HTTPS through a CONNECT tunnel..."
+# Trust the test CA used by msgtausch to mint the intercepted leaf.
 HTTPS_OUT=$($CURL --proxy "$HTTPS_PROXY" --cacert /ca/test_ca.crt https://https-backend:8443/)
 
 case "$HTTPS_OUT" in

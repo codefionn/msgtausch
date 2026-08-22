@@ -1,0 +1,12 @@
+[package]
+name = "msgtausch-resolver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+compio.workspace = true
+compio-tls.workspace = true
+msgtausch-config = { path = "../msgtausch-config" }
+rustls-native-certs.workspace = true

@@ -1,0 +1,10 @@
+{
+  "schema_version": 3,
+  "seed": 789,
+  "concurrency": 2,
+  "operations": [
+    {"id": 0, "protocol": "http", "method": "GET", "path": "/fixed/http?value=1", "body": "", "route": "direct"},
+    {"id": 1, "protocol": "connect", "method": "POST", "path": "/fixed/connect?value=2", "body": "fixed-body", "route": "direct"},
+    {"id": 2, "protocol": "http", "method": "PATCH", "path": "/fixed/patch?value=3", "body": "patch-body", "route": "direct"}
+  ]
+}

@@ -1,0 +1,30 @@
+[package]
+name = "msgtausch-interception"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aes.workspace = true
+anyhow.workspace = true
+cbc.workspace = true
+compio.workspace = true
+des.workspace = true
+futures-rustls.workspace = true
+futures-util.workspace = true
+md-5.workspace = true
+msgtausch-config = { path = "../msgtausch-config" }
+msgtausch-policy = { path = "../msgtausch-policy" }
+pkcs8.workspace = true
+pem.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+
+[dev-dependencies]
+divan.workspace = true
+rustls-pemfile.workspace = true
+
+[[bench]]
+name = "interception"
+harness = false

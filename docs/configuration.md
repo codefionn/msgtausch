@@ -1,947 +1,194 @@
-# Configuration Documentation
+# Configuration
 
-This document provides comprehensive documentation for the msgtausch proxy configuration system. The configuration can be provided via JSON/HCL files or environment variables.
+msgtausch reads JSON and HCL. The filename extension selects the parser. If no config option is present, the service tries `config.json`.
 
-## Configuration Sources
-
-msgtausch supports configuration from multiple sources, processed in this order:
-1. JSON configuration file (`.json` extension)
-2. HCL configuration file (`.hcl` extension)
-3. Environment variables (with `MSGTAUSCH_` prefix)
-
-## Configuration Structure
-
-### Top-Level Configuration
-
-The root configuration object contains the following fields:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `servers` | `[]ServerConfig` | `[{...}]` | List of proxy server configurations |
-| `timeout-seconds` | `int` | `30` | Request timeout in seconds |
-| `max-concurrent-connections` | `int` | `100` | Global maximum concurrent connections |
-| `classifiers` | `map[string]Classifier` | `{}` | Named classifier definitions |
-| `allowlist` | `Classifier` | `null` | Allow only hosts matching this classifier |
-| `blocklist` | `Classifier` | `null` | Block hosts matching this classifier |
-| `forwards` | `[]Forward` | `[]` | Forwarding rules for different destinations |
-| `interception` | `InterceptionConfig` | `{...}` | Global interception settings |
-| `statistics` | `StatisticsConfig` | `{...}` | Statistics collection configuration |
-| `cache` | `CacheConfig` | `{...}` | Domain URL cache configuration |
-
-### Cache Configuration
-
-The `cache` object controls background caching of domain lists fetched from URLs:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable background caching of domain URLs |
-| `default-ttl` | `int` | `3600` | Default cache time-to-live in seconds (1 hour) |
-| `refresh-interval` | `int` | `300` | Background refresh interval in seconds (5 minutes) |
-| `http-timeout` | `int` | `30` | HTTP request timeout in seconds |
-| `max-retries` | `int` | `3` | Maximum retry attempts for failed requests |
-| `retry-delay` | `int` | `5` | Delay between retry attempts in seconds |
-
-#### Cache Behavior
-
-- **Background Refresh**: Cache entries are automatically refreshed in the background before they expire
-- **Error Handling**: Failed fetch attempts are cached for a short duration (5 minutes) to avoid repeated failed requests
-- **Retry Logic**: Failed requests are retried up to `max-retries` times with `retry-delay` between attempts
-- **Memory Efficiency**: Uses Aho-Corasick tries for efficient domain matching
-- **Graceful Degradation**: Classification continues with stale data if refresh fails, rather than blocking requests
-
-#### Cache Configuration Examples
-
-```json
-{
-  "cache": {
-    "enabled": true,
-    "default-ttl": 7200,
-    "refresh-interval": 600,
-    "http-timeout": 45,
-    "max-retries": 5,
-    "retry-delay": 10
-  }
-}
-```
-
-#### HCL Cache Configuration
-```hcl
-cache = {
-  enabled          = true
-  default-ttl      = 7200  # 2 hours
-  refresh-interval = 600   # 10 minutes
-  http-timeout     = 45    # 45 seconds
-  max-retries      = 5
-  retry-delay      = 10    # 10 seconds
-}
-```
-
-#### Environment Variables
-
-| Environment Variable | Description | Type |
-|---------------------|-------------|------|
-| `MSGTAUSCH_CACHE_ENABLED` | Enable domain URL caching | bool |
-| `MSGTAUSCH_CACHE_DEFAULT_TTL` | Cache TTL in seconds | int |
-| `MSGTAUSCH_CACHE_REFRESH_INTERVAL` | Refresh interval in seconds | int |
-| `MSGTAUSCH_CACHE_HTTP_TIMEOUT` | HTTP timeout in seconds | int |
-| `MSGTAUSCH_CACHE_MAX_RETRIES` | Maximum retry attempts | int |
-| `MSGTAUSCH_CACHE_RETRY_DELAY` | Retry delay in seconds | int |
-
-### DNS Configuration
-
-The `dns` object controls the DNS resolver used by the proxy:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable custom DNS resolver |
-| `servers` | `[]DNSServerConfig` | `[]` | List of DNS servers to use (1-5 servers) |
-
-#### DNS Server Configuration
-
-Each server in the `servers` array supports the following configuration:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `address` | `string` | required | DNS server address (host:port or [IPv6]:port) |
-| `type` | `string` | `"udp"` | DNS server type: `"udp"`, `"tcp"`, or `"dot"` |
-| `timeout-seconds` | `int` | `10` | Query timeout in seconds (1-60) |
-| `tls-host` | `string` | `""` | TLS hostname for SNI (only for `type: "dot"`) |
-
-#### DNS Types
-
-- **udp**: Standard DNS over UDP (port 53)
-- **tcp**: Standard DNS over TCP (port 53)
-- **dot**: DNS over TLS (RFC 7858) - typically port 853
-
-#### DNS Behavior
-
-- **Server Rotation**: When multiple servers are configured, the proxy rotates through them in a round-robin fashion
-- **Failover**: If a server fails, the proxy automatically tries the next server in the list
-- **DoT Security**: DNS over TLS provides encrypted DNS queries, protecting against DNS surveillance and tampering
-- **System Default**: When DNS is disabled or no servers are configured, the proxy uses the system's default DNS resolver
-
-#### DNS Configuration Examples
-
-**Using Google DNS (UDP):**
-```json
-{
-  "dns": {
-    "enabled": true,
-    "servers": [
-      {
-        "address": "8.8.8.8:53",
-        "type": "udp",
-        "timeout-seconds": 10
-      },
-      {
-        "address": "8.8.4.4:53",
-        "type": "udp",
-        "timeout-seconds": 10
-      }
-    ]
-  }
-}
-```
-
-**Using Cloudflare DNS over TLS:**
-```json
-{
-  "dns": {
-    "enabled": true,
-    "servers": [
-      {
-        "address": "1.1.1.1:853",
-        "type": "dot",
-        "timeout-seconds": 15
-      },
-      {
-        "address": "1.0.0.1:853",
-        "type": "dot",
-        "timeout-seconds": 15
-      }
-    ]
-  }
-}
-```
-
-**Using DoT with custom TLS hostname (SNI):**
-```json
-{
-  "dns": {
-    "enabled": true,
-    "servers": [
-      {
-        "address": "9.9.9.9:853",
-        "type": "dot",
-        "timeout-seconds": 10,
-        "tls-host": "dns.quad9.net"
-      },
-      {
-        "address": "149.112.112.112:853",
-        "type": "dot",
-        "timeout-seconds": 10,
-        "tls-host": "dns.quad9.net"
-      }
-    ]
-  }
-}
-```
-
-The `tls-host` field is useful when:
-- Connecting to a DoT server via IP address (required for TLS certificate validation)
-- The server's TLS certificate uses a different hostname than the connection address
-- You want to specify the SNI (Server Name Indication) hostname explicitly
-
-**Mixed DNS servers:**
-```json
-{
-  "dns": {
-    "enabled": true,
-    "servers": [
-      {
-        "address": "8.8.8.8:53",
-        "type": "udp",
-        "timeout-seconds": 5
-      },
-      {
-        "address": "1.1.1.1:853",
-        "type": "dot",
-        "timeout-seconds": 10
-      },
-      {
-        "address": "9.9.9.9:853",
-        "type": "dot",
-        "timeout-seconds": 10
-      }
-    ]
-  }
-}
-```
-
-**Using IPv6 DNS servers:**
-```json
-{
-  "dns": {
-    "enabled": true,
-    "servers": [
-      {
-        "address": "[2001:4860:4860::8888]:53",
-        "type": "udp",
-        "timeout-seconds": 10
-      },
-      {
-        "address": "[2606:4700:4700::1111]:853",
-        "type": "dot",
-        "timeout-seconds": 15
-      }
-    ]
-  }
-}
-```
-
-#### HCL DNS Configuration
-```hcl
-dns = {
-  enabled = true
-  servers = [
-    {
-      address        = "8.8.8.8:53"
-      type           = "udp"
-      timeout-seconds = 10
-    }
-    {
-      address        = "1.1.1.1:853"
-      type           = "dot"
-      timeout-seconds = 15
-    }
-  ]
-}
-```
-
-#### Environment Variables
-
-| Environment Variable | Description | Type |
-|---------------------|-------------|------|
-| `MSGTAUSCH_DNS_ENABLED` | Enable custom DNS resolver | bool |
-| `MSGTAUSCH_DNS_SERVER_0_ADDRESS` | First DNS server address | string |
-| `MSGTAUSCH_DNS_SERVER_0_TYPE` | First DNS server type | string |
-| `MSGTAUSCH_DNS_SERVER_0_TIMEOUT_SECONDS` | First DNS server timeout (seconds) | int |
-| `MSGTAUSCH_DNS_SERVER_1_ADDRESS` | Second DNS server address | string |
-| ... | ... | ... |
-
-**Example with environment variables:**
 ```bash
-export MSGTAUSCH_DNS_ENABLED=true
-export MSGTAUSCH_DNS_SERVER_0_ADDRESS=8.8.8.8:53
-export MSGTAUSCH_DNS_SERVER_0_TYPE=udp
-export MSGTAUSCH_DNS_SERVER_1_ADDRESS=1.1.1.1:853
-export MSGTAUSCH_DNS_SERVER_1_TYPE=dot
+msgtausch --config base.json --config production.hcl --envfile /run/msgtausch.env
 ```
 
-### Statistics Configuration
+`--config` may repeat. Each file starts from defaults. The last file that loads successfully becomes the full configuration, so files replace one another rather than merge. Environment variables override each loaded file. If the first file cannot be loaded, msgtausch tries an environment-only configuration. A later bad file is skipped.
 
-The `statistics` object controls statistics collection and monitoring:
+The CLI also accepts the legacy spellings `-config`, `-envfile`, `-debug`, `-trace`, and `-version`.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable statistics collection |
-| `backend` | `string` | `"sqlite"` | Storage backend: `"sqlite"`, `"postgres"`, or `"dummy"` |
-| `sqlite-path` | `string` | `"msgtausch_stats.db"` | Path to SQLite database file |
-| `postgres-dsn` | `string` | `""` | PostgreSQL connection string |
-| `buffer-size` | `int` | `1000` | Buffer size for batch operations |
-| `flush-interval` | `int` | `300` | Flush interval in seconds (5 minutes) |
+## Minimal config
 
-### Server Configuration
-
-Each server in the `servers` array supports the following configuration:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `type` | `string` | `"standard"` | Proxy type: `standard`, `http`, `https`, `quic` |
-| `listen-address` | `string` | `"127.0.0.1:8080"` | Address and port to listen on |
-| `enabled` | `bool` | `true` | Whether this server is enabled |
-| `interceptor-name` | `string` | `""` | Identifier for this interceptor (optional) |
-| `max-connections` | `int` | `100` | Maximum connections for this server |
-| `connections-per-client` | `int` | `10` | Maximum connections per client IP |
-
-#### Proxy Types
-
-- **standard**: Standard HTTP/HTTPS forward proxy
-- **http**: HTTP-only proxy server
-- **https**: HTTPS proxy server with TLS
-- **quic**: QUIC/HTTP3 proxy server
-
-### Interception Configuration
-
-The `interception` object controls traffic interception capabilities:
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Master switch for traffic interception |
-| `http` | `bool` | `false` | Enable HTTP traffic interception |
-| `https` | `bool` | `false` | Enable HTTPS traffic interception |
-| `insecure-skip-verify` | `bool` | `false` | Skip TLS verification for upstream connections during interception (useful for self-signed upstreams in tests/dev). Set to `true` to bypass upstream TLS verification. |
-| `ca-file` | `string` | `""` | Path to CA certificate file |
-| `ca-key-file` | `string` | `""` | Path to CA private key file |
-| `ca-key-passwd` | `string` | `""` | Optional password for encrypted CA private key file |
-
-### Classifiers
-
-Classifiers are rule-based matching systems used for allowlists, blocklists, and forwarding decisions. They can be defined as named classifiers in the `classifiers` map or used inline.
-
-#### Classifier Types
-
-##### Boolean Logic Classifiers
-
-- **`and`**: Matches if all sub-classifiers match
-- **`or`**: Matches if any sub-classifier matches  
-- **`not`**: Negates the result of a sub-classifier
-
-**Fields:**
-- `classifiers`: Array of sub-classifiers to evaluate
-
-##### Domain Classifiers
-
-- **`domain`**: Match by domain name patterns
-
-**Fields:**
-- `domain`: The domain pattern to match
-- `op`: Matching operation (`is`, `contains`, `starts-with`, `is`, `regex`)
-
-##### Network Classifiers
-
-- **`ip`**: Match by exact IP address
-- **`network`**: Match by CIDR network range
-
-**Fields:**
-- `ip`: Exact IP address (for `ip` type)
-- `cidr`: CIDR notation (e.g., "192.168.1.0/24") (for `network` type)
-
-##### Port Classifiers
-
-- **`port`**: Match by port number
-
-**Fields:**
-- `port`: Port number to match
-
-##### File-based Classifiers
-
-- **`domains-file`**: Match domains from a file
-
-**Fields:**
-- `file`: Path to file containing domain patterns (one per line)
-
-- **`domains-url`**: Match domains fetched from a URL with mirror fallback support
-
-**Fields:**
-- `url`: Primary URL to fetch domain patterns from
-- `mirrors`: Array of mirror URLs for fallback (optional, max 5 URLs)
-- `format`: Format of the domain list (`rpz`, `wildcard`, `adblock`, `plain`)
-- `timeout`: Timeout in seconds for HTTP request (optional, default: 30)
-
-**URL Formats:**
-- **`rpz`**: RPZ format with `domain CNAME .` entries
-- **`wildcard`**: Wildcard format with `*.domain` entries  
-- **`adblock`**: AdBlock format with `||domain^` entries
-- **`plain`**: Plain domain names, one per line
-
-#### Mirror URL Behavior
-
-- **Primary First**: The system always tries the primary URL first
-- **Sequential Fallback**: If primary fails, mirrors are tried in order
-- **Independent Caching**: Each URL (primary + mirrors combination) is cached separately
-- **Retry Logic**: Each URL gets its own retry attempts before trying the next
-- **Success Logging**: The system logs which URL successfully provided the content
-- **Cache Source**: Cache entries remember which URL provided the content for debugging
-
-#### Mirror URL Best Practices
-
-- **Geographic Distribution**: Use mirrors in different geographic regions
-- **Different Providers**: Use different hosting providers for redundancy
-- **Content Consistency**: Ensure all mirrors serve identical content
-- **URL Limits**: Maximum 5 mirrors per classifier to avoid complexity
-- **Format Consistency**: All mirrors must serve the same format as the primary
-
-##### Reference Classifiers
-
-- **`ref`**: Reference a named classifier defined in the `classifiers` map
-
-**Fields:**
-- `id`: Name of the classifier to reference
-
-##### Constant Classifiers
-
-- **`true`**: Always matches
-- **`false`: Never matches
-
-### Forwarding Rules
-
-The `forwards` array defines how traffic should be forwarded based on matching classifiers. Rules are evaluated in order, and the first matching rule is used.
-
-#### Forward Types
-
-##### Default Network Forward
-
-- **Type**: `default-network`
-- **Description**: Uses the system's default network routing
-- **Fields**:
-  - `classifier`: Classifier to determine when this forward applies
-  - `force-ipv4`: Force IPv4 connections (boolean, optional)
-
-##### SOCKS5 Forward
-
-- **Type**: `socks5`
-- **Description**: Routes traffic through a SOCKS5 proxy
-- **Fields**:
-  - `classifier`: Classifier to determine when this forward applies
-  - `address`: SOCKS5 server address (host:port)
-  - `username`: Username for authentication (optional)
-  - `password`: Password for authentication (optional)
-  - `force-ipv4`: Force IPv4 connections (boolean, optional)
-
-##### HTTP Proxy Forward
-
-- **Type**: `proxy`
-- **Description**: Routes traffic through an HTTP proxy
-- **Fields**:
-  - `classifier`: Classifier to determine when this forward applies
-  - `address`: HTTP proxy address (host:port)
-  - `username`: Username for authentication (optional)
-  - `password`: Password for authentication (optional)
-  - `force-ipv4`: Force IPv4 connections (boolean, optional)
-
-## Environment Variables
-
-Configuration can be overridden using environment variables with the `MSGTAUSCH_` prefix.
-
-### Global Configuration Variables
-
-| Environment Variable | Description | Type |
-|---------------------|-------------|------|
-| `MSGTAUSCH_TIMEOUTSECONDS` | Request timeout in seconds | int |
-| `MSGTAUSCH_MAXCONCURRENTCONNECTIONS` | Maximum concurrent connections | int |
-| `MSGTAUSCH_INTERCEPT` | Enable traffic interception | bool |
-| `MSGTAUSCH_INTERCEPTHTTP` | Enable HTTP traffic interception | bool |
-| `MSGTAUSCH_INTERCEPTHTTPS` | Enable HTTPS traffic interception | bool |
-| `MSGTAUSCH_CAFILE` | Path to CA certificate file | string |
-| `MSGTAUSCH_CAKEYFILE` | Path to CA private key file | string |
-| `MSGTAUSCH_INSECURE_SKIP_VERIFY` | Skip upstream TLS verification (`true`/`false`) | bool |
-| `MSGTAUSCH_CAKEYPASSWD` | Password for encrypted CA private key file | string |
-| `MSGTAUSCH_STATISTICS_ENABLED` | Enable statistics collection | bool |
-| `MSGTAUSCH_STATISTICS_BACKEND` | Statistics backend type | string |
-| `MSGTAUSCH_STATISTICS_SQLITE_PATH` | Path to SQLite stats database | string |
-| `MSGTAUSCH_STATISTICS_POSTGRES_DSN` | PostgreSQL connection string | string |
-| `MSGTAUSCH_STATISTICS_BUFFER_SIZE` | Buffer size for batch operations | int |
-| `MSGTAUSCH_STATISTICS_FLUSH_INTERVAL` | Flush interval in seconds | int |
-| `MSGTAUSCH_LISTENADDRESS` | Address for single server (backward compatibility) | string |
-
-### Server-Specific Variables
-
-For multiple servers, use indexed environment variables where `N` is the server index (0, 1, 2, etc.):
-
-| Environment Variable Pattern | Description | Type |
-|------------------------------|-------------|------|
-| `MSGTAUSCH_SERVER_N_LISTENADDRESS` | Listen address for server N | string |
-| `MSGTAUSCH_SERVER_N_TYPE` | Proxy type for server N | string |
-| `MSGTAUSCH_SERVER_N_ENABLED` | Enable/disable server N | bool |
-| `MSGTAUSCH_SERVER_N_MAXCONNECTIONS` | Max connections for server N | int |
-| `MSGTAUSCH_SERVER_N_CONNECTIONSPCLIENT` | Max connections per client for server N | int |
-| `MSGTAUSCH_SERVER_N_CAFILE` | CA file for server N | string |
-| `MSGTAUSCH_SERVER_N_CAKEYFILE` | CA key file for server N | string |
-
-### Statistics Environment Variables
-
-| Environment Variable Pattern | Description | Type |
-|------------------------------|-------------|------|
-| `MSGTAUSCH_STATISTICS_ENABLED` | Enable statistics collection | bool |
-| `MSGTAUSCH_STATISTICS_BACKEND` | Statistics backend type | string |
-| `MSGTAUSCH_STATISTICS_SQLITE_PATH` | Path to SQLite database | string |
-| `MSGTAUSCH_STATISTICS_POSTGRES_DSN` | PostgreSQL connection string | string |
-| `MSGTAUSCH_STATISTICS_BUFFER_SIZE` | Buffer size for batch operations | int |
-| `MSGTAUSCH_STATISTICS_FLUSH_INTERVAL` | Flush interval in seconds | int |
-
-### Examples
-
-#### Basic Environment Configuration
-```bash
-export MSGTAUSCH_TIMEOUTSECONDS=60
-export MSGTAUSCH_MAXCONCURRENTCONNECTIONS=200
-export MSGTAUSCH_LISTENADDRESS=0.0.0.0:8080
-```
-
-#### Multi-Server Environment Configuration
-```bash
-export MSGTAUSCH_SERVER_0_LISTENADDRESS=127.0.0.1:8080
-export MSGTAUSCH_SERVER_0_TYPE=standard
-export MSGTAUSCH_SERVER_1_LISTENADDRESS=127.0.0.1:8443
-export MSGTAUSCH_SERVER_1_TYPE=https
-export MSGTAUSCH_SERVER_1_ENABLED=true
-```
-
-## Configuration Examples
-
-### Basic Forward Proxy
 ```json
 {
   "servers": [
     {
       "type": "standard",
       "listen-address": "127.0.0.1:8080",
-      "enabled": true,
-      "max-connections": 100,
-      "connections-per-client": 10
+      "enabled": true
     }
   ],
   "timeout-seconds": 30,
-  "max-concurrent-connections": 100,
-  "statistics": {
-    "enabled": true,
-    "backend": "sqlite",
-    "sqlite-path": "proxy_stats.db",
-    "flush-interval": 300
-  }
-  "allowlist": {
-    "type": "ref",
-    "id": "internal-network"
-  },
-  "allowlist": {
-    "type": "ref",
-    "id": "internal-network"
-  },
-  "allowlist": {
-    "type": "ref",
-    "id": "internal-network"
+  "observability": {
+    "prometheus-listen-address": "127.0.0.1:9090"
   }
 }
 ```
 
-### Advanced Configuration with Classifiers
+With no file or environment overrides, the service uses one standard listener at `127.0.0.1:8080`, a 30 second connection timeout, 2,048 idle connections, and 256 idle connections per host.
+
+## Top-level fields
+
+| Field | Purpose |
+|---|---|
+| `servers` | Proxy listeners. |
+| `listen-address` | Legacy shorthand for one standard listener. |
+| `timeout-seconds` | Connect and tunnel idle timeout. |
+| `max-idle-conns` | Retained connection-pool setting. |
+| `max-idle-conns-per-host` | Retained per-host pool setting. |
+| `max-concurrent-connections` | Legacy admission limit. Accepted and ignored. |
+| `classifiers` | Named traffic classifiers. |
+| `allowlist` | Requests must match this classifier. |
+| `blocklist` | Matching requests are rejected with HTTP 403. |
+| `forwards` | Ordered upstream routes. The first match wins. |
+| `interception` | CA-backed HTTPS and HTTP/3 interception. |
+| `cache` | Domain list cache settings. |
+| `dns` | Custom resolver settings. |
+| `observability` | Prometheus and OTLP endpoints. |
+| `portal` | Legacy admin page settings. Accepted and ignored. |
+| `statistics` | Legacy database collector settings. Accepted and ignored. |
+
+The Rust service has no admin page, SQLite collector, PostgreSQL collector, or request body recorder. It accepts the legacy `portal` and `statistics` blocks so an existing deployment can start unchanged, then ignores their contents. Values in either block are never resolved, including `{"_secret":"NAME"}` values.
+
+The legacy `max-concurrent-connections` top-level field and each listener's `max-connections` and `connections-per-client` fields are also accepted and ignored. This rewrite has no global connection admission limit or client connection limit yet. Capacity is currently controlled by the operating system, container limits, and the proxy's available resources.
+
+## Listeners
+
+Each server has `type`, `listen-address`, `enabled`, and optional `interceptor-name` fields. It may retain `max-connections` and `connections-per-client` from an earlier configuration, but the Rust proxy does not enforce either limit. `standard` and `http` accept TCP forward-proxy traffic. `https` accepts TLS directly and pins the upstream to ClientHello SNI on port 443. `quic` accepts HTTP/3 over UDP, pins `:authority` to ClientHello SNI, uses TLS 1.3, and rejects 0-RTT data.
+
+Ordinary HTTPS works through a standard listener. By default, the proxy creates a CONNECT tunnel and never sees the encrypted HTTP request. When `interception.enabled` and `interception.https` are true, matching CONNECT requests use a cached CA-signed leaf certificate. Dedicated `https` and `quic` listeners require `ca-file` and `ca-key-file` but do not require those two global switches.
+
+HTTP/3 uses direct UDP upstream connections. A matching SOCKS5 or HTTP proxy forward rule produces a clear 502 response because those TCP forwarding protocols cannot carry native QUIC datagrams.
+
+## Forward rules
+
+Rules run in array order. A missing classifier means `true`.
+
 ```json
 {
-  "servers": [
-    {
-      "type": "standard",
-      "listen-address": "0.0.0.0:8080",
-      "max-connections": 1000,
-      "connections-per-client": 50
-    },
-    {
-      "type": "https",
-      "listen-address": "0.0.0.0:8443",
-      "max-connections": 500,
-      "connections-per-client": 25
-    }
-  ],
-  "classifiers": {
-    "internal-network": {
-      "type": "network",
-      "cidr": "192.168.0.0/16"
-    },
-    "trusted-domains": {
-      "type": "or",
-      "classifiers": [
-        {
-          "type": "domain",
-          "op": "is",
-          "domain": ".company.com"
-        },
-        {
-          "type": "domain",
-          "op": "is",
-          "domain": "api.trusted-service.com"
-        }
-      ]
-    }
-  },
-  "allowlist": {
-    "type": "or",
-    "classifiers": [
-      { "type": "ref", "id": "internal-network" },
-      { "type": "ref", "id": "trusted-domains" }
-    ]
-  },
   "forwards": [
     {
-      "classifier": { "type": "ref", "id": "internal-network" },
-      "type": "default-network"
-    },
-    {
-      "classifier": { "type": "true" },
       "type": "socks5",
-      "address": "corporate-proxy.company.com:1080",
-      "username": "proxyuser",
-      "password": "proxypass"
+      "address": "127.0.0.1:1080",
+      "username": {"_secret": "SOCKS_USER"},
+      "password": {"_secret": "SOCKS_PASSWORD"},
+      "force-ipv4": true,
+      "classifier": {"type": "ref", "id": "private"}
+    },
+    {
+      "type": "default-network",
+      "classifier": {"type": "true"}
     }
   ]
 }
 ```
 
-### Domains-URL Configuration Example
+Supported types are `default-network`, `socks5`, and `proxy`. The `proxy` route opens an HTTP CONNECT tunnel through its configured address. SOCKS5 and proxy credentials must contain both a username and password.
 
-#### Using Different URL Formats with Mirrors
+## Classifiers
+
+Classifiers receive the target host, target port, and downstream client IP.
+
+| Type | Fields |
+|---|---|
+| `true`, `false` | No extra fields. |
+| `and`, `or` | `classifiers` array. |
+| `not` | `classifier`. |
+| `domain` | `domain`, optional `op`: `equal`, `not-equal`, `contains`, `not-contains`, or `is`. |
+| `ip` | `ip`. Matches the downstream client IP. |
+| `network` | `cidr`. Matches the downstream client IP. |
+| `port` | `port`. |
+| `ref` | `id` naming an entry in `classifiers`. |
+| `domains-file` | `file`, one domain per line. |
+| `domains-url` | `url`, optional `mirrors`, `format`, and `timeout`. |
+| `record` | `classifier`. Retained as a predicate only. Bodies are never stored. |
+
+`is` matches one domain and its child domains. Classifier reference cycles and missing references fail startup.
+
+## DNS
+
 ```json
 {
-  "servers": [
-    {
-      "type": "standard",
-      "listen-address": "127.0.0.1:8080"
-    }
-  ],
-  "classifiers": {
-    "hagezi-dyndns": {
-      "type": "domains-url",
-      "url": "https://github.com/hagezi/dns-blocklists/raw/main/domains/rpz.txt",
-      "mirrors": [
-        "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/domains/rpz.txt",
-        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/rpz.txt"
-      ],
-      "format": "rpz",
-      "timeout": 45
-    },
-    "wildcard-blocklist": {
-      "type": "domains-url",
-      "url": "https://github.com/hagezi/dns-blocklists/raw/main/domains/wildcard.txt",
-      "format": "wildcard"
-    },
-    "adblock-tracker": {
-      "type": "domains-url",
-      "url": "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus",
-      "mirrors": [
-        "https://mirror1.example.com/adservers.txt",
-        "https://mirror2.example.com/adservers.txt"
-      ],
-      "format": "adblock",
-      "timeout": 30
-    },
-    "plain-domains": {
-      "type": "domains-url",
-      "url": "https://example.com/simple-domains.txt",
-      "mirrors": [
-        "https://backup.example.com/simple-domains.txt"
-      ],
-      "format": "plain",
-      "timeout": 60
-    }
-  },
-  "blocklist": {
-    "type": "or",
-    "classifiers": [
-      { "type": "ref", "id": "hagezi-dyndns" },
-      { "type": "ref", "id": "wildcard-blocklist" },
-      { "type": "ref", "id": "adblock-tracker" },
-      { "type": "ref", "id": "plain-domains" }
+  "dns": {
+    "enabled": true,
+    "servers": [
+      {
+        "address": "1.1.1.1:853",
+        "type": "dot",
+        "timeout-seconds": 10,
+        "tls-host": "cloudflare-dns.com"
+      }
     ]
   }
 }
 ```
 
-#### HCL Example with Domains-URL and Mirrors
-```hcl
-servers = [
-  {
-    type = "standard"
-    listen-address = "127.0.0.1:8080"
-  }
-]
+The resolver accepts `udp`, `tcp`, and `dot`. It selects one configured server in round-robin order for each lookup. TCP and DoT use DNS length framing. DoT verifies the server certificate, sends the `dot` ALPN token, and uses `tls-host` for SNI when set. Direct targets and forward-proxy endpoints use the configured resolver. Upstream SOCKS5 and HTTP proxies resolve destination names unless `force-ipv4` asks msgtausch to resolve first.
 
-classifiers = {
-  "reliable-blocklist" = {
-    type = "domains-url"
-    url = "https://primary.example.com/blocklist.txt"
-    mirrors = [
-      "https://mirror1.example.com/blocklist.txt"
-      "https://mirror2.example.com/blocklist.txt"
-      "https://backup.example.com/blocklist.txt"
-    ]
-    format = "plain"
-    timeout = 45
-  }
-  
-  "hagezi-mirrored" = {
-    type = "domains-url"
-    url = "https://github.com/hagezi/dns-blocklists/raw/main/domains/rpz.txt"
-    mirrors = [
-      "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@main/domains/rpz.txt"
-    ]
-    format = "rpz"
-  }
-}
+## Interception
 
-blocklist = {
-  type = "or"
-  classifiers = [
-    { type = "ref", id = "reliable-blocklist" }
-    { type = "ref", id = "hagezi-mirrored" }
-  ]
-}
-```
-
-### HCL Configuration Example
-```hcl
-servers = [
-  {
-    type = "standard"
-    listen-address = "127.0.0.1:8080"
-    enabled = true
-    max-connections = 100
-    connections-per-client = 10
-  }
-]
-
-timeout-seconds = 60
-max-concurrent-connections = 200
-
-classifiers = {
-  internal-network = {
-    type = "network"
-    cidr = "192.168.1.0/24"
-  }
-}
-
-allowlist = {
-  type = "ref"
-  id = "internal-network"
-}
-```
-
-### Statistics Configuration Example
-
-#### Basic Statistics
-```json
-{
-  "servers": [
-    {
-      "type": "standard",
-      "listen-address": "127.0.0.1:8080"
-    }
-  ],
-  "statistics": {
-    "enabled": true,
-    "backend": "sqlite",
-    "sqlite-path": "./proxy_stats.db"
-  }
-}
-```
-
-#### PostgreSQL Statistics
-```json
-{
-  "statistics": {
-    "enabled": true,
-    "backend": "postgres",
-    "postgres-dsn": "postgres://user:pass@localhost/msgtausch?sslmode=disable",
-    "buffer-size": 2000,
-    "flush-interval": 600
-  }
-}
-```
-
-#### Statistics via Environment Variables
-```bash
-export MSGTAUSCH_STATISTICS_ENABLED=true
-export MSGTAUSCH_STATISTICS_BACKEND=sqlite
-export MSGTAUSCH_STATISTICS_SQLITE_PATH=./proxy_stats.db
-```
-
-### Interception Configuration Examples
-
-#### Basic HTTP Interception
-```json
-{
-  "servers": [
-    {
-      "type": "http",
-      "listen-address": "127.0.0.1:8080"
-    }
-  ],
-  "interception": {
-    "enabled": true,
-    "http": true,
-    "https": false
-  }
-}
-```
-
-#### HTTPS Interception with CA Certificate
-```json
-{
-  "servers": [
-    {
-      "type": "https",
-      "listen-address": "127.0.0.1:8443"
-    }
-  ],
-  "interception": {
-    "enabled": true,
-    "http": false,
-    "https": true,
-    "ca-file": "/path/to/ca.crt",
-    "ca-key-file": "/path/to/ca.key"
-  }
-}
-```
-
-#### Full Interception with Password-Protected CA Key
-```json
-{
-  "servers": [
-    {
-      "type": "https",
-      "listen-address": "0.0.0.0:8443"
-    },
-    {
-      "type": "http",
-      "listen-address": "0.0.0.0:8080"
-    }
-  ],
-  "interception": {
-    "enabled": true,
-    "http": true,
-    "https": true,
-    "ca-file": "/etc/ssl/proxy/ca.crt",
-    "ca-key-file": "/etc/ssl/proxy/ca.key",
-    "ca-key-passwd": "secret-ca-password"
-  }
-}
-```
-
-#### HCL Interception Configuration
-```hcl
-servers = [
-  {
-    type = "https"
-    listen-address = "127.0.0.1:8443"
-  }
-]
-
-interception = {
-  enabled = true
-  http = false
-  https = true
-  ca-file = "/opt/certs/proxy-ca.pem"
-  ca-key-file = "/opt/certs/proxy-ca-key.pem"
-  ca-key-passwd = "ca-key-password"
-}
-```
-
-#### Interception via Environment Variables
-```bash
-# Enable interception globally
-export MSGTAUSCH_INTERCEPT=true
-
-# Enable both HTTP and HTTPS interception
-export MSGTAUSCH_INTERCEPTHTTP=true
-export MSGTAUSCH_INTERCEPTHTTPS=true
-
-# Set CA certificate files
-export MSGTAUSCH_CAFILE=/etc/ssl/certs/proxy-ca.crt
-export MSGTAUSCH_CAKEYFILE=/etc/ssl/private/proxy-ca.key
-export MSGTAUSCH_CAKEYPASSWD=my-secure-password
-
-# Set up HTTPS intercepting server
-export MSGTAUSCH_SERVER_0_LISTENADDRESS=0.0.0.0:8443
-export MSGTAUSCH_SERVER_0_TYPE=https
-export MSGTAUSCH_SERVER_0_ENABLED=true
-```
-
-#### Using Secrets for Sensitive Configuration
 ```json
 {
   "interception": {
     "enabled": true,
     "https": true,
-    "ca-file": "/etc/ssl/proxy/ca.crt",
-    "ca-key-file": "/etc/ssl/proxy/ca.key",
-    "ca-key-passwd": {
-      "_secret": "CA_KEY_PASSWORD"
-    }
+    "ca-file": "/run/msgtausch/ca.crt",
+    "ca-key-file": "/run/msgtausch/ca.key",
+    "ca-key-passwd": {"_secret": "MSGTAUSCH_CA_PASSWORD"},
+    "insecure-skip-verify": false
   }
 }
 ```
 
-Then set the environment variable:
-```bash
-export CA_KEY_PASSWORD=your-actual-password
+The CA key may be unencrypted, encrypted PKCS#8, or a legacy RFC1423 AES/DES PEM retained for configuration compatibility. Generated leaves are cached and contain a DNS or IP subject alternative name for the target. `https-classifier` limits interception and `exclude-classifier` takes precedence. Upstream certificates are verified unless `insecure-skip-verify` is true.
+
+`domains-url` classifiers fetch the primary URL and then mirrors in order. Successes and failures are shared and cached, concurrent fetches are coalesced, and a background task refreshes entries. Supported formats are `plain`, `wildcard`, `adblock`, and `rpz`. A failed fetch classifies as false until a later refresh succeeds.
+
+## Observability
+
+```json
+{
+  "observability": {
+    "prometheus-listen-address": "0.0.0.0:9090",
+    "otlp-endpoint": "http://otel-collector:4318",
+    "otlp-service-name": "msgtausch-edge"
+  }
+}
 ```
 
-In a systemd service you can use `EnvironmentFile` to securely include your secrets.
+Prometheus is disabled when its listen address is absent. The endpoint returns OpenMetrics text and records active and total connections, access decisions, HTTP status classes, durations, selected routes, bounded error kinds, tunnel bytes, and tunnel durations. Hosts, URLs, user names, and client addresses are never metric labels.
 
-## Configuration Validation
+OTLP is disabled when its endpoint is absent. When configured, spans are exported with OTLP/HTTP. Export failure does not stop proxy traffic.
 
-The configuration is validated on startup with the following rules:
+Environment overrides:
 
-- All server addresses must be valid host:port combinations
-- CIDR notation must be valid (e.g., "192.168.1.0/24")
-- File paths must be accessible (for CA files, domains files)
-- Classifier references must point to existing named classifiers
-- Forward addresses must be valid host:port combinations
-- Interception CA files must exist and be readable when HTTPS interception is enabled
-- CA private key files must match the CA certificate
-- Configuration keys must use hyphens, not underscores (e.g., `ca-file` not `ca_file`)
+| Variable | Field |
+|---|---|
+| `MSGTAUSCH_PROMETHEUS_LISTEN_ADDRESS` | Prometheus listen address. |
+| `MSGTAUSCH_OTLP_ENDPOINT` | OTLP/HTTP endpoint. |
+| `MSGTAUSCH_OTLP_SERVICE_NAME` | OpenTelemetry service name. |
 
-## Best Practices
+## Environment and secrets
 
-### General Configuration
-1. **Use named classifiers** for complex rules that are reused
-2. **Order forwarding rules** from most specific to least specific
-3. **Set appropriate connection limits** based on expected load
-4. **Use environment variables** for deployment-specific settings
-5. **Test configuration changes** in a non-production environment first
-6. **Monitor connection usage** and adjust limits accordingly
+The loader retains compatibility environment names, including `MSGTAUSCH_TIMEOUTSECONDS`, `MSGTAUSCH_MAXIDLECONNS`, `MSGTAUSCH_MAXIDLECONNSPERHOST`, `MSGTAUSCH_LISTENADDRESS`, interception variables, indexed server variables, indexed DNS variables, and cache variables.
 
-### Interception Configuration
-1. **Secure CA private keys** with appropriate file permissions (600 or 400)
-2. **Use password-protected CA keys** in production environments
-3. **Store CA passwords** in environment variables or secrets management systems
-4. **Generate dedicated CA certificates** for proxy interception (don't reuse existing CAs)
-5. **Test certificate chain validity** before deployment
-6. **Monitor certificate expiration** and implement renewal processes
-7. **Use separate servers** for HTTP and HTTPS interception when possible
-8. **Consider performance impact** of HTTPS interception on high-traffic systems
+Indexed servers stop at the first missing address:
 
-### Statistics Configuration
-1. **Monitor statistics database** growth and implement retention policies
-2. **Test statistics configuration** in non-production environments
-3. **Use appropriate buffer sizes** based on expected traffic volume
-4. **Consider PostgreSQL** for high-traffic deployments
-5. **Implement regular database backups** for important statistics data
+```text
+MSGTAUSCH_SERVER_0_LISTENADDRESS=0.0.0.0:8080
+MSGTAUSCH_SERVER_0_TYPE=standard
+MSGTAUSCH_SERVER_0_ENABLED=true
+```
+
+Any scalar file value may read an environment variable:
+
+```json
+{"password": {"_secret": "UPSTREAM_PASSWORD"}}
+```
+
+A missing or empty secret fails startup. Secret values are not printed.
+
+Dotenv files use `KEY=VALUE` lines. Blank lines and trimmed comment lines are ignored. Values may have one pair of surrounding single or double quotes. Dotenv values override inherited process variables.

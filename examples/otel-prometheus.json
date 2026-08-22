@@ -1,0 +1,14 @@
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "0.0.0.0:8080",
+      "enabled": true
+    }
+  ],
+  "observability": {
+    "prometheus-listen-address": "0.0.0.0:9090",
+    "otlp-endpoint": "http://otel-collector:4318",
+    "otlp-service-name": "msgtausch"
+  }
+}

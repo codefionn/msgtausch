@@ -9,13 +9,12 @@
   "timeout-seconds": 30,
   "interception": {
     "enabled": true,
-    "http": true,
     "https": true,
     "ca-file": "/ca/test_ca.crt",
-    "ca-key-file": "/ca/test_ca.key"
+    "ca-key-file": "/ca/test_ca.key",
+    "insecure-skip-verify": true
   },
-  "statistics": {
-    "enabled": false
+  "observability": {
+    "prometheus-listen-address": "0.0.0.0:9090"
   }
 }
-

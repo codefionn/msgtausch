@@ -1,50 +1,6 @@
-# Go specific
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-
-# Go workspace files
-/vendor/
-/bin/
-/pkg/
-/main
-/src/vendor/
-/src/bin/
-/src/pkg/
-/release
-
-# Windsurf and IDE specific
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-.env
-*.log
-/.windsurfrules
-
-# Compiled Object files, Static and Dynamic libs
-*.o
-*.a
-
-# Debug files
-debug/
-debug.test
-
-# Output of the go coverage tool
-*.cover
-coverage.html
-
-# Dependency directories (remove the comment below if you want to check in your dependencies)
-# vendor/
-
-# Docker specific ignores
+# Version control and repository metadata
 .git/
+.github/
 .gitignore
 .gitlab-ci.yml
 Dockerfile*
@@ -53,3 +9,34 @@ docker-bake.hcl
 .dockerignore
 README.md
 LICENSE
+AGENTS.md
+CLAUDE.md
+docs/
+
+# Rust build and package output
+/target/
+/bin/
+/dist/
+/result/
+/out
+/simulation-artifacts/
+
+# Local configuration, secrets, and tool state
+.env
+.env.*
+/secrets/
+*.secret
+*.secrets
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+/.windsurfrules
+/.cache/
+.claude/

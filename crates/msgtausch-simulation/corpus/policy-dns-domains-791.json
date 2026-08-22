@@ -1,0 +1,10 @@
+{
+  "schema_version": 3,
+  "seed": 791,
+  "concurrency": 3,
+  "operations": [
+    {"id": 0, "protocol": "http", "method": "GET", "path": "/policy/direct", "body": "", "route": "direct"},
+    {"id": 1, "protocol": "connect", "method": "POST", "path": "/policy/socks", "body": "dns-socks", "route": "direct"},
+    {"id": 2, "protocol": "http", "method": "PATCH", "path": "/policy/http", "body": "dns-http", "route": "direct"}
+  ]
+}

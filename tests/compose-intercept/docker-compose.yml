@@ -5,38 +5,13 @@ services:
   proxy:
     build:
       context: ../..
-      dockerfile_inline: |
-        FROM golang:1.25-alpine AS builder
-        WORKDIR /src
-        COPY go.mod go.sum ./
-        RUN go install github.com/a-h/templ/cmd/templ@latest
-        RUN go mod download
-        COPY . .
-        RUN templ generate
-        RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/msgtausch .
-
-        FROM alpine:3.19 AS runtime-release
-        RUN apk add --no-cache ca-certificates tzdata
-        RUN adduser -D -H app
-        USER app
-        COPY --from=builder /out/msgtausch /msgtausch
-        COPY tests/compose-intercept/proxy-config.json /config/config.json
-        COPY tests/compose-intercept/ca /ca
-        ENTRYPOINT ["/msgtausch"]
+      dockerfile: Dockerfile
       target: runtime-release
     image: msgtausch:test
-    command: ["-config", "/config/config.json", "-debug"]
-    environment:
-      - MSGTAUSCH_LOG_LEVEL=debug
-      - MSGTAUSCH_SERVERS__0__LISTEN_ADDRESS=0.0.0.0:8080
-      - MSGTAUSCH_SERVERS__0__TYPE=standard
-      - MSGTAUSCH_SERVERS__0__ENABLED=true
-      - MSGTAUSCH_INTERCEPTION__ENABLED=true
-      - MSGTAUSCH_INTERCEPTION__HTTP=true
-      - MSGTAUSCH_INTERCEPTION__HTTPS=true
-      - MSGTAUSCH_INTERCEPTION__CA_FILE=/ca/test_ca.crt
-      - MSGTAUSCH_INTERCEPTION__CA_KEY_FILE=/ca/test_ca.key
-      - SSL_CERT_FILE=/ca/test_ca.crt
+    command: ["--config", "/config/config.json", "--debug"]
+    volumes:
+      - ./proxy-config.json:/config/config.json:ro
+      - ./ca:/ca:ro
     ports:
       - "8080:8080"
     networks:
@@ -46,24 +21,17 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.25-alpine AS builder
-        WORKDIR /src
-        COPY backend/go.mod ./
-        COPY backend/server.go ./
-        RUN --mount=type=cache,target=/go/pkg/mod \
-            --mount=type=cache,target=/root/.cache/go-build \
-            CGO_ENABLED=0 go build -o /out/backend ./server.go
-
-        FROM alpine:3.19
+        FROM docker.io/library/python:3.13-alpine
         RUN apk add --no-cache wget ca-certificates \
             && adduser -D -H app
+        WORKDIR /app
         USER app
-        COPY --from=builder /out/backend /backend
+        COPY backend/server.py /app/server.py
         COPY ca /ca
         ENV PORT=5678
         ENV TLS=false
         EXPOSE 5678 8443
-        ENTRYPOINT ["/backend"]
+        ENTRYPOINT ["python3", "/app/server.py"]
     image: msgtausch-test-backend:local
     environment:
       - PORT=5678
@@ -85,24 +53,17 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.25-alpine AS builder
-        WORKDIR /src
-        COPY backend/go.mod ./
-        COPY backend/server.go ./
-        RUN --mount=type=cache,target=/go/pkg/mod \
-            --mount=type=cache,target=/root/.cache/go-build \
-            CGO_ENABLED=0 go build -o /out/backend ./server.go
-
-        FROM alpine:3.19
+        FROM docker.io/library/python:3.13-alpine
         RUN apk add --no-cache wget ca-certificates \
             && adduser -D -H app
+        WORKDIR /app
         USER app
-        COPY --from=builder /out/backend /backend
+        COPY backend/server.py /app/server.py
         COPY ca /ca
         ENV PORT=8443
         ENV TLS=true
         EXPOSE 5678 8443
-        ENTRYPOINT ["/backend"]
+        ENTRYPOINT ["python3", "/app/server.py"]
     image: msgtausch-test-backend-https:local
     environment:
       - PORT=8443
@@ -129,7 +90,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM curlimages/curl:8.8.0
+        FROM docker.io/curlimages/curl:8.8.0
         COPY client/test.sh /test.sh
         COPY ca /ca
         ENTRYPOINT ["sh", "/test.sh"]

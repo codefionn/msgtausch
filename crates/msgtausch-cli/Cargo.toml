@@ -1,0 +1,22 @@
+[package]
+name = "msgtausch-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The msgtausch proxy binary"
+
+[[bin]]
+name = "msgtausch"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+compio.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+msgtausch-config = { path = "../msgtausch-config" }
+msgtausch-observability = { path = "../msgtausch-observability" }
+msgtausch-proxy = { path = "../msgtausch-proxy" }
+msgtausch-quic = { path = "../msgtausch-quic" }
+tracing.workspace = true

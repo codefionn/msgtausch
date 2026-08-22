@@ -1,0 +1,18 @@
+[package]
+name = "msgtausch-internet-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Opt-in real-internet smoke tests for msgtausch"
+publish = false
+
+[[bin]]
+name = "msgtausch-internet-test"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+libc.workspace = true
+tempfile.workspace = true
+ureq.workspace = true

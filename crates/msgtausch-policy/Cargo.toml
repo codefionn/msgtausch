@@ -1,0 +1,18 @@
+[package]
+name = "msgtausch-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ipnet.workspace = true
+ureq.workspace = true
+msgtausch-config = { path = "../msgtausch-config" }
+
+[dev-dependencies]
+divan.workspace = true
+
+[[bench]]
+name = "policy"
+harness = false

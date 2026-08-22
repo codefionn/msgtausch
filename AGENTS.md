@@ -1,43 +1,46 @@
 # Repository Guidelines
 
 ## Project Structure & Modules
-- `main.go`: Entry for the proxy (flags: `--config`, `--envfile`, `--debug`, `--trace`).
-- `msgtausch-srv/`: Core packages
-  - `proxy/`, `resolver/`, `config/`, `stats/`, `dashboard/` (Templ templates in `templates/`).
-- `cmd/`: Utilities (`proxy-test`, `throughput-test`, `simulation`).
-- `msgtausch-simulation/`: Fuzzy/simulation tests and helpers.
+- `crates/`: Rust workspace split by responsibility.
+  - `msgtausch-cli/`: production `msgtausch` binary, startup, listeners, and reload.
+  - `msgtausch-config/`: configuration loading and validation.
+  - `msgtausch-policy/`: classifiers and remote domain lists.
+  - `msgtausch-resolver/`, `msgtausch-routing/`, `msgtausch-interception/`, and `msgtausch-proxy/`: connection setup and HTTP/TLS proxying.
+  - `msgtausch-quic/`: QUIC and HTTP/3 transport primitives.
+  - `msgtausch-observability/`: Prometheus and OpenTelemetry reporting.
+  - `msgtausch-simulation/`: black-box simulation runner and corpus.
+- `Cargo.toml`: virtual workspace manifest. The `msgtausch-cli` package owns the production binary.
 - `docs/`: User docs (see `docs/configuration.md`).
 - `examples/`: Example configs and usage.
 
 ## Build, Test, and Development
-- Go (local):
-  - Build: `go build -o msgtausch` (binary: `./msgtausch`).
-  - Run: `go run . --config config.json` or `./msgtausch --config config.json`.
-  - Test: `go test ./... -race -coverprofile=coverage.out`.
-  - Lint: `golangci-lint run` (configured via `.golangci.yml`).
+- Rust (production):
+  - Build: `cargo build --release`.
+  - Run: `cargo run -- --config examples/config.json`.
+  - Test: `cargo test --workspace --all-targets`.
+  - Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+  - Format: `cargo fmt --all --check`.
 - Docker Buildx Bake (CI-parity):
   - All: `docker buildx bake --set=*.output=type=cacheonly --set=*.cache-from= --set=*.cache-to=`
   - Tests only: `docker buildx bake test ...`
   - Build only: `docker buildx bake build ...`
   - Release: `VERSION=vX.Y.Z docker buildx bake release ...`
 - Nix (optional):
-  - Dev shell: `nix develop` (Go 1.24, Docker, tools).
+- Dev shell: `nix develop` (Rust, Docker, and build tools).
   - Build: `nix build .#msgtausch`  | Tests: `nix build .#test`.
   - If editing dashboard templates, run: `templ generate` (in Nix this runs automatically).
 
 ## Coding Style & Naming
-- Go style enforced by `gofmt`/`goimports`; run `golangci-lint run` before pushing.
-- Package and file names: lowercase, concise. Tests end with `_test.go`.
+- Rust style is enforced by `rustfmt` and Clippy with warnings denied.
+- Crate and file names: lowercase and concise. Rust tests live beside their modules or in crate integration tests.
 - Config keys prefer kebab-case in files (e.g., `listen-address`).
 
 ## Testing Guidelines
-- Unit/integration: `go test ./...` from repo root. Use `-race` for concurrency.
-- Coverage: keep/refresh `coverage.out` via `-coverprofile`.
-- Test naming: `TestXxx` in `*_test.go`; integration tests live under `msgtausch-srv/**` and `cmd/**` as applicable.
+- Production unit/integration: `cargo test --workspace --all-targets` from the repository root.
+- The deterministic simulation corpus lives in `crates/msgtausch-simulation/corpus/`.
 
 ## Commit & PR Guidelines
 - Commits: follow Conventional Commits (`feat:`, `fix:`, `docs:`, etc.).
 - PRs: include a clear summary, linked issues, and steps to test. Attach screenshots for dashboard/UI changes.
-- Required checks: `golangci-lint run` and `go test ./...` must pass. Update `docs/configuration.md` and `config-schema.json` when changing config.
+- Required checks: Rust format, Clippy, and tests. Update `docs/configuration.md` and `config-schema.json` when changing config.
 - Security: do not commit private keys or real secrets; prefer `--envfile` and env vars (`MSGTAUSCH_*`).
-

@@ -15,7 +15,6 @@ default:
     - docker buildx version
     - docker buildx use msgtausch-builder || docker buildx create --use --driver docker-container --name msgtausch-builder
 
-# Cache for Go modules and build cache
 variables:
   DOCKER_BUILDKIT: 1
   DOCKER_TLS_CERTDIR: "/certs"
@@ -39,10 +38,36 @@ test:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
+simulation:
+  stage: test
+  script:
+    - docker buildx bake simulation
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+throughput:
+  stage: test
+  script:
+    - docker buildx bake throughput
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clippy:
+  stage: lint
+  script:
+    - docker buildx bake clippy
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 # Build stage for development version
 build-dev:
   stage: build
   script:
+    - docker run --privileged --rm tonistiigi/binfmt --install amd64,arm64
+    - docker buildx inspect --bootstrap
     - docker buildx bake build
   artifacts:
     paths:
@@ -66,6 +91,8 @@ nix-build:
 build-mr:
   stage: build
   script:
+    - docker run --privileged --rm tonistiigi/binfmt --install amd64,arm64
+    - docker buildx inspect --bootstrap
     - docker buildx bake build
   artifacts:
     paths:
@@ -77,13 +104,10 @@ build-mr:
 # Release stage for tags
 release:
   stage: release
-  variables:
-    BUILD_CONFIGURATION: "release"
-    VERSION: "${CI_COMMIT_TAG:-dev}"
   script:
-    - docker buildx bake release
-  artifacts:
-    paths:
-      - release/
+    - docker run --privileged --rm tonistiigi/binfmt --install amd64,arm64
+    - docker buildx inspect --bootstrap
+    - docker login -u gitlab-ci-token -p "$CI_JOB_TOKEN" "$CI_REGISTRY"
+    - BUILD_CONFIGURATION=release IMAGE="$CI_REGISTRY_IMAGE" VERSION="$CI_COMMIT_TAG" docker buildx bake release
   rules:
     - if: $CI_COMMIT_TAG

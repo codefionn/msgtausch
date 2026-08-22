@@ -4,6 +4,9 @@
 //! proxy's internal crates. A passing run proves the released binary accepted
 //! config, chose a route, relayed bytes, exported metrics, and handled SIGTERM.
 
+pub mod tls_interception;
+mod upgrades;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -22,7 +25,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scenario {
@@ -55,6 +58,7 @@ pub struct Operation {
 pub enum Protocol {
     Http,
     Connect,
+    Upgrade,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -238,7 +242,7 @@ fn run_scenario(mut scenario: Scenario, options: &RunOptions) -> Result<Simulati
     let mut metrics = String::new();
     let temp = tempfile::tempdir().context("creating simulation directory")?;
     let origins = Origins::start().context("starting simulation origins")?;
-    let mut failures = FailureTargets::reserve()?;
+    let failures = FailureTargets::reserve()?;
     let forwarding = options.enable_forwards || options.enable_policy_fixtures;
     let socks = forwarding.then(SocksFixture::start).transpose()?;
     let http_forward = forwarding.then(HttpConnectFixture::start).transpose()?;
@@ -260,7 +264,6 @@ fn run_scenario(mut scenario: Scenario, options: &RunOptions) -> Result<Simulati
             http_forward: http_forward.as_ref(),
             dns: dns.as_ref(),
             domain_list: domain_list.as_ref(),
-            failures: &failures,
         },
     );
     let config_path = temp.path().join("config.json");
@@ -278,7 +281,6 @@ fn run_scenario(mut scenario: Scenario, options: &RunOptions) -> Result<Simulati
                 .context("waiting for proxy readiness")?;
             wait_for_listener(metrics_address, options.timeout, &mut proxy)
                 .context("waiting for metrics readiness")?;
-            failures.release();
             let baseline_metrics = scrape_when(metrics_address, options.timeout, |metrics| {
                 metric_number_or_zero(metrics, "msgtausch_connections_active", &[])
                     .is_ok_and(|value| value == 0.0)
@@ -451,7 +453,6 @@ struct ConfigFixtures<'a> {
     http_forward: Option<&'a HttpConnectFixture>,
     dns: Option<&'a DnsFixture>,
     domain_list: Option<&'a DomainListFixture>,
-    failures: &'a FailureTargets,
 }
 
 fn proxy_config(
@@ -465,30 +466,27 @@ fn proxy_config(
         http_forward,
         dns,
         domain_list,
-        failures,
     } = fixtures;
     let mut forwards = Vec::new();
     if let Some(socks) = socks {
+        let socks_route = serde_json::json!({"type": "or", "classifiers": [
+            {"type": "port", "port": origins.address(ExpectedRoute::Socks5).port()},
+            {"type": "domain", "op": "equal", "domain": FailureTargets::SOCKS_HOST}
+        ]});
         let socks_classifier = if let Some(domain_list) = domain_list {
             serde_json::json!({"type": "and", "classifiers": [
-                {"type": "or", "classifiers": [
-                    {"type": "port", "port": origins.address(ExpectedRoute::Socks5).port()},
-                    {"type": "port", "port": failures.address(ExpectedRoute::Socks5).port()}
-                ]},
+                socks_route,
                 {"type": "domains-url", "url": domain_list.url(), "format": "plain", "timeout": 2}
             ]})
         } else {
-            serde_json::json!({"type": "or", "classifiers": [
-                {"type": "port", "port": origins.address(ExpectedRoute::Socks5).port()},
-                {"type": "port", "port": failures.address(ExpectedRoute::Socks5).port()}
-            ]})
+            socks_route
         };
         forwards.push(serde_json::json!({"type": "socks5", "address": socks.address.to_string(), "classifier": socks_classifier}));
     }
     if let Some(http_forward) = http_forward {
         forwards.push(serde_json::json!({"type": "http-proxy", "address": http_forward.address.to_string(), "classifier": {"type": "or", "classifiers": [
             {"type": "port", "port": origins.address(ExpectedRoute::HttpProxy).port()},
-            {"type": "port", "port": failures.address(ExpectedRoute::HttpProxy).port()}
+            {"type": "domain", "op": "equal", "domain": FailureTargets::HTTP_PROXY_HOST}
         ]}}));
     }
     forwards.push(serde_json::json!({"type": "default-network", "classifier": {"type": "true"}}));
@@ -562,6 +560,20 @@ struct Exchange {
 }
 
 fn execute(proxy: SocketAddr, origin: &str, operation: &Operation) -> Result<Exchange> {
+    if operation.protocol == Protocol::Upgrade {
+        let exchange = upgrades::execute(
+            proxy,
+            origin,
+            operation.id,
+            &operation.path,
+            &operation.body,
+        )?;
+        return Ok(Exchange {
+            response: exchange.response,
+            tunnel_sent: exchange.tunnel_sent,
+            tunnel_received: exchange.tunnel_received,
+        });
+    }
     let mut stream = TcpStream::connect_timeout(&proxy, Duration::from_secs(2))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -614,6 +626,23 @@ fn execute(proxy: SocketAddr, origin: &str, operation: &Operation) -> Result<Exc
 }
 
 fn validate_response(operation: &Operation, response: &[u8]) -> Result<()> {
+    if operation.protocol == Protocol::Upgrade {
+        ensure!(
+            operation.outcome == ExpectedOutcome::Success,
+            "upgrade simulations only support successful handshakes"
+        );
+        ensure!(
+            response_status(response)? == 101,
+            "upgrade response was not 101: {}",
+            String::from_utf8_lossy(response)
+        );
+        let expected = format!("upgrade:{}:{}", operation.id, operation.body);
+        ensure!(
+            String::from_utf8_lossy(response).contains(&expected),
+            "upgrade payload integrity mismatch"
+        );
+        return Ok(());
+    }
     let expected_status = match operation.outcome {
         ExpectedOutcome::Success => 200,
         ExpectedOutcome::Blocked => 403,
@@ -657,15 +686,17 @@ fn response_status(response: &[u8]) -> Result<u16> {
 }
 
 fn response_content_length(response: &[u8]) -> Result<usize> {
-    String::from_utf8_lossy(response)
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().ok())
-                .flatten()
-        })
-        .context("response has no valid Content-Length")
+    let response = String::from_utf8_lossy(response);
+    let value = response.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then_some(value.trim())
+    });
+    value.map_or(Ok(0), |value| {
+        value
+            .parse()
+            .context("response has an invalid Content-Length")
+    })
 }
 
 fn reconcile_metrics(
@@ -728,10 +759,14 @@ fn reconcile_metrics(
         } else {
             bounded_method(&operation.method)
         };
-        let status = match operation.outcome {
-            ExpectedOutcome::Success => "2xx",
-            ExpectedOutcome::Blocked => "4xx",
-            ExpectedOutcome::RouteFailure => "5xx",
+        let status = if operation.protocol == Protocol::Upgrade {
+            "1xx"
+        } else {
+            match operation.outcome {
+                ExpectedOutcome::Success => "2xx",
+                ExpectedOutcome::Blocked => "4xx",
+                ExpectedOutcome::RouteFailure => "5xx",
+            }
         };
         *requests.entry((method, status)).or_default() += 1;
     }
@@ -847,7 +882,7 @@ fn reconcile_metrics(
         .iter()
         .filter(|operation| {
             operation.outcome == ExpectedOutcome::RouteFailure
-                && operation.protocol == Protocol::Http
+                && matches!(operation.protocol, Protocol::Http | Protocol::Upgrade)
         })
         .count() as f64;
     for (kind, expected) in [
@@ -881,7 +916,8 @@ fn reconcile_metrics(
         .operations
         .iter()
         .filter(|operation| {
-            operation.protocol == Protocol::Connect && operation.outcome == ExpectedOutcome::Success
+            matches!(operation.protocol, Protocol::Connect | Protocol::Upgrade)
+                && operation.outcome == ExpectedOutcome::Success
         })
         .count() as f64;
     compare_delta(
@@ -984,7 +1020,7 @@ fn reconcile_dns_queries(
         .iter()
         .filter(|operation| {
             operation.route == ExpectedRoute::Direct
-                && operation.outcome != ExpectedOutcome::Blocked
+                && operation.outcome == ExpectedOutcome::Success
         })
         .count() as u64;
     let observed_names = questions
@@ -1053,12 +1089,22 @@ fn scrape_when(
 ) -> Result<String> {
     let deadline = Instant::now() + timeout;
     let mut last = String::new();
+    let mut last_error = None;
     while Instant::now() < deadline {
-        last = scrape(address)?;
-        if predicate(&last) {
-            return Ok(last);
+        match scrape(address) {
+            Ok(metrics) => {
+                last = metrics;
+                last_error = None;
+                if predicate(&last) {
+                    return Ok(last);
+                }
+            }
+            Err(error) => last_error = Some(error),
         }
         thread::sleep(Duration::from_millis(10));
+    }
+    if let Some(error) = last_error {
+        bail!("metrics did not settle within {timeout:?}; last scrape error: {error:#}");
     }
     bail!("metrics did not settle within {timeout:?}; last scrape:\n{last}")
 }
@@ -1186,7 +1232,8 @@ fn metrics_have_settled(baseline: &str, current: &str, scenario: &Scenario) -> b
         .operations
         .iter()
         .filter(|operation| {
-            operation.protocol == Protocol::Connect && operation.outcome == ExpectedOutcome::Success
+            matches!(operation.protocol, Protocol::Connect | Protocol::Upgrade)
+                && operation.outcome == ExpectedOutcome::Success
         })
         .count() as f64;
     metric_delta(
@@ -1394,9 +1441,12 @@ impl Origins {
         }
     }
     fn authority(&self, operation: &Operation, use_dns: bool, failures: &FailureTargets) -> String {
+        if operation.outcome == ExpectedOutcome::RouteFailure {
+            return failures.authority(operation.route);
+        }
         let address = match operation.outcome {
-            ExpectedOutcome::RouteFailure => failures.address(operation.route),
             ExpectedOutcome::Success | ExpectedOutcome::Blocked => self.address(operation.route),
+            ExpectedOutcome::RouteFailure => unreachable!("route failures returned above"),
         };
         let host = match operation.outcome {
             ExpectedOutcome::Blocked => "blocked.msgtausch.test",
@@ -1434,40 +1484,37 @@ struct FailureTargets {
     direct: SocketAddr,
     socks: SocketAddr,
     http_proxy: SocketAddr,
-    reservations: Option<[TcpListener; 3]>,
 }
 
 impl FailureTargets {
+    const SOCKS_HOST: &str = "failure-socks.msgtausch.test";
+    const HTTP_PROXY_HOST: &str = "failure-http-proxy.msgtausch.test";
+
     fn reserve() -> Result<Self> {
-        let reservations = [
-            TcpListener::bind("127.0.0.1:0")?,
-            TcpListener::bind("127.0.0.1:0")?,
-            TcpListener::bind("127.0.0.1:0")?,
-        ];
-        let [direct, socks, http_proxy] = reservations
-            .each_ref()
-            .map(TcpListener::local_addr)
-            .into_iter()
-            .collect::<std::io::Result<Vec<_>>>()?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("reserved the wrong number of failure addresses"))?;
+        let unreachable = "127.0.0.1:0".parse()?;
         Ok(Self {
-            direct,
-            socks,
-            http_proxy,
-            reservations: Some(reservations),
+            direct: unreachable,
+            socks: unreachable,
+            http_proxy: unreachable,
         })
     }
 
-    fn release(&mut self) {
-        self.reservations = None;
-    }
-
+    #[cfg(test)]
     fn address(&self, route: ExpectedRoute) -> SocketAddr {
         match route {
             ExpectedRoute::Direct => self.direct,
             ExpectedRoute::Socks5 => self.socks,
             ExpectedRoute::HttpProxy => self.http_proxy,
+        }
+    }
+
+    fn authority(&self, route: ExpectedRoute) -> String {
+        match route {
+            ExpectedRoute::Direct => self.direct.to_string(),
+            ExpectedRoute::Socks5 => format!("{}:{}", Self::SOCKS_HOST, self.socks.port()),
+            ExpectedRoute::HttpProxy => {
+                format!("{}:{}", Self::HTTP_PROXY_HOST, self.http_proxy.port())
+            }
         }
     }
 }
@@ -1525,6 +1572,9 @@ impl Drop for Origin {
 fn serve_origin(mut stream: TcpStream, requests: &AtomicU64) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let headers = String::from_utf8(read_headers(&mut stream)?)?;
+    if upgrades::respond_if_requested(&mut stream, &headers, requests)? {
+        return Ok(());
+    }
     let mut lines = headers.lines();
     let request_line = lines.next().context("missing request line")?;
     let mut request_parts = request_line.split_whitespace();
@@ -2030,6 +2080,78 @@ mod tests {
     }
 
     #[test]
+    fn header_only_connect_failure_has_an_empty_body() {
+        let response = b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n";
+
+        assert_eq!(response_content_length(response).unwrap(), 0);
+    }
+
+    #[test]
+    fn malformed_content_length_is_rejected() {
+        let response = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: nope\r\n\r\n";
+
+        assert!(response_content_length(response).is_err());
+    }
+
+    #[test]
+    fn scrape_when_retries_a_transient_connection_reset() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            drop(first);
+
+            let (mut second, _) = listener.accept().unwrap();
+            let _ = read_headers(&mut second).unwrap();
+            second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+
+        assert_eq!(
+            scrape_when(address, Duration::from_secs(1), |_| true).unwrap(),
+            "ok"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn scrape_when_reports_the_latest_successful_scrape_after_a_transient_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let server_stop = stop.clone();
+        let server = thread::spawn(move || {
+            let mut drop_first = true;
+            while !server_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) if drop_first => {
+                        drop_first = false;
+                        drop(stream);
+                    }
+                    Ok((mut stream, _)) => {
+                        let _ = read_headers(&mut stream).unwrap();
+                        stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot-ready")
+                            .unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("accepting test scrape connection: {error}"),
+                }
+            }
+        });
+
+        let error = scrape_when(address, Duration::from_millis(50), |_| false).unwrap_err();
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+
+        assert!(format!("{error:#}").contains("last scrape:\nnot-ready"));
+    }
+
+    #[test]
     fn dns_reconciliation_combines_wire_and_cache_queries() {
         let operation = |id, outcome| Operation {
             id,
@@ -2054,11 +2176,9 @@ mod tests {
         let questions = vec![
             ("policy.msgtausch.test".into(), 1),
             ("policy.msgtausch.test".into(), 28),
-            ("policy.msgtausch.test".into(), 1),
-            ("policy.msgtausch.test".into(), 28),
         ];
 
-        reconcile_dns_queries(&scenario, &questions, 4, 1.0).unwrap();
+        reconcile_dns_queries(&scenario, &questions, 2, 1.0).unwrap();
     }
 
     #[test]
@@ -2108,7 +2228,7 @@ mod tests {
         ] {
             assert!(methods.contains(method), "fixed corpus missed {method}");
         }
-        assert_eq!(combinations.len(), 6);
+        assert_eq!(combinations.len(), 9);
         assert_eq!(outcomes.len(), 3);
         assert!(concurrent);
     }
@@ -2149,12 +2269,12 @@ mod tests {
     }
 
     #[test]
-    fn failure_ports_stay_reserved_until_fixtures_are_started() {
-        let mut failures = FailureTargets::reserve().unwrap();
+    fn failure_targets_were_never_listeners() {
+        let failures = FailureTargets::reserve().unwrap();
 
-        assert!(TcpListener::bind(failures.http_proxy).is_err());
-        failures.release();
-        assert!(TcpListener::bind(failures.http_proxy).is_ok());
+        for route in ExpectedRoute::all() {
+            assert_eq!(failures.address(route).port(), 0);
+        }
     }
 
     #[test]

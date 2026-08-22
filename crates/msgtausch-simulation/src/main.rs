@@ -6,7 +6,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use msgtausch_simulation::{RunOptions, generate, replay, run};
+use msgtausch_simulation::{
+    RunOptions, generate, replay, run,
+    tls_interception::{TlsInterceptionOptions, run as run_tls_interception},
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "msgtausch-simulation")]
@@ -23,6 +26,8 @@ struct Cli {
     enable_forwards: bool,
     #[arg(long)]
     enable_policy_fixtures: bool,
+    #[arg(long)]
+    tls_interception: bool,
     #[arg(long, default_value_t = 1)]
     runs: usize,
     #[arg(long, default_value_t = 1)]
@@ -39,6 +44,15 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.tls_interception {
+        run_tls_interception(&TlsInterceptionOptions {
+            binary: cli.binary,
+            timeout: Duration::from_secs(20),
+            shutdown_timeout: Duration::from_secs(3),
+        })?;
+        println!("TLS interception simulation completed successfully.");
+        return Ok(());
+    }
     let options = RunOptions {
         binary: cli.binary,
         artifact_dir: cli.artifact_dir,

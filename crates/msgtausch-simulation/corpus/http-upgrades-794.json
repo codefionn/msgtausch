@@ -1,0 +1,10 @@
+{
+  "schema_version": 4,
+  "seed": 794,
+  "concurrency": 3,
+  "operations": [
+    {"id": 0, "protocol": "upgrade", "method": "GET", "path": "/upgrade/direct", "body": "direct", "route": "direct"},
+    {"id": 1, "protocol": "upgrade", "method": "GET", "path": "/upgrade/socks", "body": "socks", "route": "socks5"},
+    {"id": 2, "protocol": "upgrade", "method": "GET", "path": "/upgrade/http-proxy", "body": "forward", "route": "http-proxy"}
+  ]
+}

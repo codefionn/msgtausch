@@ -18,7 +18,10 @@ use compio::{
 use des::Des;
 use futures_rustls::{TlsAcceptor as FuturesTlsAcceptor, server::TlsStream as ServerTlsStream};
 use md5::{Digest, Md5};
-use pkcs8::EncryptedPrivateKeyInfo;
+use pkcs8::{
+    AlgorithmIdentifierRef, EncryptedPrivateKeyInfo, ObjectIdentifier, PrivateKeyInfo,
+    der::{SecretDocument, asn1::AnyRef, pem::LineEnding},
+};
 use rcgen::{CertificateParams, Issuer, KeyPair};
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer, sign::CertifiedKey,
@@ -43,8 +46,8 @@ pub struct InterceptionRuntime {
 
 impl InterceptionRuntime {
     /// Load the configured CA and construct the verified upstream TLS client.
-    /// A configured password is rejected explicitly: silently treating an
-    /// encrypted key as unencrypted would make startup failures surprising.
+    /// Encrypted keys require `ca-key-passwd`; plaintext keys remain valid
+    /// when a password is configured for compatibility with older deployments.
     pub fn from_config(config: &InterceptionConfig) -> Result<Option<Self>> {
         Self::from_config_for_dedicated_listener(config, false)
     }
@@ -242,9 +245,53 @@ fn decrypt_ca_key(key_pem: &str, password: Option<&str>) -> Result<String> {
         let password =
             password.context("encrypted legacy interception CA key requires ca-key-passwd")?;
         let plaintext = decrypt_legacy_pem(&block, password)?;
-        return Ok(pem::encode(&pem::Pem::new(block.tag(), plaintext)));
+        return encode_pkcs8(block.tag(), &plaintext);
     }
-    Ok(key_pem.to_owned())
+    match block.tag() {
+        "EC PRIVATE KEY" | "RSA PRIVATE KEY" => encode_pkcs8(block.tag(), block.contents()),
+        _ => Ok(key_pem.to_owned()),
+    }
+}
+
+/// Ring only accepts PKCS#8 private keys. Preserve support for the SEC1 and
+/// PKCS#1 files emitted by the Go implementation by wrapping their plaintext
+/// DER in PKCS#8 after decryption.
+fn encode_pkcs8(tag: &str, private_key: &[u8]) -> Result<String> {
+    const EC_PUBLIC_KEY_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+    const RSA_ENCRYPTION_OID: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+
+    let curve_oid = match tag {
+        "EC PRIVATE KEY" => {
+            let key = sec1::EcPrivateKey::try_from(private_key)
+                .map_err(|error| anyhow::anyhow!("parsing SEC1 interception CA key: {error:?}"))?;
+            Some(
+                key.parameters
+                    .context("SEC1 interception CA key has no named curve parameters")?
+                    .named_curve()
+                    .context("SEC1 interception CA key does not use a named curve")?,
+            )
+        }
+        _ => None,
+    };
+    let algorithm = match tag {
+        "EC PRIVATE KEY" => AlgorithmIdentifierRef {
+            oid: EC_PUBLIC_KEY_OID,
+            parameters: Some(curve_oid.as_ref().expect("set above").into()),
+        },
+        "RSA PRIVATE KEY" => AlgorithmIdentifierRef {
+            oid: RSA_ENCRYPTION_OID,
+            parameters: Some(AnyRef::NULL),
+        },
+        _ => bail!("unsupported legacy interception CA key type {tag}"),
+    };
+    let key = PrivateKeyInfo::new(algorithm, private_key);
+    let document = SecretDocument::encode_msg(&key)
+        .map_err(|error| anyhow::anyhow!("encoding PKCS#8 CA key: {error:?}"))?;
+    Ok(document
+        .to_pem("PRIVATE KEY", LineEnding::LF)
+        .map_err(|error| anyhow::anyhow!("encoding PKCS#8 CA key PEM: {error:?}"))?
+        .to_string())
 }
 
 fn decrypt_legacy_pem(block: &pem::Pem, password: &str) -> Result<Vec<u8>> {
@@ -444,12 +491,8 @@ mod tests {
         ];
         for (name, fixture) in fixtures {
             let decrypted = decrypt_ca_key(fixture, Some(PASSWORD)).expect("decrypt fixture");
-            let key = rustls_pemfile::private_key(&mut std::io::Cursor::new(decrypted))
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert!(
-                key.is_some(),
-                "{name}: decrypted PEM did not contain a private key"
-            );
+            KeyPair::from_pem(&decrypted)
+                .unwrap_or_else(|error| panic!("{name}: rcgen rejected decrypted key: {error}"));
         }
     }
 

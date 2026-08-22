@@ -132,6 +132,7 @@ jobs:
           tags: type=raw,value=main
       - uses: docker/bake-action@v7
         with:
+          source: .
           files: |
             ./docker-bake.hcl
             ${{ steps.meta.outputs.bake-file-tags }}
@@ -177,6 +178,7 @@ jobs:
             type=semver,pattern={{major}}
       - uses: docker/bake-action@v7
         with:
+          source: .
           files: |
             ./docker-bake.hcl
             ${{ steps.meta.outputs.bake-file-tags }}

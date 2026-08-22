@@ -20,10 +20,10 @@ pem.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
+sec1.workspace = true
 
 [dev-dependencies]
 divan.workspace = true
-rustls-pemfile.workspace = true
 
 [[bench]]
 name = "interception"

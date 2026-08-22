@@ -15,10 +15,10 @@ use bytes::Bytes;
 use compio::{net::TcpStream, runtime, time::timeout};
 use cyper_core::HyperStream;
 use futures_util::io::{AsyncRead, AsyncWrite};
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
+use http_body_util::Full;
 use hyper::{
     Method, Request, Response, StatusCode, Uri,
-    body::Incoming,
+    body::{Body, Frame, Incoming, SizeHint},
     header::{CONNECTION, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, UPGRADE},
     service::service_fn,
 };
@@ -29,7 +29,49 @@ use msgtausch_policy::{ClassifierEngine, Target};
 use msgtausch_quic::{H3Connection, H3Request, H3Response, H3Upstream};
 use msgtausch_routing::{RouteMetrics, RoutePlanner};
 
-pub type ProxyBody = BoxBody<Bytes, hyper::Error>;
+/// A proxied upstream response or a locally generated response.
+///
+/// Keeping the upstream [`Incoming`] body concrete avoids allocating a box
+/// for every forwarded response while preserving its streaming frames and
+/// trailers.
+pub enum ProxyBody {
+    Incoming(Incoming),
+    Full(Full<Bytes>),
+}
+
+impl Body for ProxyBody {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.get_mut() {
+            Self::Incoming(body) => Pin::new(body).poll_frame(cx),
+            Self::Full(body) => match Pin::new(body).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Some(Err(never))) => match never {},
+            },
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            Self::Incoming(body) => body.is_end_stream(),
+            Self::Full(body) => body.is_end_stream(),
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            Self::Incoming(body) => body.size_hint(),
+            Self::Full(body) => body.size_hint(),
+        }
+    }
+}
 
 /// Request-path telemetry seam. Implementations must use bounded dimensions.
 /// Hosts, paths, and client addresses belong in traces or logs, never metric
@@ -345,7 +387,7 @@ impl ProxyRuntime {
         let status = upstream.status();
         let upstream_upgrade = (wants_upgrade && status == StatusCode::SWITCHING_PROTOCOLS)
             .then(|| hyper::upgrade::on(&mut upstream));
-        let response = upstream.map(|body| body.boxed());
+        let response = upstream.map(ProxyBody::Incoming);
         if let (Some(client_upgrade), Some(upstream_upgrade)) = (client_upgrade, upstream_upgrade) {
             let idle = self.idle_timeout;
             let metrics = self.metrics.clone();
@@ -536,11 +578,7 @@ impl ProxyRuntime {
         Response::builder()
             .status(status)
             .header("content-type", "text/plain; charset=utf-8")
-            .body(
-                Full::new(Bytes::from(error.to_string()))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
+            .body(ProxyBody::Full(Full::new(Bytes::from(error.to_string()))))
             .expect("valid error response")
     }
 }
@@ -567,40 +605,40 @@ fn h3_failure(status: StatusCode, message: &str) -> H3Response {
 
 fn target_from_request<B>(request: &Request<B>, client_ip: IpAddr) -> Result<Target> {
     let uri = request.uri();
-    let authority = if request.method() == Method::CONNECT {
-        uri.authority().map(ToString::to_string).or_else(|| {
-            let path = uri.path();
-            (!path.is_empty() && path != "/").then(|| path.to_string())
-        })
+    let parsed;
+    let authority = if let Some(authority) = uri.authority() {
+        authority
     } else {
-        uri.authority().map(ToString::to_string).or_else(|| {
+        let value = if request.method() == Method::CONNECT {
+            let path = uri.path();
+            (!path.is_empty() && path != "/").then_some(path)
+        } else {
             request
                 .headers()
                 .get(HOST)
                 .and_then(|value| value.to_str().ok())
-                .map(str::to_owned)
-        })
-    }
-    .context("request has no target authority")?;
-    let parsed: hyper::http::uri::Authority =
-        authority.parse().context("malformed target authority")?;
-    let port = parsed.port_u16().unwrap_or_else(|| {
+        }
+        .context("request has no target authority")?;
+        parsed = value.parse().context("malformed target authority")?;
+        &parsed
+    };
+    let port = authority.port_u16().unwrap_or_else(|| {
         if uri.scheme_str() == Some("https") || request.method() == Method::CONNECT {
             443
         } else {
             80
         }
     });
-    Ok(Target::new(parsed.host(), port, Some(client_ip)))
+    Ok(Target::new(authority.host(), port, Some(client_ip)))
 }
 
 fn rewrite_to_origin_form<B>(request: &mut Request<B>, target: &Target) -> Result<()> {
-    let path = request
+    let uri = request
         .uri()
         .path_and_query()
-        .map(|value| value.as_str())
-        .unwrap_or("/");
-    let uri: Uri = path.parse().context("invalid request path")?;
+        .cloned()
+        .map(Uri::from)
+        .unwrap_or_else(|| Uri::from_static("/"));
     *request.uri_mut() = uri;
     if !request.headers().contains_key(HOST) {
         request.headers_mut().insert(
@@ -628,25 +666,14 @@ fn is_upgrade<B>(request: &Request<B>) -> bool {
 }
 
 fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
-    let named_by_connection = request
-        .headers()
-        .get(CONNECTION)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(',')
-                .map(|token| token.trim().to_owned())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     request.headers_mut().remove(PROXY_AUTHORIZATION);
     request.headers_mut().remove(PROXY_AUTHENTICATE);
     request.headers_mut().remove("proxy-connection");
     if !preserve_upgrade {
-        request.headers_mut().remove(CONNECTION);
+        let connection = request.headers_mut().remove(CONNECTION);
         request.headers_mut().remove(UPGRADE);
-        for name in named_by_connection {
-            if let Ok(name) = hyper::http::header::HeaderName::from_bytes(name.as_bytes()) {
+        if let Some(value) = connection.as_ref().and_then(|value| value.to_str().ok()) {
+            for name in value.split(',').map(str::trim) {
                 request.headers_mut().remove(name);
             }
         }
@@ -654,9 +681,7 @@ fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
 }
 
 fn empty_body() -> ProxyBody {
-    Full::new(Bytes::new())
-        .map_err(|never| match never {})
-        .boxed()
+    ProxyBody::Full(Full::new(Bytes::new()))
 }
 
 /// Adapts Hyper's upgrade stream to the futures I/O traits used by the tunnel
@@ -748,12 +773,11 @@ async fn tunnel(
 ) -> io::Result<(u64, u64)> {
     let mut client = HyperIo(client);
     let mut upstream = HyperIo(upstream);
-    let mut sent = CopyBuffer::new();
-    let mut received = CopyBuffer::new();
+    let mut buffers = Box::new(TunnelBuffers::new());
 
     std::future::poll_fn(move |cx| {
-        let sent_state = sent.poll(cx, &mut client, &mut upstream);
-        let received_state = received.poll(cx, &mut upstream, &mut client);
+        let sent_state = buffers.sent.poll(cx, &mut client, &mut upstream);
+        let received_state = buffers.received.poll(cx, &mut upstream, &mut client);
         if let Poll::Ready(Err(error)) = sent_state {
             return Poll::Ready(Err(error));
         }
@@ -763,7 +787,7 @@ async fn tunnel(
         if matches!(sent_state, Poll::Ready(Ok(())))
             && matches!(received_state, Poll::Ready(Ok(())))
         {
-            Poll::Ready(Ok((sent.copied, received.copied)))
+            Poll::Ready(Ok((buffers.sent.copied, buffers.received.copied)))
         } else {
             Poll::Pending
         }
@@ -771,8 +795,22 @@ async fn tunnel(
     .await
 }
 
+struct TunnelBuffers {
+    sent: CopyBuffer,
+    received: CopyBuffer,
+}
+
+impl TunnelBuffers {
+    fn new() -> Self {
+        Self {
+            sent: CopyBuffer::new(),
+            received: CopyBuffer::new(),
+        }
+    }
+}
+
 struct CopyBuffer {
-    bytes: Box<[u8; 16 * 1024]>,
+    bytes: [u8; 16 * 1024],
     position: usize,
     capacity: usize,
     read_done: bool,
@@ -783,7 +821,7 @@ struct CopyBuffer {
 impl CopyBuffer {
     fn new() -> Self {
         Self {
-            bytes: Box::new([0; 16 * 1024]),
+            bytes: [0; 16 * 1024],
             position: 0,
             capacity: 0,
             read_done: false,
@@ -815,7 +853,7 @@ impl CopyBuffer {
             }
 
             if self.position == self.capacity && !self.read_done {
-                match AsyncRead::poll_read(Pin::new(&mut *reader), cx, &mut *self.bytes) {
+                match AsyncRead::poll_read(Pin::new(&mut *reader), cx, &mut self.bytes) {
                     Poll::Ready(Ok(0)) => self.read_done = true,
                     Poll::Ready(Ok(count)) => {
                         self.position = 0;
@@ -872,6 +910,31 @@ mod tests {
             .uri(uri)
             .body(())
             .expect("valid test request")
+    }
+
+    #[test]
+    fn local_proxy_body_preserves_full_body_semantics() {
+        let mut body = ProxyBody::Full(Full::new(Bytes::from_static(b"failure")));
+
+        assert_eq!(body.size_hint().exact(), Some(7));
+        assert!(!body.is_end_stream());
+
+        let waker = std::task::Waker::noop();
+        let mut context = TaskContext::from_waker(waker);
+        let frame = match Pin::new(&mut body).poll_frame(&mut context) {
+            Poll::Ready(Some(Ok(frame))) => frame,
+            _ => panic!("full body must immediately yield its data frame"),
+        };
+        assert_eq!(
+            frame.into_data().expect("data frame"),
+            b"failure".as_slice()
+        );
+        assert!(body.is_end_stream());
+        assert_eq!(body.size_hint().exact(), Some(0));
+        assert!(matches!(
+            Pin::new(&mut body).poll_frame(&mut context),
+            Poll::Ready(None)
+        ));
     }
 
     #[test]
@@ -977,6 +1040,21 @@ mod tests {
         assert!(!request.headers().contains_key(CONNECTION));
         assert!(!request.headers().contains_key("x-private"));
         assert_eq!(request.headers()["x-public"], "keep me");
+    }
+
+    #[test]
+    fn invalid_connection_tokens_are_ignored_without_hiding_valid_ones() {
+        let mut request = Request::builder()
+            .uri("/")
+            .header(CONNECTION, "not a name, x-private")
+            .header("x-private", "remove me")
+            .body(())
+            .unwrap();
+
+        strip_proxy_headers(&mut request, false);
+
+        assert!(!request.headers().contains_key(CONNECTION));
+        assert!(!request.headers().contains_key("x-private"));
     }
 
     #[test]

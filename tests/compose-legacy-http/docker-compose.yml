@@ -1,0 +1,55 @@
+# Raw HTTP/1 compatibility tests. The origin writes protocol bytes directly so
+# libraries cannot normalize the odd framing before msgtausch sees it.
+services:
+  proxy:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime-release
+    image: msgtausch:legacy-http-test
+    command: ["--config", "/config/config.json", "--debug"]
+    volumes:
+      - ./proxy-config.json:/config/config.json:ro
+    networks:
+      - legacy-http-test
+
+  legacy-origin:
+    build:
+      context: ./origin
+      dockerfile: Dockerfile
+    image: msgtausch-legacy-http-origin:local
+    stop_signal: SIGINT
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD", "python3", "/app/healthcheck.py"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 1s
+    networks:
+      - legacy-http-test
+
+  client:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM docker.io/library/python:3.13-alpine
+        RUN adduser -D -H app
+        WORKDIR /app
+        COPY client/run.py /app/run.py
+        USER app
+        ENTRYPOINT ["python3", "/app/run.py"]
+    image: msgtausch-legacy-http-client:local
+    depends_on:
+      proxy:
+        condition: service_started
+      legacy-origin:
+        condition: service_healthy
+    networks:
+      - legacy-http-test
+
+networks:
+  legacy-http-test:
+    name: msgtausch-legacy-http-test
+    external: false

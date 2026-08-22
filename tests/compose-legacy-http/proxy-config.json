@@ -1,0 +1,10 @@
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "0.0.0.0:8080",
+      "enabled": true
+    }
+  ],
+  "timeout-seconds": 10
+}

@@ -66,16 +66,22 @@ jobs:
             throughput.cache-to=type=gha,mode=max
 
   compose:
-    name: Proxy integration
+    name: Proxy integration (${{ matrix.stack }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        stack:
+          - compose-intercept
+          - compose-legacy-http
     steps:
       - uses: actions/checkout@v7
-      - run: cd tests/compose-intercept && docker compose build
-      - run: cd tests/compose-intercept && timeout --signal=SIGINT 300 docker compose up --abort-on-container-exit --exit-code-from client
+      - run: cd "tests/${{ matrix.stack }}" && docker compose build
+      - run: cd "tests/${{ matrix.stack }}" && timeout --signal=SIGINT 300 docker compose up --abort-on-container-exit --exit-code-from client
       - if: always()
-        run: cd tests/compose-intercept && docker compose down -v --remove-orphans
+        run: cd "tests/${{ matrix.stack }}" && docker compose down -v --remove-orphans
 
   nix:
     name: Nix build

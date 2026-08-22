@@ -8,5 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 compio.workspace = true
 compio-tls.workspace = true
+futures-util.workspace = true
+lru.workspace = true
 msgtausch-config = { path = "../msgtausch-config" }
 rustls-native-certs.workspace = true

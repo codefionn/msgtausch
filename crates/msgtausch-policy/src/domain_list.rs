@@ -28,6 +28,15 @@ impl DomainMatcher {
         Self { domains }
     }
 
+    /// Build a matcher from tokens already normalized by the legacy local
+    /// domains-file reader. Unlike remote list entries, local tokens may be
+    /// single labels, IP-like values, or otherwise non-DNS strings.
+    pub fn from_local_tokens(domains: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            domains: domains.into_iter().collect(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.domains.len()
     }

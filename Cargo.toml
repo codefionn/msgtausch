@@ -27,6 +27,7 @@ hcl-rs = "0.19"
 http-body-util = "0.1"
 hyper = { version = "1.6", default-features = false, features = ["client", "http1", "server"] }
 ipnet = "2.11"
+lru = "0.12"
 libc = "0.2"
 md-5 = "0.10"
 opentelemetry = "0.29"

@@ -99,8 +99,11 @@ static COMPILED_COMPOSITE: LazyLock<CompiledClassifier> = LazyLock::new(|| {
     ])
 });
 
-static COMPILED_DOMAINS: LazyLock<CompiledClassifier> =
-    LazyLock::new(|| CompiledClassifier::Domains(Arc::new(domain_names(1_000).to_vec())));
+static COMPILED_DOMAINS: LazyLock<CompiledClassifier> = LazyLock::new(|| {
+    CompiledClassifier::Domains(Arc::new(DomainMatcher::from_local_tokens(
+        domain_names(1_000).iter().cloned(),
+    )))
+});
 
 fn domain_names(size: usize) -> &'static [String] {
     static SMALL: LazyLock<Vec<String>> = LazyLock::new(|| make_domains(10));

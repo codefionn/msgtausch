@@ -12,6 +12,7 @@ compio.workspace = true
 des.workspace = true
 futures-rustls.workspace = true
 futures-util.workspace = true
+lru.workspace = true
 md-5.workspace = true
 msgtausch-config = { path = "../msgtausch-config" }
 msgtausch-policy = { path = "../msgtausch-policy" }

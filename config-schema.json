@@ -765,6 +765,35 @@
           "description": "Enable custom DNS resolver",
           "default": false
         },
+        "cache-enabled": {
+          "type": "boolean",
+          "description": "Enable the DNS response cache",
+          "default": true
+        },
+        "cache-capacity": {
+          "type": "integer",
+          "description": "Maximum number of DNS cache entries. Zero disables caching.",
+          "minimum": 0,
+          "default": 4096
+        },
+        "cache-max-ttl-seconds": {
+          "type": "integer",
+          "description": "Maximum lifetime for cached DNS responses in seconds. Zero prevents positive responses from being cached.",
+          "minimum": 0,
+          "default": 60
+        },
+        "negative-cache-ttl-seconds": {
+          "type": "integer",
+          "description": "Lifetime for cached negative DNS responses in seconds. Zero prevents negative responses from being cached.",
+          "minimum": 0,
+          "default": 5
+        },
+        "happy-eyeballs-delay-millis": {
+          "type": "integer",
+          "description": "Delay before trying the other IP address family during connection setup, in milliseconds.",
+          "minimum": 0,
+          "default": 250
+        },
         "servers": {
           "type": "array",
           "description": "List of DNS servers to use",

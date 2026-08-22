@@ -5,9 +5,15 @@
 //! round-robin order. A query never spills over into the next server.
 
 use std::{
+    error::Error,
+    fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
+    num::NonZeroUsize,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -18,6 +24,8 @@ use compio::{
     time::timeout,
 };
 use compio_tls::{TlsConnector, rustls};
+use futures_util::future::join;
+use lru::LruCache;
 
 use msgtausch_config::{DnsConfig, DnsServerConfig, DnsServerKind};
 
@@ -25,11 +33,83 @@ const TYPE_A: u16 = 1;
 const TYPE_AAAA: u16 = 28;
 const CLASS_IN: u16 = 1;
 
+/// DNS answers together with the point at which their DNS TTL expires.
+#[derive(Clone, Debug)]
+pub struct ResolvedAddresses {
+    pub addresses: Vec<IpAddr>,
+    pub expires_at: Instant,
+}
+
+#[derive(Debug)]
+struct NoRecords;
+
+impl fmt::Display for NoRecords {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DNS reply contains no requested records")
+    }
+}
+
+impl Error for NoRecords {}
+
+#[derive(Clone)]
+enum CacheEntry {
+    Positive(ResolvedAddresses),
+    Negative { expires_at: Instant },
+}
+
+struct DnsCache {
+    entries: Option<LruCache<String, CacheEntry>>,
+}
+
+impl DnsCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: NonZeroUsize::new(capacity).map(LruCache::new),
+        }
+    }
+
+    fn get(&mut self, host: &str, now: Instant) -> Option<CacheEntry> {
+        let entry = self.entries.as_mut()?.get(host)?.clone();
+        let expires_at = match &entry {
+            CacheEntry::Positive(answer) => answer.expires_at,
+            CacheEntry::Negative { expires_at } => *expires_at,
+        };
+        if expires_at <= now {
+            self.entries.as_mut()?.pop(host);
+            return None;
+        }
+        Some(entry)
+    }
+
+    fn insert(&mut self, host: String, entry: CacheEntry, now: Instant) {
+        let expires_at = match &entry {
+            CacheEntry::Positive(answer) => answer.expires_at,
+            CacheEntry::Negative { expires_at } => *expires_at,
+        };
+        if expires_at <= now {
+            return;
+        }
+        if let Some(entries) = &mut self.entries {
+            entries.put(host, entry);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Records {
+    addresses: Vec<IpAddr>,
+    min_ttl: Duration,
+}
+
 /// DNS resolver with per-query round-robin server selection.
 pub struct Resolver {
     servers: Vec<DnsServerConfig>,
     next_server: AtomicUsize,
     next_id: AtomicUsize,
+    cache: Mutex<DnsCache>,
+    cache_enabled: bool,
+    cache_max_ttl: Duration,
+    negative_cache_ttl: Duration,
 }
 
 impl Resolver {
@@ -38,35 +118,82 @@ impl Resolver {
             servers: config.servers.clone(),
             next_server: AtomicUsize::new(0),
             next_id: AtomicUsize::new(1),
+            cache: Mutex::new(DnsCache::new(config.cache_capacity)),
+            cache_enabled: config.cache_enabled && config.cache_capacity > 0,
+            cache_max_ttl: Duration::from_secs(config.cache_max_ttl_seconds),
+            negative_cache_ttl: Duration::from_secs(config.negative_cache_ttl_seconds),
         })
     }
 
     pub async fn lookup(&self, host: &str) -> Result<Vec<IpAddr>> {
+        Ok(self.lookup_with_expiry(host).await?.addresses)
+    }
+
+    pub async fn lookup_with_expiry(&self, host: &str) -> Result<ResolvedAddresses> {
+        let host = normalize_host(host);
         if let Ok(ip) = host.parse() {
-            return Ok(vec![ip]);
+            return Ok(ResolvedAddresses {
+                addresses: vec![ip],
+                expires_at: Instant::now(),
+            });
         }
-        let host = host.trim_end_matches('.');
         if host.is_empty() {
             bail!("DNS name is empty");
         }
+        let now = Instant::now();
+        if self.cache_enabled {
+            let cached = self
+                .cache
+                .lock()
+                .expect("DNS cache lock poisoned")
+                .get(&host, now);
+            match cached {
+                Some(CacheEntry::Positive(answer)) => return Ok(answer),
+                Some(CacheEntry::Negative { .. }) => return Err(NoRecords.into()),
+                None => {}
+            }
+        }
         let index = self.next_server.fetch_add(1, Ordering::Relaxed) % self.servers.len();
-        self.lookup_server(&self.servers[index], host).await
+        match self.lookup_server(&self.servers[index], &host).await {
+            Ok(records) => {
+                let ttl = records.min_ttl.min(self.cache_max_ttl);
+                let answer = ResolvedAddresses {
+                    addresses: records.addresses,
+                    expires_at: Instant::now() + ttl,
+                };
+                if self.cache_enabled && !ttl.is_zero() {
+                    self.cache.lock().expect("DNS cache lock poisoned").insert(
+                        host.clone(),
+                        CacheEntry::Positive(answer.clone()),
+                        Instant::now(),
+                    );
+                }
+                Ok(answer)
+            }
+            Err(error) if is_no_records(&error) => {
+                if self.cache_enabled && !self.negative_cache_ttl.is_zero() {
+                    self.cache.lock().expect("DNS cache lock poisoned").insert(
+                        host,
+                        CacheEntry::Negative {
+                            expires_at: Instant::now() + self.negative_cache_ttl,
+                        },
+                        Instant::now(),
+                    );
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
-    async fn lookup_server(&self, server: &DnsServerConfig, host: &str) -> Result<Vec<IpAddr>> {
+    async fn lookup_server(&self, server: &DnsServerConfig, host: &str) -> Result<Records> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u16;
-        let mut addresses = self.query(server, host, TYPE_A, id).await?;
-        // A negative AAAA result is not a failed A lookup.  This is useful for
-        // IPv4-only names, and avoids dropping the validated A reply.
-        match self
-            .query(server, host, TYPE_AAAA, id.wrapping_add(1))
-            .await
-        {
-            Ok(mut v6) => addresses.append(&mut v6),
-            Err(error) if !addresses.is_empty() && is_no_records(&error) => {}
-            Err(error) => return Err(error),
-        }
-        Ok(addresses)
+        let (a, aaaa) = join(
+            self.query(server, host, TYPE_A, id),
+            self.query(server, host, TYPE_AAAA, id.wrapping_add(1)),
+        )
+        .await;
+        combine_records([a, aaaa])
     }
 
     async fn query(
@@ -75,7 +202,7 @@ impl Resolver {
         host: &str,
         qtype: u16,
         id: u16,
-    ) -> Result<Vec<IpAddr>> {
+    ) -> Result<Records> {
         let packet = build_query(host, qtype, id)?;
         let duration = Duration::from_secs(server.timeout_seconds.max(1));
         let response = match server.kind {
@@ -89,8 +216,34 @@ impl Resolver {
                 .await
                 .context("DNS-over-TLS query timed out")??,
         };
-        parse_response(&response, host, qtype, id)
+        parse_records(&response, host, qtype, id)
     }
+}
+
+fn combine_records(results: [Result<Records>; 2]) -> Result<Records> {
+    let mut addresses = Vec::new();
+    let mut min_ttl = None;
+    let mut first_error = None;
+    for result in results {
+        match result {
+            Ok(records) => {
+                min_ttl =
+                    Some(min_ttl.map_or(records.min_ttl, |ttl: Duration| ttl.min(records.min_ttl)));
+                addresses.extend(records.addresses);
+            }
+            Err(error) if is_no_records(&error) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if addresses.is_empty() {
+        return Err(first_error.unwrap_or_else(|| NoRecords.into()));
+    }
+    Ok(Records {
+        addresses,
+        min_ttl: min_ttl.expect("records had a TTL"),
+    })
 }
 
 async fn udp_exchange(address: &str, packet: Vec<u8>) -> Result<Vec<u8>> {
@@ -188,7 +341,12 @@ fn build_query(host: &str, qtype: u16, id: u16) -> Result<Vec<u8>> {
     Ok(packet)
 }
 
+#[cfg(test)]
 fn parse_response(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Vec<IpAddr>> {
+    Ok(parse_records(packet, host, qtype, id)?.addresses)
+}
+
+fn parse_records(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Records> {
     if packet.len() < 12 {
         bail!("DNS reply is shorter than its header");
     }
@@ -198,6 +356,9 @@ fn parse_response(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Vec<
     let flags = u16::from_be_bytes([packet[2], packet[3]]);
     if flags & 0x8000 == 0 {
         bail!("DNS reply is not a response");
+    }
+    if flags & 0x000f == 3 {
+        return Err(NoRecords.into());
     }
     if flags & 0x000f != 0 {
         bail!("DNS server returned rcode {}", flags & 0x000f);
@@ -215,11 +376,12 @@ fn parse_response(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Vec<
         bail!("DNS reply question does not match request");
     }
     let mut addresses = Vec::new();
+    let mut min_ttl = None;
     for _ in 0..answers {
         let _name = read_name(packet, &mut cursor)?;
         let typ = read_u16(packet, &mut cursor)?;
         let class = read_u16(packet, &mut cursor)?;
-        let _ttl = read_u32(packet, &mut cursor)?;
+        let ttl = read_u32(packet, &mut cursor)?;
         let length = read_u16(packet, &mut cursor)? as usize;
         let data = packet
             .get(cursor..cursor + length)
@@ -229,19 +391,26 @@ fn parse_response(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Vec<
             continue;
         }
         match (typ, data) {
-            (TYPE_A, [a, b, c, d]) => addresses.push(IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d))),
+            (TYPE_A, [a, b, c, d]) => {
+                addresses.push(IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d)));
+                min_ttl = Some(min_ttl.map_or(ttl, |current: u32| current.min(ttl)));
+            }
             (TYPE_AAAA, bytes) if bytes.len() == 16 => {
                 let mut octets = [0; 16];
                 octets.copy_from_slice(bytes);
                 addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
+                min_ttl = Some(min_ttl.map_or(ttl, |current: u32| current.min(ttl)));
             }
             _ => bail!("DNS reply has an invalid address record length"),
         }
     }
     if addresses.is_empty() {
-        bail!("DNS reply contains no requested records");
+        return Err(NoRecords.into());
     }
-    Ok(addresses)
+    Ok(Records {
+        addresses,
+        min_ttl: Duration::from_secs(u64::from(min_ttl.expect("addresses had a TTL"))),
+    })
 }
 
 fn write_name(packet: &mut Vec<u8>, host: &str) -> Result<()> {
@@ -314,7 +483,11 @@ fn names_equal(left: &str, right: &str) -> bool {
         .eq_ignore_ascii_case(right.trim_end_matches('.'))
 }
 fn is_no_records(error: &anyhow::Error) -> bool {
-    error.to_string().contains("no requested records") || error.to_string().contains("rcode 3")
+    error.downcast_ref::<NoRecords>().is_some()
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -332,12 +505,16 @@ mod tests {
     }
 
     fn append_answer(reply: &mut Vec<u8>, qtype: u16, data: &[u8]) {
+        append_answer_with_ttl(reply, qtype, 60, data);
+    }
+
+    fn append_answer_with_ttl(reply: &mut Vec<u8>, qtype: u16, ttl: u32, data: &[u8]) {
         let answer_count = u16::from_be_bytes([reply[6], reply[7]]) + 1;
         reply[6..8].copy_from_slice(&answer_count.to_be_bytes());
         reply.extend_from_slice(&[0xc0, 0x0c]);
         reply.extend_from_slice(&qtype.to_be_bytes());
         reply.extend_from_slice(&CLASS_IN.to_be_bytes());
-        reply.extend_from_slice(&60_u32.to_be_bytes());
+        reply.extend_from_slice(&ttl.to_be_bytes());
         reply.extend_from_slice(&(data.len() as u16).to_be_bytes());
         reply.extend_from_slice(data);
     }
@@ -360,6 +537,99 @@ mod tests {
             parse_response(&reply, "example.test", TYPE_A, 7).unwrap(),
             vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
         );
+    }
+
+    #[test]
+    fn parser_uses_the_smallest_usable_record_ttl() {
+        let mut reply = reply_for("example.test", TYPE_A, 7);
+        append_answer_with_ttl(&mut reply, TYPE_A, 30, &[192, 0, 2, 1]);
+        append_answer_with_ttl(&mut reply, TYPE_A, 4, &[192, 0, 2, 2]);
+
+        let records = parse_records(&reply, "example.test", TYPE_A, 7).unwrap();
+        assert_eq!(records.min_ttl, Duration::from_secs(4));
+        assert_eq!(records.addresses.len(), 2);
+    }
+
+    #[test]
+    fn cache_returns_hits_evicts_expired_entries_and_bounds_capacity() {
+        let now = Instant::now();
+        let answer = ResolvedAddresses {
+            addresses: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            expires_at: now + Duration::from_secs(1),
+        };
+        let mut cache = DnsCache::new(1);
+        cache.insert(
+            "first.test".into(),
+            CacheEntry::Positive(answer.clone()),
+            now,
+        );
+        assert!(matches!(
+            cache.get("first.test", now),
+            Some(CacheEntry::Positive(_))
+        ));
+        assert!(
+            cache
+                .get("first.test", now + Duration::from_secs(1))
+                .is_none()
+        );
+
+        cache.insert(
+            "first.test".into(),
+            CacheEntry::Positive(answer.clone()),
+            now,
+        );
+        cache.insert(
+            "second.test".into(),
+            CacheEntry::Positive(answer.clone()),
+            now,
+        );
+        assert!(cache.get("first.test", now).is_none());
+        assert!(cache.get("second.test", now).is_some());
+
+        let mut disabled = DnsCache::new(0);
+        disabled.insert("disabled.test".into(), CacheEntry::Positive(answer), now);
+        assert!(disabled.get("disabled.test", now).is_none());
+    }
+
+    #[test]
+    fn cache_keeps_negative_answers_only_until_their_expiry() {
+        let now = Instant::now();
+        let mut cache = DnsCache::new(1);
+        cache.insert(
+            "missing.test".into(),
+            CacheEntry::Negative {
+                expires_at: now + Duration::from_secs(5),
+            },
+            now,
+        );
+        assert!(matches!(
+            cache.get("missing.test", now),
+            Some(CacheEntry::Negative { .. })
+        ));
+        assert!(
+            cache
+                .get("missing.test", now + Duration::from_secs(5))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn normalizes_cache_keys_without_changing_dns_name_semantics() {
+        assert_eq!(normalize_host(" Api.Example.Test. "), "api.example.test");
+    }
+
+    #[test]
+    fn keeps_a_usable_family_when_the_other_query_fails() {
+        let records = combine_records([
+            Ok(Records {
+                addresses: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+                min_ttl: Duration::from_secs(30),
+            }),
+            Err(anyhow::anyhow!("DNS UDP query timed out")),
+        ])
+        .unwrap();
+        assert_eq!(records.addresses, vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        assert_eq!(records.min_ttl, Duration::from_secs(30));
     }
     #[test]
     fn rejects_wrong_question() {
@@ -495,11 +765,71 @@ mod tests {
                 }],
                 next_server: AtomicUsize::new(0),
                 next_id: AtomicUsize::new(20),
+                cache: Mutex::new(DnsCache::new(0)),
+                cache_enabled: false,
+                cache_max_ttl: Duration::from_secs(60),
+                negative_cache_ttl: Duration::from_secs(5),
             };
             assert_eq!(
                 resolver.lookup("example.test").await.unwrap(),
                 vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
             );
+            task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn warm_udp_lookup_reuses_the_original_query_pair() {
+        runtime::Runtime::new().unwrap().block_on(async {
+            let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let address = server.local_addr().unwrap();
+            let task = runtime::spawn(async move {
+                for _ in 0..2 {
+                    let BufResult(result, query) = server.recv_from(Vec::with_capacity(512)).await;
+                    let (_, peer) = result.unwrap();
+                    let qtype =
+                        u16::from_be_bytes([query[query.len() - 4], query[query.len() - 3]]);
+                    let mut reply = query[..12].to_vec();
+                    reply[2] = 0x81;
+                    reply[3] = 0x80;
+                    reply[6..8].copy_from_slice(&1_u16.to_be_bytes());
+                    reply.extend_from_slice(&query[12..]);
+                    reply.extend_from_slice(&[0xc0, 0x0c]);
+                    reply.extend_from_slice(&qtype.to_be_bytes());
+                    reply.extend_from_slice(&CLASS_IN.to_be_bytes());
+                    reply.extend_from_slice(&30_u32.to_be_bytes());
+                    match qtype {
+                        TYPE_A => {
+                            reply.extend_from_slice(&4_u16.to_be_bytes());
+                            reply.extend_from_slice(&[127, 0, 0, 1]);
+                        }
+                        TYPE_AAAA => {
+                            reply.extend_from_slice(&16_u16.to_be_bytes());
+                            reply.extend_from_slice(&Ipv6Addr::LOCALHOST.octets());
+                        }
+                        _ => unreachable!("unexpected DNS query type"),
+                    }
+                    let BufResult(result, _) = server.send_to(reply, peer).await;
+                    result.unwrap();
+                }
+            });
+            let resolver = Resolver {
+                servers: vec![DnsServerConfig {
+                    address: address.to_string(),
+                    kind: DnsServerKind::Udp,
+                    timeout_seconds: 1,
+                    tls_host: None,
+                }],
+                next_server: AtomicUsize::new(0),
+                next_id: AtomicUsize::new(40),
+                cache: Mutex::new(DnsCache::new(4)),
+                cache_enabled: true,
+                cache_max_ttl: Duration::from_secs(60),
+                negative_cache_ttl: Duration::from_secs(5),
+            };
+            let first = resolver.lookup("cache.test").await.unwrap();
+            let second = resolver.lookup("CACHE.TEST.").await.unwrap();
+            assert_eq!(first, second);
             task.await.unwrap();
         });
     }

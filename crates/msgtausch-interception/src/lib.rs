@@ -1,8 +1,8 @@
 //! TLS certificate issuance and stream setup for HTTPS interception.
 
 use std::{
-    collections::{HashMap, VecDeque},
     fs,
+    num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
 
@@ -17,6 +17,7 @@ use compio::{
 };
 use des::Des;
 use futures_rustls::{TlsAcceptor as FuturesTlsAcceptor, server::TlsStream as ServerTlsStream};
+use lru::LruCache;
 use md5::{Digest, Md5};
 use pkcs8::{
     AlgorithmIdentifierRef, EncryptedPrivateKeyInfo, ObjectIdentifier, PrivateKeyInfo,
@@ -27,8 +28,8 @@ use rustls::{
     ClientConfig, RootCertStore, ServerConfig, pki_types::CertificateDer, sign::CertifiedKey,
 };
 
-use msgtausch_config::{Classifier, InterceptionConfig};
-use msgtausch_policy::{ClassifierEngine, Target};
+use msgtausch_config::InterceptionConfig;
+use msgtausch_policy::{ClassifierEngine, CompiledClassifier, Target};
 
 const LEAF_CACHE_CAPACITY: usize = 256;
 
@@ -40,8 +41,8 @@ pub struct InterceptionRuntime {
     leaves: Arc<Mutex<LeafCache>>,
     upstream: TlsConnector,
     upstream_config: Arc<ClientConfig>,
-    https_classifier: Option<Classifier>,
-    exclude_classifier: Option<Classifier>,
+    https_classifier: Option<CompiledClassifier>,
+    exclude_classifier: Option<CompiledClassifier>,
 }
 
 impl InterceptionRuntime {
@@ -52,11 +53,38 @@ impl InterceptionRuntime {
         Self::from_config_for_dedicated_listener(config, false)
     }
 
+    /// Build interception state and validate runtime classifiers against the
+    /// supplied named-classifier namespace before startup completes.
+    pub fn from_config_with_classifiers(
+        config: &InterceptionConfig,
+        classifiers: &ClassifierEngine,
+    ) -> Result<Option<Self>> {
+        Self::from_config_for_dedicated_listener_with_classifiers(config, false, classifiers)
+    }
+
     /// Load CA state for a dedicated HTTPS or HTTP/3 listener even when
-    /// standard CONNECT interception is off. The caller still owns policy.
+    /// standard CONNECT interception is off. This legacy entry point keeps
+    /// named references valid for the engine later passed to `should_intercept`.
     pub fn from_config_for_dedicated_listener(
         config: &InterceptionConfig,
         dedicated_listener: bool,
+    ) -> Result<Option<Self>> {
+        Self::from_config_inner(config, dedicated_listener, None)
+    }
+
+    /// Classifier-aware form of `from_config_for_dedicated_listener`.
+    pub fn from_config_for_dedicated_listener_with_classifiers(
+        config: &InterceptionConfig,
+        dedicated_listener: bool,
+        classifiers: &ClassifierEngine,
+    ) -> Result<Option<Self>> {
+        Self::from_config_inner(config, dedicated_listener, Some(classifiers))
+    }
+
+    fn from_config_inner(
+        config: &InterceptionConfig,
+        dedicated_listener: bool,
+        classifiers: Option<&ClassifierEngine>,
     ) -> Result<Option<Self>> {
         if !dedicated_listener && (!config.enabled || !config.https) {
             return Ok(None);
@@ -88,8 +116,16 @@ impl InterceptionRuntime {
             leaves: Arc::new(Mutex::new(LeafCache::default())),
             upstream: TlsConnector::from(upstream_config.clone()),
             upstream_config,
-            https_classifier: config.https_classifier.clone(),
-            exclude_classifier: config.exclude_classifier.clone(),
+            https_classifier: config
+                .https_classifier
+                .as_ref()
+                .map(|rule| compile_runtime_rule(rule, classifiers))
+                .transpose()?,
+            exclude_classifier: config
+                .exclude_classifier
+                .as_ref()
+                .map(|rule| compile_runtime_rule(rule, classifiers))
+                .transpose()?,
         }))
     }
 
@@ -100,13 +136,13 @@ impl InterceptionRuntime {
         classifiers: &ClassifierEngine,
     ) -> Result<bool> {
         if let Some(rule) = &self.exclude_classifier
-            && classifiers.matches_config(rule, target)?
+            && classifiers.matches_compiled(rule, target)?
         {
             return Ok(false);
         }
         self.https_classifier
             .as_ref()
-            .map(|rule| classifiers.matches_config(rule, target))
+            .map(|rule| classifiers.matches_compiled(rule, target))
             .transpose()
             .map(|matched| matched.unwrap_or(true))
     }
@@ -161,23 +197,38 @@ impl InterceptionRuntime {
     }
 
     fn leaf_config(&self, host: &str) -> Result<Arc<ServerConfig>> {
-        let certified = self.leaf(host)?;
-        Ok(Arc::new(
-            ServerConfig::builder()
-                .with_no_client_auth()
-                .with_cert_resolver(Arc::new(FixedLeafResolver(certified))),
-        ))
+        Ok(self.cached_leaf(host)?.downstream_config.clone())
     }
 
     fn leaf(&self, host: &str) -> Result<Arc<CertifiedKey>> {
+        Ok(self.cached_leaf(host)?.certified.clone())
+    }
+
+    fn cached_leaf(&self, host: &str) -> Result<Arc<CachedLeaf>> {
+        if let Some(leaf) = self
+            .leaves
+            .lock()
+            .expect("interception leaf cache mutex poisoned")
+            .values
+            .get(host)
+            .cloned()
+        {
+            return Ok(leaf);
+        }
+
+        let leaf = self.issue_leaf(host)?;
         let mut cache = self
             .leaves
             .lock()
             .expect("interception leaf cache mutex poisoned");
-        if let Some(certified) = cache.values.get(host).cloned() {
-            cache.touch(host);
-            return Ok(certified);
+        if let Some(existing) = cache.values.get(host).cloned() {
+            return Ok(existing);
         }
+        cache.values.put(host.to_owned(), leaf.clone());
+        Ok(leaf)
+    }
+
+    fn issue_leaf(&self, host: &str) -> Result<Arc<CachedLeaf>> {
         let params = CertificateParams::new(vec![host.to_owned()])
             .with_context(|| format!("creating certificate SAN for {host}"))?;
         let leaf_key = KeyPair::generate().context("generating intercepted leaf key")?;
@@ -193,9 +244,31 @@ impl InterceptionRuntime {
             )
             .context("building intercepted leaf signing key")?,
         );
-        cache.insert(host.to_owned(), certified.clone());
-        Ok(certified)
+        let downstream_config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(Arc::new(FixedLeafResolver(certified.clone()))),
+        );
+        Ok(Arc::new(CachedLeaf {
+            certified,
+            downstream_config,
+        }))
     }
+}
+
+fn compile_runtime_rule(
+    rule: &msgtausch_config::Classifier,
+    classifiers: Option<&ClassifierEngine>,
+) -> Result<CompiledClassifier> {
+    match classifiers {
+        Some(classifiers) => classifiers.compile_runtime_classifier(rule),
+        None => ClassifierEngine::compile_runtime_classifier_unvalidated(rule),
+    }
+}
+
+struct CachedLeaf {
+    certified: Arc<CertifiedKey>,
+    downstream_config: Arc<ServerConfig>,
 }
 
 #[derive(Debug)]
@@ -382,27 +455,16 @@ fn hex_nibble(value: u8) -> Result<u8> {
     }
 }
 
-#[derive(Default)]
 struct LeafCache {
-    values: HashMap<String, Arc<CertifiedKey>>,
-    lru: VecDeque<String>,
+    values: LruCache<String, Arc<CachedLeaf>>,
 }
 
-impl LeafCache {
-    fn touch(&mut self, host: &str) {
-        if let Some(position) = self.lru.iter().position(|entry| entry == host) {
-            self.lru.remove(position);
-        }
-        self.lru.push_back(host.to_owned());
-    }
-
-    fn insert(&mut self, host: String, certified: Arc<CertifiedKey>) {
-        self.values.insert(host.clone(), certified);
-        self.touch(&host);
-        while self.values.len() > LEAF_CACHE_CAPACITY {
-            if let Some(oldest) = self.lru.pop_front() {
-                self.values.remove(&oldest);
-            }
+impl Default for LeafCache {
+    fn default() -> Self {
+        Self {
+            values: LruCache::new(
+                NonZeroUsize::new(LEAF_CACHE_CAPACITY).expect("nonzero cache capacity"),
+            ),
         }
     }
 }
@@ -473,6 +535,15 @@ impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        sync::{Arc, Barrier},
+        thread,
+    };
+
+    use msgtausch_config::{Classifier, Config, DomainOp};
+
     use super::*;
 
     const PASSWORD: &str = "testpassword";
@@ -528,5 +599,110 @@ mod tests {
             .add("DEK-Info", "DES-CBC,1111111111111111")
             .unwrap();
         assert_eq!(decrypt_legacy_pem(&block, PASSWORD).unwrap(), b"key!");
+    }
+
+    #[test]
+    fn caches_a_complete_downstream_server_config() {
+        let runtime = test_runtime();
+        let first = runtime.downstream_config("cached.example").unwrap();
+        let second = runtime.downstream_config("cached.example").unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn evicts_the_least_recently_used_leaf() {
+        let runtime = test_runtime();
+        let first = runtime.downstream_config("host-0.example").unwrap();
+        for index in 1..=LEAF_CACHE_CAPACITY {
+            runtime
+                .downstream_config(&format!("host-{index}.example"))
+                .unwrap();
+        }
+        let replacement = runtime.downstream_config("host-0.example").unwrap();
+        assert!(!Arc::ptr_eq(&first, &replacement));
+    }
+
+    #[test]
+    fn concurrent_misses_return_the_cached_winner() {
+        let runtime = Arc::new(test_runtime());
+        let barrier = Arc::new(Barrier::new(8));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let runtime = runtime.clone();
+            let barrier = barrier.clone();
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                runtime.downstream_config("race.example").unwrap()
+            }));
+        }
+        let configs = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            configs
+                .windows(2)
+                .all(|pair| Arc::ptr_eq(&pair[0], &pair[1]))
+        );
+    }
+
+    #[test]
+    fn interception_compiles_named_rules_and_rejects_invalid_runtime_rules() {
+        let interception = test_interception_config();
+        let config = Config {
+            classifiers: BTreeMap::from([(
+                "intercepted".into(),
+                Classifier::Domain {
+                    op: DomainOp::Is,
+                    domain: "intercept.example".into(),
+                },
+            )]),
+            interception: InterceptionConfig {
+                https_classifier: Some(Classifier::Ref("intercepted".into())),
+                ..interception.clone()
+            },
+            ..Config::default()
+        };
+        let engine = ClassifierEngine::from_config(&config).unwrap();
+        // The legacy constructor retains the named reference and resolves it
+        // against the engine supplied at match time.
+        let runtime = InterceptionRuntime::from_config(&config.interception)
+            .unwrap()
+            .unwrap();
+        assert!(
+            runtime
+                .should_intercept(&Target::new("api.intercept.example", 443, None), &engine)
+                .unwrap()
+        );
+
+        let invalid = InterceptionConfig {
+            https_classifier: Some(Classifier::DomainsUrl {
+                url: "https://example.invalid/list".into(),
+                mirrors: vec![],
+                format: msgtausch_config::DomainsUrlFormat::Plain,
+                timeout_seconds: 1,
+            }),
+            ..interception
+        };
+        assert!(InterceptionRuntime::from_config_with_classifiers(&invalid, &engine).is_err());
+    }
+
+    fn test_runtime() -> InterceptionRuntime {
+        let engine = ClassifierEngine::from_config(&Config::default()).unwrap();
+        InterceptionRuntime::from_config_with_classifiers(&test_interception_config(), &engine)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn test_interception_config() -> InterceptionConfig {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        InterceptionConfig {
+            enabled: true,
+            https: true,
+            ca_file: Some(root.join("tests/compose-intercept/ca/test_ca.crt")),
+            ca_key_file: Some(root.join("tests/compose-intercept/ca/test_ca.key")),
+            insecure_skip_verify: true,
+            ..InterceptionConfig::default()
+        }
     }
 }

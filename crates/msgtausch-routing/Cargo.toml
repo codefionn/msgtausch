@@ -8,6 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 compio.workspace = true
+futures-util.workspace = true
+lru.workspace = true
 msgtausch-config = { path = "../msgtausch-config" }
 msgtausch-policy = { path = "../msgtausch-policy" }
 msgtausch-resolver = { path = "../msgtausch-resolver" }

@@ -74,10 +74,12 @@ impl ProxyRuntime {
     pub fn from_config(config: &Config, metrics: Arc<dyn ProxyMetrics>) -> Result<Self> {
         let classifiers = ClassifierEngine::from_config(config)?;
         let dedicated_tls_listener = has_dedicated_tls_listener(config);
-        let interception = InterceptionRuntime::from_config_for_dedicated_listener(
-            &config.interception,
-            dedicated_tls_listener,
-        )?;
+        let interception =
+            InterceptionRuntime::from_config_for_dedicated_listener_with_classifiers(
+                &config.interception,
+                dedicated_tls_listener,
+                &classifiers,
+            )?;
         let timeout = config.timeout_seconds.max(1);
         Ok(Self {
             router: RoutePlanner::new(

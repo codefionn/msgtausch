@@ -114,6 +114,11 @@ Classifiers receive the target host, target port, and downstream client IP.
 {
   "dns": {
     "enabled": true,
+    "cache-enabled": true,
+    "cache-capacity": 4096,
+    "cache-max-ttl-seconds": 60,
+    "negative-cache-ttl-seconds": 5,
+    "happy-eyeballs-delay-millis": 250,
     "servers": [
       {
         "address": "1.1.1.1:853",
@@ -126,7 +131,11 @@ Classifiers receive the target host, target port, and downstream client IP.
 }
 ```
 
-The resolver accepts `udp`, `tcp`, and `dot`. It selects one configured server in round-robin order for each lookup. TCP and DoT use DNS length framing. DoT verifies the server certificate, sends the `dot` ALPN token, and uses `tls-host` for SNI when set. Direct targets and forward-proxy endpoints use the configured resolver. Upstream SOCKS5 and HTTP proxies resolve destination names unless `force-ipv4` asks msgtausch to resolve first.
+The resolver accepts `udp`, `tcp`, and `dot`. It selects one configured server in round-robin order for each lookup. TCP and DoT use DNS length framing. DoT verifies the server certificate, sends the `dot` ALPN token, and uses `tls-host` for SNI when set.
+
+DNS response caching is on by default. `cache-capacity` limits the cache to 4096 entries by default. Set it to `0`, set `cache-enabled` to `false`, or set a relevant TTL to `0` to avoid caching those responses. Positive responses keep their DNS TTL up to `cache-max-ttl-seconds`, which defaults to 60 seconds. Negative responses use `negative-cache-ttl-seconds`, which defaults to 5 seconds. `happy-eyeballs-delay-millis` defaults to 250 and controls how long msgtausch waits before trying the other address family during connection setup.
+
+Direct targets and forward-proxy endpoints use the configured resolver. Upstream SOCKS5 and HTTP proxies resolve destination names unless `force-ipv4` asks msgtausch to resolve first.
 
 ## Interception
 
@@ -173,7 +182,7 @@ Environment overrides:
 
 ## Environment and secrets
 
-The loader retains compatibility environment names, including `MSGTAUSCH_TIMEOUTSECONDS`, `MSGTAUSCH_MAXIDLECONNS`, `MSGTAUSCH_MAXIDLECONNSPERHOST`, `MSGTAUSCH_LISTENADDRESS`, interception variables, indexed server variables, indexed DNS variables, and cache variables.
+The loader retains compatibility environment names, including `MSGTAUSCH_TIMEOUTSECONDS`, `MSGTAUSCH_MAXIDLECONNS`, `MSGTAUSCH_MAXIDLECONNSPERHOST`, `MSGTAUSCH_LISTENADDRESS`, interception variables, indexed server variables, indexed DNS variables, and cache variables. DNS cache settings use `MSGTAUSCH_DNS_CACHE_ENABLED`, `MSGTAUSCH_DNS_CACHE_CAPACITY`, `MSGTAUSCH_DNS_CACHE_MAX_TTL_SECONDS`, `MSGTAUSCH_DNS_NEGATIVE_CACHE_TTL_SECONDS`, and `MSGTAUSCH_DNS_HAPPY_EYEBALLS_DELAY_MILLIS`.
 
 Indexed servers stop at the first missing address:
 

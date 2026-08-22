@@ -12,7 +12,7 @@ use msgtausch_config::{CacheConfig, Classifier, Config, DomainOp as ConfigDomain
 
 pub mod domain_list;
 
-use crate::domain_list::RemoteDomainList;
+use crate::domain_list::{DomainMatcher, RemoteDomainList};
 
 /// Information available while deciding whether to allow or route traffic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,7 +53,7 @@ pub enum CompiledClassifier {
     Port(u16),
     ClientIp(IpAddr),
     ClientNetwork(ipnet::IpNet),
-    Domains(Arc<Vec<String>>),
+    Domains(Arc<DomainMatcher>),
     RemoteDomains(Arc<RemoteDomainList>),
     Ref(String),
 }
@@ -68,20 +68,34 @@ pub enum DomainOp {
     Is,
 }
 
+/// A stack-only chain of named references being evaluated. Classifiers are
+/// validated when an engine is built, but `CompiledClassifier::matches` is
+/// public and must still reject cycles in manually-built classifiers.
+struct ReferenceTrail<'a> {
+    id: &'a str,
+    parent: Option<&'a Self>,
+}
+
+impl ReferenceTrail<'_> {
+    fn contains(&self, id: &str) -> bool {
+        self.id == id || self.parent.is_some_and(|parent| parent.contains(id))
+    }
+}
+
 impl CompiledClassifier {
     pub fn matches(
         &self,
         target: &Target,
         named: &HashMap<String, CompiledClassifier>,
     ) -> Result<bool> {
-        self.matches_inner(target, named, &mut Vec::new())
+        self.matches_inner(target, named, None)
     }
 
-    fn matches_inner(
-        &self,
+    fn matches_inner<'a>(
+        &'a self,
         target: &Target,
-        named: &HashMap<String, CompiledClassifier>,
-        refs: &mut Vec<String>,
+        named: &'a HashMap<String, CompiledClassifier>,
+        refs: Option<&'a ReferenceTrail<'a>>,
     ) -> Result<bool> {
         Ok(match self {
             Self::True => true,
@@ -108,33 +122,34 @@ impl CompiledClassifier {
                 DomainOp::NotEqual => target.host != *value,
                 DomainOp::Contains => target.host.contains(value),
                 DomainOp::NotContains => !target.host.contains(value),
-                DomainOp::Is => {
-                    target.host == *value || target.host.ends_with(&format!(".{value}"))
-                }
+                DomainOp::Is => domain_or_subdomain(&target.host, value),
             },
             Self::Port(port) => target.port == *port,
             Self::ClientIp(ip) => target.client_ip == Some(*ip),
             Self::ClientNetwork(network) => {
                 target.client_ip.is_some_and(|ip| network.contains(&ip))
             }
-            Self::Domains(domains) => domains.iter().any(|domain| {
-                target.host == *domain || target.host.ends_with(&format!(".{domain}"))
-            }),
+            Self::Domains(domains) => domains.matches(&target.host),
             Self::RemoteDomains(domains) => domains.matches(&target.host),
             Self::Ref(id) => {
-                if refs.contains(id) {
+                if refs.is_some_and(|refs| refs.contains(id)) {
                     bail!("cyclic classifier reference involving '{id}'");
                 }
                 let classifier = named
                     .get(id)
                     .with_context(|| format!("classifier reference '{id}' was not found"))?;
-                refs.push(id.clone());
-                let matched = classifier.matches_inner(target, named, refs);
-                refs.pop();
-                matched?
+                let refs = ReferenceTrail { id, parent: refs };
+                classifier.matches_inner(target, named, Some(&refs))?
             }
         })
     }
+}
+
+fn domain_or_subdomain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 /// Classifiers ready for use by the runtime. It owns domain file data and
@@ -212,14 +227,46 @@ impl ClassifierEngine {
         Ok(None)
     }
 
-    /// Evaluate a configuration classifier in the same named-classifier
-    /// namespace as this engine. This keeps interception rules on the exact
-    /// same matching path as allowlists and forwarding rules.
-    pub fn matches_config(&self, classifier: &Classifier, target: &Target) -> Result<bool> {
+    /// Compile a runtime-only classifier in this engine's named namespace.
+    /// Runtime rules cannot declare a remote list inline, because downloading
+    /// one here would create a separate list lifecycle. A reference to an
+    /// already compiled named remote list remains valid.
+    pub fn compile_runtime_classifier(
+        &self,
+        classifier: &Classifier,
+    ) -> Result<CompiledClassifier> {
+        let compiled = Self::compile_runtime_classifier_unvalidated(classifier)?;
+        validate_classifier_references(&compiled, &self.named, &mut Vec::new())?;
+        Ok(compiled)
+    }
+
+    /// Compile a runtime-only classifier without checking named references.
+    /// This preserves the legacy interception constructors, which receive the
+    /// named namespace later through `should_intercept`.
+    pub fn compile_runtime_classifier_unvalidated(
+        classifier: &Classifier,
+    ) -> Result<CompiledClassifier> {
         if contains_remote_domains(classifier) {
             bail!("a runtime classifier with domains-url must use a named classifier reference")
         }
-        compile(classifier, &CacheConfig::default())?.matches(target, &self.named)
+        compile(classifier, &CacheConfig::default())
+    }
+
+    /// Match a classifier previously compiled by `compile_runtime_classifier`.
+    pub fn matches_compiled(
+        &self,
+        classifier: &CompiledClassifier,
+        target: &Target,
+    ) -> Result<bool> {
+        classifier.matches(target, &self.named)
+    }
+
+    /// Evaluate a configuration classifier in the same named-classifier
+    /// namespace as this engine. Kept as a convenience for callers which do
+    /// not retain a compiled runtime rule.
+    pub fn matches_config(&self, classifier: &Classifier, target: &Target) -> Result<bool> {
+        let compiled = self.compile_runtime_classifier(classifier)?;
+        self.matches_compiled(&compiled, target)
     }
 
     /// Refresh every remote list in this engine. Call this from a lifecycle
@@ -290,7 +337,9 @@ fn compile(classifier: &Classifier, cache: &CacheConfig) -> Result<CompiledClass
                 .with_context(|| format!("invalid classifier network '{value}'"))?,
         ),
         Classifier::Port(port) => CompiledClassifier::Port(*port),
-        Classifier::DomainsFile(path) => CompiledClassifier::Domains(load_domains_file(path)?),
+        Classifier::DomainsFile(path) => CompiledClassifier::Domains(Arc::new(
+            DomainMatcher::from_local_tokens(load_domains_file(path)?),
+        )),
         Classifier::DomainsUrl {
             url,
             mirrors,
@@ -357,7 +406,7 @@ fn validate_classifier_references(
 }
 
 /// Read a legacy domains file. Blank lines and `#` or `;` comments are ignored.
-pub fn load_domains_file(path: &std::path::Path) -> Result<Arc<Vec<String>>> {
+pub fn load_domains_file(path: &std::path::Path) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading domains file {}", path.display()))?;
     let domains = content
@@ -367,14 +416,17 @@ pub fn load_domains_file(path: &std::path::Path) -> Result<Arc<Vec<String>>> {
         .map(|domain| domain.trim().trim_end_matches('.').to_ascii_lowercase())
         .filter(|domain| !domain.is_empty())
         .collect();
-    Ok(Arc::new(domains))
+    Ok(domains)
 }
 
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, str::FromStr};
 
-    use msgtausch_config::{Classifier, Config, DomainOp as ConfigDomainOp, Forward, ForwardKind};
+    use msgtausch_config::{
+        CacheConfig, Classifier, Config, DomainOp as ConfigDomainOp, DomainsUrlFormat, Forward,
+        ForwardKind,
+    };
 
     use super::{ClassifierEngine, CompiledClassifier, DomainOp, Target};
 
@@ -483,6 +535,76 @@ mod tests {
             !engine
                 .allows(&Target::new("public.test", 443, None))
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn local_domain_files_keep_legacy_non_dns_tokens() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "LOCALHOST. # local listener\n127.0.0.1.\nSINGLE-LABEL.\nodd/token.\n",
+        )
+        .unwrap();
+        let config = Config {
+            allowlist: Some(Classifier::DomainsFile(file.path().to_owned())),
+            ..Config::default()
+        };
+        let engine = ClassifierEngine::from_config(&config).unwrap();
+        for host in [
+            "localhost",
+            "api.localhost",
+            "127.0.0.1",
+            "single-label",
+            "odd/token",
+        ] {
+            assert!(
+                engine.allows(&Target::new(host, 443, None)).unwrap(),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_classifier_accepts_named_remote_lists_and_rejects_inline_ones() {
+        let config = Config {
+            classifiers: [(
+                "remote".into(),
+                Classifier::DomainsUrl {
+                    url: "http://127.0.0.1:9/never-reached".into(),
+                    mirrors: vec![],
+                    format: DomainsUrlFormat::Plain,
+                    timeout_seconds: 1,
+                },
+            )]
+            .into(),
+            cache: CacheConfig {
+                max_retries: 0,
+                retry_delay_seconds: 0,
+                ..CacheConfig::default()
+            },
+            ..Config::default()
+        };
+        let engine = ClassifierEngine::from_config(&config).unwrap();
+        assert!(
+            engine
+                .compile_runtime_classifier(&Classifier::Ref("remote".into()))
+                .is_ok()
+        );
+        assert!(
+            engine
+                .compile_runtime_classifier(&Classifier::DomainsUrl {
+                    url: "http://127.0.0.1:9/never-reached".into(),
+                    mirrors: vec![],
+                    format: DomainsUrlFormat::Plain,
+                    timeout_seconds: 1,
+                })
+                .is_err()
+        );
+        assert!(
+            engine
+                .compile_runtime_classifier(&Classifier::Ref("missing".into()))
+                .is_err()
         );
     }
 }

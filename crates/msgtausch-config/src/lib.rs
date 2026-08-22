@@ -144,10 +144,29 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DnsConfig {
     pub enabled: bool,
     pub servers: Vec<DnsServerConfig>,
+    pub cache_enabled: bool,
+    pub cache_capacity: usize,
+    pub cache_max_ttl_seconds: u64,
+    pub negative_cache_ttl_seconds: u64,
+    pub happy_eyeballs_delay_millis: u64,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            servers: Vec::new(),
+            cache_enabled: true,
+            cache_capacity: 4096,
+            cache_max_ttl_seconds: 60,
+            negative_cache_ttl_seconds: 5,
+            happy_eyeballs_delay_millis: 250,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,6 +681,31 @@ impl Config {
             }
         }
         set_env_bool(&mut self.dns.enabled, environment, "MSGTAUSCH_DNS_ENABLED")?;
+        set_env_bool(
+            &mut self.dns.cache_enabled,
+            environment,
+            "MSGTAUSCH_DNS_CACHE_ENABLED",
+        )?;
+        set_env_usize(
+            &mut self.dns.cache_capacity,
+            environment,
+            "MSGTAUSCH_DNS_CACHE_CAPACITY",
+        )?;
+        set_env_u64(
+            &mut self.dns.cache_max_ttl_seconds,
+            environment,
+            "MSGTAUSCH_DNS_CACHE_MAX_TTL_SECONDS",
+        )?;
+        set_env_u64(
+            &mut self.dns.negative_cache_ttl_seconds,
+            environment,
+            "MSGTAUSCH_DNS_NEGATIVE_CACHE_TTL_SECONDS",
+        )?;
+        set_env_u64(
+            &mut self.dns.happy_eyeballs_delay_millis,
+            environment,
+            "MSGTAUSCH_DNS_HAPPY_EYEBALLS_DELAY_MILLIS",
+        )?;
         set_env_bool(
             &mut self.cache.enabled,
             environment,
@@ -1318,10 +1362,44 @@ fn parse_cache(value: &Value, environment: &BTreeMap<String, String>) -> Result<
 
 fn parse_dns(value: &Value, environment: &BTreeMap<String, String>) -> Result<DnsConfig> {
     let values = object(value.clone(), "dns")?;
-    reject_unknown_keys(&values, &["enabled", "servers"], "dns")?;
+    reject_unknown_keys(
+        &values,
+        &[
+            "enabled",
+            "servers",
+            "cache-enabled",
+            "cache-capacity",
+            "cache-max-ttl-seconds",
+            "negative-cache-ttl-seconds",
+            "happy-eyeballs-delay-millis",
+        ],
+        "dns",
+    )?;
     let mut config = DnsConfig::default();
     if let Some(value) = values.get("enabled") {
         config.enabled = bool_value(value, environment, "dns enabled")?;
+    }
+    if let Some(value) = values.get("cache-enabled") {
+        config.cache_enabled = bool_value(value, environment, "dns cache-enabled")?;
+    }
+    if let Some(value) = values.get("cache-capacity") {
+        set_usize(
+            &mut config.cache_capacity,
+            Some(value),
+            environment,
+            "dns cache-capacity",
+        )?;
+    }
+    if let Some(value) = values.get("cache-max-ttl-seconds") {
+        config.cache_max_ttl_seconds = u64_value(value, environment, "dns cache-max-ttl-seconds")?;
+    }
+    if let Some(value) = values.get("negative-cache-ttl-seconds") {
+        config.negative_cache_ttl_seconds =
+            u64_value(value, environment, "dns negative-cache-ttl-seconds")?;
+    }
+    if let Some(value) = values.get("happy-eyeballs-delay-millis") {
+        config.happy_eyeballs_delay_millis =
+            u64_value(value, environment, "dns happy-eyeballs-delay-millis")?;
     }
     if let Some(value) = values.get("servers") {
         config.servers = array(value, "dns servers")?
@@ -1521,7 +1599,7 @@ mod tests {
                 "timeout-seconds": 12,
                 "classifiers": {"corp":{"type":"domain","op":"is","domain":"example.test"}},
                 "forwards": [{"type":"socks5","address":"127.0.0.1:1080","username":{"_secret":"UPSTREAM_USER"},"classifier":{"type":"ref","id":"corp"}}],
-                "dns": {"enabled":true,"servers":[{"address":"1.1.1.1:853","type":"dot","tls-host":"one.one.one.one"}]},
+                "dns": {"enabled":true,"cache-enabled":false,"cache-capacity":256,"cache-max-ttl-seconds":30,"negative-cache-ttl-seconds":2,"happy-eyeballs-delay-millis":125,"servers":[{"address":"1.1.1.1:853","type":"dot","tls-host":"one.one.one.one"}]},
                 "observability": {"prometheus-listen-address":"127.0.0.1:9090","otlp-endpoint":"http://collector:4317"}
             }"#,
         )
@@ -1533,7 +1611,7 @@ mod tests {
                 timeout-seconds = 12
                 classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
                 forwards = [{ type = "socks5", address = "127.0.0.1:1080", username = { _secret = "UPSTREAM_USER" }, classifier = { type = "ref", id = "corp" } }]
-                dns = { enabled = true, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+                dns = { enabled = true, cache-enabled = false, cache-capacity = 256, cache-max-ttl-seconds = 30, negative-cache-ttl-seconds = 2, happy-eyeballs-delay-millis = 125, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
                 observability = { prometheus-listen-address = "127.0.0.1:9090", otlp-endpoint = "http://collector:4317" }
             "#,
         )
@@ -1547,6 +1625,11 @@ mod tests {
         assert_eq!(json_config, hcl_config);
         assert_eq!(json_config.timeout_seconds, 45);
         assert_eq!(json_config.dns.servers[0].kind, DnsServerKind::Dot);
+        assert!(!json_config.dns.cache_enabled);
+        assert_eq!(json_config.dns.cache_capacity, 256);
+        assert_eq!(json_config.dns.cache_max_ttl_seconds, 30);
+        assert_eq!(json_config.dns.negative_cache_ttl_seconds, 2);
+        assert_eq!(json_config.dns.happy_eyeballs_delay_millis, 125);
         assert_eq!(
             json_config.classifiers["corp"],
             Classifier::Domain {
@@ -1634,6 +1717,25 @@ mod tests {
             let error = Config::load_file(&path, &BTreeMap::new()).unwrap_err();
             assert!(error.to_string().contains("unknown"), "{name}: {error}");
         }
+    }
+
+    #[test]
+    fn dns_cache_environment_overrides_apply_to_default_configuration() {
+        assert!(Config::default().dns.cache_enabled);
+        let config = Config::from_environment(&environment(&[
+            ("MSGTAUSCH_DNS_CACHE_ENABLED", "false"),
+            ("MSGTAUSCH_DNS_CACHE_CAPACITY", "0"),
+            ("MSGTAUSCH_DNS_CACHE_MAX_TTL_SECONDS", "0"),
+            ("MSGTAUSCH_DNS_NEGATIVE_CACHE_TTL_SECONDS", "0"),
+            ("MSGTAUSCH_DNS_HAPPY_EYEBALLS_DELAY_MILLIS", "100"),
+        ]))
+        .unwrap();
+
+        assert!(!config.dns.cache_enabled);
+        assert_eq!(config.dns.cache_capacity, 0);
+        assert_eq!(config.dns.cache_max_ttl_seconds, 0);
+        assert_eq!(config.dns.negative_cache_ttl_seconds, 0);
+        assert_eq!(config.dns.happy_eyeballs_delay_millis, 100);
     }
 
     #[test]

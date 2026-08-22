@@ -12,6 +12,7 @@ msgtausch-config = { path = "../msgtausch-config" }
 
 [dev-dependencies]
 divan.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "policy"

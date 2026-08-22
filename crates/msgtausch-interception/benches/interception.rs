@@ -18,7 +18,8 @@ static ALLOCATOR: AllocProfiler = AllocProfiler::system();
 static HOST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static CONFIG: LazyLock<InterceptionConfig> = LazyLock::new(interception_config);
 static RUNTIME: LazyLock<InterceptionRuntime> = LazyLock::new(|| {
-    InterceptionRuntime::from_config(&CONFIG)
+    let engine = ClassifierEngine::from_config(&Config::default()).expect("policy should compile");
+    InterceptionRuntime::from_config_with_classifiers(&CONFIG, &engine)
         .expect("test CA should load")
         .expect("HTTPS interception should be enabled")
 });
@@ -37,10 +38,11 @@ static POLICY: LazyLock<(InterceptionRuntime, ClassifierEngine, Target, Target)>
             },
         );
         config.interception.exclude_classifier = Some(Classifier::Ref("excluded".into()));
-        let runtime = InterceptionRuntime::from_config(&config.interception)
-            .expect("test CA should load")
-            .expect("HTTPS interception should be enabled");
         let engine = ClassifierEngine::from_config(&config).expect("policy should compile");
+        let runtime =
+            InterceptionRuntime::from_config_with_classifiers(&config.interception, &engine)
+                .expect("test CA should load")
+                .expect("HTTPS interception should be enabled");
         (
             runtime,
             engine,
@@ -61,7 +63,8 @@ fn main() {
 
 #[divan::bench(sample_count = 20, sample_size = 5)]
 fn load_interception_runtime() -> InterceptionRuntime {
-    InterceptionRuntime::from_config(black_box(&CONFIG))
+    let engine = ClassifierEngine::from_config(&Config::default()).expect("policy should compile");
+    InterceptionRuntime::from_config_with_classifiers(black_box(&CONFIG), &engine)
         .expect("test CA should load")
         .expect("HTTPS interception should be enabled")
 }

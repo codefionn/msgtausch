@@ -4,6 +4,7 @@
 //! proxy's internal crates. A passing run proves the released binary accepted
 //! config, chose a route, relayed bytes, exported metrics, and handled SIGTERM.
 
+mod legacy_http;
 pub mod tls_interception;
 mod upgrades;
 
@@ -195,6 +196,13 @@ fn patterned_body(seed: u64, index: usize, length: usize) -> String {
 pub fn run(scenario: Scenario, options: &RunOptions) -> Result<SimulationReport> {
     let seed = scenario.seed;
     run_scenario(scenario, options).with_context(|| format!("simulation seed={seed} failed"))
+}
+
+/// Runs the always-on HTTP/1 compatibility matrix used by normal simulator
+/// invocations. It is separate from a scenario replay so a replay stays small
+/// and deterministic.
+pub fn run_legacy_http(options: &RunOptions) -> Result<()> {
+    legacy_http::run(options)
 }
 
 fn run_scenario(mut scenario: Scenario, options: &RunOptions) -> Result<SimulationReport> {

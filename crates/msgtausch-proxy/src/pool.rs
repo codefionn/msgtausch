@@ -110,6 +110,9 @@ impl UpstreamPool {
             .send_request(request)
             .await
             .context("forwarding HTTP request")?;
+        // Validate before constructing the lease: even an empty malformed
+        // response must discard its upstream connection rather than pool it.
+        crate::validate_upstream_framing(response.headers())?;
         let reusable = !connection_closes(response.headers());
         Ok(response.map(|body| {
             PooledBody::new(

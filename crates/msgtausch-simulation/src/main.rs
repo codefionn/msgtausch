@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use msgtausch_simulation::{
-    RunOptions, generate, replay, run,
+    RunOptions, generate, replay, run, run_legacy_http,
     tls_interception::{TlsInterceptionOptions, run as run_tls_interception},
 };
 
@@ -109,6 +109,8 @@ fn main() -> Result<()> {
             break;
         }
     }
+    run_legacy_http(&options)?;
+    println!("Legacy HTTP compatibility simulation completed successfully.");
     println!("Simulation completed successfully. runs={completed} first-seed={initial_seed}");
     Ok(())
 }

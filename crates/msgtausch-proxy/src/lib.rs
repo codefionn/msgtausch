@@ -30,6 +30,8 @@ use msgtausch_policy::{ClassifierEngine, Target};
 use msgtausch_quic::{H3Client, H3Connection, H3Request, H3Response, H3Upstream};
 use msgtausch_routing::{RouteMetrics, RoutePlanner};
 
+#[cfg(test)]
+mod framing_tests;
 mod pool;
 #[cfg(test)]
 mod reuse_tests;
@@ -493,6 +495,7 @@ impl ProxyRuntime {
             .send_request(request)
             .await
             .context("forwarding HTTP request")?;
+        validate_upstream_framing(upstream.headers())?;
         let status = upstream.status();
         let upstream_upgrade = (wants_upgrade && status == StatusCode::SWITCHING_PROTOCOLS)
             .then(|| hyper::upgrade::on(&mut upstream));
@@ -775,6 +778,17 @@ fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
             }
         }
     }
+}
+
+fn validate_upstream_framing(headers: &hyper::HeaderMap) -> Result<()> {
+    // Hyper decodes a chunked response even when Content-Length is present.
+    // Reject that ambiguity before rewriting framing for the downstream hop.
+    anyhow::ensure!(
+        !(headers.contains_key(hyper::header::CONTENT_LENGTH)
+            && headers.contains_key(hyper::header::TRANSFER_ENCODING)),
+        "upstream response contains both Content-Length and Transfer-Encoding"
+    );
+    Ok(())
 }
 
 fn strip_response_connection_headers(headers: &mut hyper::HeaderMap) {

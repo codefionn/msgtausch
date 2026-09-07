@@ -6,6 +6,15 @@ Generated scenarios cover the HTTP and CONNECT protocol matrix across direct, SO
 
 Every run checks response status and body integrity, the selected route, origin and forward-fixture request counts, custom UDP DNS names and A/AAAA query counts, and remote domain-list use. A policy block must return 403 without touching a route or origin. A refused upstream must return 502 and increment the matching route error.
 
+The normal simulator command also runs a raw HTTP/1 compatibility matrix after
+its generated scenarios. It uses a loopback origin that writes wire bytes
+directly. The matrix covers HTTP/1.0 and HTTP/1.1 close-delimited responses,
+chunked bodies with trailers, 103 Early Hints, HEAD and 204 responses, a
+truncated Content-Length body, and both header orders for conflicting
+Content-Length plus Transfer-Encoding. Each malformed response is followed by
+a healthy request, so it also catches connection cleanup failures. `--scenario`
+and `--replay` stay focused on the requested corpus artifact.
+
 The runner takes a Prometheus snapshot after readiness and compares post-run deltas with its oracle. It checks:
 
 - downstream connection total and the final active gauge;

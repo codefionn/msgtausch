@@ -20,8 +20,9 @@ struct Cli {
     /// Existing proxy address. When omitted, starts --binary with a temporary config.
     #[arg(long)]
     proxy: Option<SocketAddr>,
-    #[arg(long, default_value = "target/debug/msgtausch")]
-    binary: PathBuf,
+    /// Proxy binary to start. Defaults to the msgtausch binary beside this executable.
+    #[arg(long)]
+    binary: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = ProtocolArg::Both)]
     protocol: ProtocolArg,
     /// Total measured requests. Set to 0 to run solely for --duration.
@@ -49,6 +50,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let binary = cli.binary.unwrap_or_else(default_proxy_binary);
     ensure!(
         cli.duration.is_none() || cli.duration <= Some(cli.deadline),
         "duration must not exceed deadline"
@@ -64,7 +66,7 @@ fn main() -> Result<()> {
         }
         let summary = run(&RunOptions {
             proxy: cli.proxy,
-            binary: cli.binary.clone(),
+            binary: binary.clone(),
             protocol: *protocol,
             requests: cli.requests,
             concurrency: cli.concurrency,
@@ -79,6 +81,23 @@ fn main() -> Result<()> {
         println!("{}", summary.format_report());
     }
     Ok(())
+}
+
+fn default_proxy_binary() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|executable| proxy_binary_for_executable(&executable))
+        .unwrap_or_else(|| PathBuf::from("target/debug/msgtausch"))
+}
+
+fn proxy_binary_for_executable(executable: &std::path::Path) -> Option<PathBuf> {
+    let parent = executable.parent()?;
+    let profile_directory = if parent.file_name().is_some_and(|name| name == "deps") {
+        parent.parent()?
+    } else {
+        parent
+    };
+    Some(profile_directory.join(format!("msgtausch{}", std::env::consts::EXE_SUFFIX)))
 }
 
 fn parse_duration(input: &str) -> Result<Duration, String> {
@@ -110,5 +129,21 @@ mod tests {
         assert_eq!(parse_duration("250ms").unwrap(), Duration::from_millis(250));
         assert_eq!(parse_duration("2s").unwrap(), Duration::from_secs(2));
         assert_eq!(parse_duration("2m").unwrap(), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn defaults_to_the_binary_in_the_current_build_profile() {
+        assert_eq!(
+            proxy_binary_for_executable(std::path::Path::new(
+                "/workspace/target/release/msgtausch-throughput"
+            )),
+            Some(PathBuf::from("/workspace/target/release/msgtausch"))
+        );
+        assert_eq!(
+            proxy_binary_for_executable(std::path::Path::new(
+                "/workspace/target/debug/deps/msgtausch-throughput-123"
+            )),
+            Some(PathBuf::from("/workspace/target/debug/msgtausch"))
+        );
     }
 }

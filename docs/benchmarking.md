@@ -45,6 +45,20 @@ The `msgtausch-throughput` package remains the end-to-end test for real TCP
 traffic. Use it when a change affects listeners, parsing, routing, or copying:
 
 ```bash
+cargo build --release -p msgtausch-cli --bin msgtausch
 cargo run --release -p msgtausch-throughput -- \
   --protocol both --requests 1000 --concurrency 32 --body-size 65536
 ```
+
+When it starts a proxy, the harness uses the `msgtausch` binary next to its
+own executable. A release harness therefore uses `target/release/msgtausch`.
+Pass `--binary PATH` to select another binary, or `--proxy HOST:PORT` to test
+an existing proxy.
+
+The report has two latency measurements. `origin-ttfb` is the time from the
+start of a request until the first byte of the origin response reaches the
+client. For CONNECT, it includes TCP setup and CONNECT negotiation, but the
+CONNECT response does not count as the origin response. `full-latency` is the
+time until the complete response body has been checked. Compare TTFB when
+looking for startup or forwarding delays. Compare full latency for total
+transfer time.

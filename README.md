@@ -45,7 +45,8 @@ cargo test --workspace --all-targets
 cargo build -p msgtausch-cli --bin msgtausch
 cargo run -p msgtausch-internet-test
 cargo run -p msgtausch-simulation -- 9000 --binary target/debug/msgtausch --runs 4 --jobs 2 --enable-policy-fixtures --stats
-cargo run -p msgtausch-throughput -- --protocol both --requests 1000 --concurrency 32 --body-size 65536
+cargo build --release -p msgtausch-cli --bin msgtausch
+cargo run --release -p msgtausch-throughput -- --protocol both --requests 1000 --concurrency 32 --body-size 65536
 cargo bench --workspace
 ```
 
@@ -60,7 +61,7 @@ Cloudflare, GitHub, Wikipedia, and Google. Pass `--proxy` to test an existing
 instance or provide URLs as positional arguments. It is kept out of the regular
 test suite because DNS and remote sites can fail independently of the proxy.
 
-`msgtausch-throughput` starts a loopback origin and the compiled proxy by default. Pass `--proxy host:port` to measure an already-running proxy. It checks every response body, supports HTTP and CONNECT traffic, and reports request rate, IEC-scaled throughput, and p50/p95/p99 latency. Use `--requests 0 --duration 30s` for a duration-only run.
+`msgtausch-throughput` starts a loopback origin and the proxy binary in the same build profile by default. Pass `--binary PATH` to choose a binary or `--proxy host:port` to measure an already-running proxy. It checks every response body, supports HTTP and CONNECT traffic, and reports request rate, IEC-scaled throughput, origin-response TTFB, and full-response p50/p95/p99 latency. With CONNECT, origin-response TTFB includes setup and CONNECT negotiation but starts counting the response only when the origin response arrives. Use `--requests 0 --duration 30s` for a duration-only run.
 
 ## Benchmarks
 

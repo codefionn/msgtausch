@@ -150,6 +150,17 @@ impl RoutePlanner {
 
     pub async fn connect(&self, target: &Target) -> Result<TcpStream> {
         let forward = self.classifiers.select_forward(target)?;
+        self.connect_via(target, forward).await
+    }
+
+    /// Connect using a route already selected for this request. Keeping the
+    /// selection fixed lets callers associate a reusable connection with the
+    /// route that created it, even when domain lists refresh during an await.
+    pub async fn connect_via(
+        &self,
+        target: &Target,
+        forward: Option<&Forward>,
+    ) -> Result<TcpStream> {
         log_forward(forward, target);
         let (route, outcome) = match forward {
             None => ("direct", self.connect_direct(target, false).await),

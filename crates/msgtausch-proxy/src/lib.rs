@@ -5,6 +5,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
+    rc::Rc,
     sync::Arc,
     task::{Context as TaskContext, Poll},
     time::{Duration, Instant},
@@ -26,8 +27,12 @@ use hyper::{
 use msgtausch_config::{Config, ServerKind};
 use msgtausch_interception::InterceptionRuntime;
 use msgtausch_policy::{ClassifierEngine, Target};
-use msgtausch_quic::{H3Connection, H3Request, H3Response, H3Upstream};
+use msgtausch_quic::{H3Client, H3Connection, H3Request, H3Response, H3Upstream};
 use msgtausch_routing::{RouteMetrics, RoutePlanner};
+
+mod pool;
+#[cfg(test)]
+mod reuse_tests;
 
 /// A proxied upstream response or a locally generated response.
 ///
@@ -36,6 +41,7 @@ use msgtausch_routing::{RouteMetrics, RoutePlanner};
 /// trailers.
 pub enum ProxyBody {
     Incoming(Incoming),
+    Pooled(pool::PooledBody),
     Full(Full<Bytes>),
 }
 
@@ -49,6 +55,7 @@ impl Body for ProxyBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match self.get_mut() {
             Self::Incoming(body) => Pin::new(body).poll_frame(cx),
+            Self::Pooled(body) => Pin::new(body).poll_frame(cx),
             Self::Full(body) => match Pin::new(body).poll_frame(cx) {
                 Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
                 Poll::Ready(None) => Poll::Ready(None),
@@ -61,6 +68,7 @@ impl Body for ProxyBody {
     fn is_end_stream(&self) -> bool {
         match self {
             Self::Incoming(body) => body.is_end_stream(),
+            Self::Pooled(body) => body.is_end_stream(),
             Self::Full(body) => body.is_end_stream(),
         }
     }
@@ -68,6 +76,7 @@ impl Body for ProxyBody {
     fn size_hint(&self) -> SizeHint {
         match self {
             Self::Incoming(body) => body.size_hint(),
+            Self::Pooled(body) => body.size_hint(),
             Self::Full(body) => body.size_hint(),
         }
     }
@@ -105,8 +114,8 @@ impl RouteMetrics for ProxyRouteMetrics {
     }
 }
 
-/// The runtime can be shared by every listener. Its state is immutable, which
-/// makes a reload an atomic listener/runtime swap instead of partial mutation.
+/// Listeners share a runtime and its connection pool. Configuration is fixed
+/// for its lifetime, so a reload swaps the runtime and its pool together.
 #[derive(Clone)]
 pub struct ProxyRuntime {
     router: RoutePlanner,
@@ -114,7 +123,16 @@ pub struct ProxyRuntime {
     idle_timeout: Duration,
     interception: Option<InterceptionRuntime>,
     connect_interception_enabled: bool,
+    upstream_pool: pool::UpstreamPool,
 }
+
+struct H3Session {
+    remote: SocketAddr,
+    authority: hyper::http::uri::Authority,
+    client: Rc<H3Client>,
+}
+
+type SharedH3Session = Rc<futures_util::lock::Mutex<Option<H3Session>>>;
 
 impl ProxyRuntime {
     pub fn from_config(config: &Config, metrics: Arc<dyn ProxyMetrics>) -> Result<Self> {
@@ -138,6 +156,7 @@ impl ProxyRuntime {
             idle_timeout: Duration::from_secs(timeout),
             interception,
             connect_interception_enabled: config.interception.enabled && config.interception.https,
+            upstream_pool: pool::UpstreamPool::new(Duration::from_secs(timeout), 32),
         })
     }
 
@@ -167,10 +186,18 @@ impl ProxyRuntime {
     pub async fn serve_h3_connection(self: Arc<Self>, connection: H3Connection) -> Result<()> {
         self.metrics.connection_opened();
         let runtime = self.clone();
+        // A downstream connection has one pinned authority. Keep its upstream
+        // session local to this runtime thread and share it across requests.
+        let session: SharedH3Session = Rc::default();
         let result = connection
             .serve(move |context, request| {
                 let runtime = runtime.clone();
-                async move { runtime.forward_h3(context.peer, context.sni, request).await }
+                let session = session.clone();
+                async move {
+                    runtime
+                        .forward_h3(context.peer, context.sni, request, &session)
+                        .await
+                }
             })
             .await;
         self.metrics.connection_closed();
@@ -182,6 +209,7 @@ impl ProxyRuntime {
         peer: SocketAddr,
         sni: Option<String>,
         request: H3Request,
+        session: &SharedH3Session,
     ) -> Result<H3Response> {
         let started = Instant::now();
         let method = request.method.clone();
@@ -218,9 +246,44 @@ impl ProxyRuntime {
                     .context("building pinned HTTP/3 authority")?,
                 tls: (*interception.upstream_tls_config()).clone(),
             };
-            match msgtausch_quic::request(&upstream, request).await {
+            let client = {
+                let mut session = session.lock().await;
+                if session.as_ref().is_none_or(|session| {
+                    session.remote != upstream.remote
+                        || session.authority != upstream.authority
+                        || session.client.is_closed()
+                }) {
+                    let client = match H3Client::connect(&upstream).await {
+                        Ok(client) => client,
+                        Err(error) => {
+                            self.metrics.proxy_error("h3_forward");
+                            return Ok(h3_failure(StatusCode::BAD_GATEWAY, &error.to_string()));
+                        }
+                    };
+                    *session = Some(H3Session {
+                        remote: upstream.remote,
+                        authority: upstream.authority.clone(),
+                        client: Rc::new(client),
+                    });
+                }
+                session
+                    .as_ref()
+                    .expect("upstream session initialized")
+                    .client
+                    .clone()
+            };
+            match client.request(request).await {
                 Ok(response) => Ok(response),
                 Err(error) => {
+                    // Evict failed sessions for the next request. Never replay
+                    // this request: the upstream may already have received it.
+                    let mut session = session.lock().await;
+                    if session
+                        .as_ref()
+                        .is_some_and(|session| Rc::ptr_eq(&session.client, &client))
+                    {
+                        *session = None;
+                    }
                     self.metrics.proxy_error("h3_forward");
                     Ok(h3_failure(StatusCode::BAD_GATEWAY, &error.to_string()))
                 }
@@ -360,8 +423,50 @@ impl ProxyRuntime {
         request: Request<Incoming>,
         target: Target,
     ) -> Result<Response<ProxyBody>> {
-        let stream = HyperStream::new_plain(self.router.connect(&target).await?);
-        self.forward_http_on_stream(request, target, stream).await
+        self.forward_reusing(request, target, false).await
+    }
+
+    async fn forward_reusing(
+        &self,
+        mut request: Request<Incoming>,
+        target: Target,
+        tls: bool,
+    ) -> Result<Response<ProxyBody>> {
+        let forward = self.router.classifiers().select_forward(&target)?;
+        // Forward entries belong to this runtime's immutable classifier engine.
+        // Re-evaluate selection for every request, including pool hits, because
+        // remote domain lists can change which entry matches.
+        let route = forward.map_or(0, |forward| std::ptr::from_ref(forward).addr());
+        let connect = || async {
+            let stream = self.router.connect_via(&target, forward).await?;
+            stream
+                .set_nodelay(true)
+                .context("setting upstream TCP_NODELAY")?;
+            if tls {
+                let interception = self
+                    .interception
+                    .as_ref()
+                    .context("interception runtime is unavailable")?;
+                Ok(HyperStream::new_tls(
+                    interception.connect_upstream(stream, &target.host).await?,
+                ))
+            } else {
+                Ok(HyperStream::new_plain(stream))
+            }
+        };
+        if is_upgrade(&request) {
+            let stream = connect().await?;
+            return self.forward_http_on_stream(request, target, stream).await;
+        }
+        strip_proxy_headers(&mut request, false);
+        rewrite_to_origin_form(&mut request, &target)?;
+        self.upstream_pool
+            .send(pool::Key::new(&target, tls, route), request, connect)
+            .await
+            .map(|mut response| {
+                strip_response_connection_headers(response.headers_mut());
+                response.map(ProxyBody::Pooled)
+            })
     }
 
     async fn forward_http_on_stream(
@@ -542,30 +647,18 @@ impl ProxyRuntime {
                 "interception runtime is unavailable",
             )
         } else {
-            let interception = self
-                .interception
-                .as_ref()
-                .expect("interception runtime checked above");
-            match self.router.connect(&target).await {
-                Err(error) => self.failure(StatusCode::BAD_GATEWAY, "connect", error),
-                Ok(stream) => match interception.connect_upstream(stream, &target.host).await {
-                    Err(error) => self.failure(StatusCode::BAD_GATEWAY, "upstream_tls", error),
-                    Ok(stream) => {
-                        request.headers_mut().insert(
-                            HOST,
-                            target
-                                .authority()
-                                .parse()
-                                .expect("target authority is a header value"),
-                        );
-                        self.forward_http_on_stream(request, target, HyperStream::new_tls(stream))
-                            .await
-                            .unwrap_or_else(|error| {
-                                self.failure(StatusCode::BAD_GATEWAY, "https_forward", error)
-                            })
-                    }
-                },
-            }
+            request.headers_mut().insert(
+                HOST,
+                target
+                    .authority()
+                    .parse()
+                    .expect("target authority is a header value"),
+            );
+            self.forward_reusing(request, target, true)
+                .await
+                .unwrap_or_else(|error| {
+                    self.failure(StatusCode::BAD_GATEWAY, "https_forward", error)
+                })
         };
         self.metrics
             .request_finished(&method, response.status(), started.elapsed());
@@ -596,15 +689,15 @@ fn has_dedicated_tls_listener(config: &Config) -> bool {
 
 fn h3_failure(status: StatusCode, message: &str) -> H3Response {
     let body = Bytes::copy_from_slice(message.as_bytes());
-    H3Response {
-        response: Response::builder()
+    H3Response::from_bytes(
+        Response::builder()
             .status(status)
             .header(hyper::header::CONTENT_LENGTH, body.len())
             .body(())
             .expect("valid HTTP/3 failure response"),
         body,
-        trailers: None,
-    }
+        None,
+    )
 }
 
 fn target_from_request<B>(request: &Request<B>, client_ip: IpAddr) -> Result<Target> {
@@ -682,6 +775,26 @@ fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
             }
         }
     }
+}
+
+fn strip_response_connection_headers(headers: &mut hyper::HeaderMap) {
+    let named = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(',').map(str::trim))
+        .filter_map(|name| hyper::header::HeaderName::from_bytes(name.as_bytes()).ok())
+        .collect::<Vec<_>>();
+    for name in named {
+        headers.remove(name);
+    }
+    // The upstream's socket lifetime is independent of the downstream socket.
+    // Hyper has already decoded the upstream framing and frames this body again.
+    for name in [CONNECTION, UPGRADE, hyper::header::TRANSFER_ENCODING] {
+        headers.remove(name);
+    }
+    headers.remove("keep-alive");
+    headers.remove("proxy-connection");
 }
 
 fn empty_body() -> ProxyBody {
@@ -906,7 +1019,77 @@ impl CopyBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
     use msgtausch_config::{ServerConfig, ServerKind};
+
+    #[compio::test]
+    async fn sequential_requests_reuse_upstream_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let origin = compio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_address = origin.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let count = accepts.clone();
+        runtime::spawn(async move {
+            loop {
+                let (stream, _) = origin.accept().await.unwrap();
+                count.fetch_add(1, Ordering::SeqCst);
+                runtime::spawn(async move {
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            HyperStream::new_plain(stream),
+                            service_fn(|_: Request<Incoming>| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                                    b"ok",
+                                ))))
+                            }),
+                        )
+                        .await;
+                })
+                .detach();
+            }
+        })
+        .detach();
+        let listener = compio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy = Arc::new(ProxyRuntime::with_noop_metrics(&Config::default()).unwrap());
+        runtime::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            proxy.serve_connection(stream, peer).await.unwrap();
+        })
+        .detach();
+        timeout(Duration::from_secs(5), async {
+            let stream = TcpStream::connect(proxy_address).await.unwrap();
+            let (mut sender, connection) =
+                hyper::client::conn::http1::handshake(HyperStream::new_plain(stream))
+                    .await
+                    .unwrap();
+            runtime::spawn(async move {
+                let _ = connection.await;
+            })
+            .detach();
+            for _ in 0..3 {
+                sender.ready().await.unwrap();
+                let request = Request::builder()
+                    .uri(format!("http://{origin_address}/"))
+                    .body(Full::new(Bytes::new()))
+                    .unwrap();
+                let response = sender.send_request(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(
+                    response.into_body().collect().await.unwrap().to_bytes(),
+                    b"ok".as_slice()
+                );
+            }
+            assert_eq!(
+                accepts.load(Ordering::SeqCst),
+                1,
+                "requests should share an upstream connection"
+            );
+        })
+        .await
+        .expect("requests must complete without stalling");
+    }
 
     fn request(method: Method, uri: &str) -> Request<()> {
         Request::builder()

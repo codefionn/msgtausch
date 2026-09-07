@@ -65,6 +65,12 @@ pub struct Summary {
     pub bytes: u64,
     pub requests_per_second: f64,
     pub bytes_per_second: f64,
+    /// Elapsed time until the first byte of the origin's response arrives.
+    /// For CONNECT, this includes TCP and CONNECT negotiation but excludes the
+    /// CONNECT response itself.
+    pub origin_ttfb_p50: Duration,
+    pub origin_ttfb_p95: Duration,
+    pub origin_ttfb_p99: Duration,
     pub latency_p50: Duration,
     pub latency_p95: Duration,
     pub latency_p99: Duration,
@@ -74,7 +80,7 @@ pub struct Summary {
 impl Summary {
     pub fn format_report(&self) -> String {
         format!(
-            "protocol={} duration={:.3}s attempted={} succeeded={} failed={}\nrequests/sec={:.2} throughput={}\nlatency p50={:.3}ms p95={:.3}ms p99={:.3}ms",
+            "protocol={} duration={:.3}s attempted={} succeeded={} failed={}\nrequests/sec={:.2} throughput={}\norigin-ttfb p50={:.3}ms p95={:.3}ms p99={:.3}ms\nfull-latency p50={:.3}ms p95={:.3}ms p99={:.3}ms",
             self.protocol.label(),
             self.duration.as_secs_f64(),
             self.attempted,
@@ -82,6 +88,9 @@ impl Summary {
             self.failed,
             self.requests_per_second,
             format_bytes_per_second(self.bytes_per_second),
+            self.origin_ttfb_p50.as_secs_f64() * 1_000.0,
+            self.origin_ttfb_p95.as_secs_f64() * 1_000.0,
+            self.origin_ttfb_p99.as_secs_f64() * 1_000.0,
             self.latency_p50.as_secs_f64() * 1_000.0,
             self.latency_p95.as_secs_f64() * 1_000.0,
             self.latency_p99.as_secs_f64() * 1_000.0,
@@ -216,14 +225,16 @@ fn run_against(
     let mut succeeded = 0;
     let mut failed = 0;
     let mut bytes = 0_u64;
-    let mut latencies = Vec::new();
+    let mut full_latencies = Vec::new();
+    let mut origin_ttfbs = Vec::new();
     let mut first_error = None;
     for result in receiver {
         match result.result {
-            Ok(response_bytes) => {
+            Ok(response) => {
                 succeeded += 1;
-                bytes += response_bytes as u64;
-                latencies.push(result.elapsed);
+                bytes += response.bytes as u64;
+                full_latencies.push(result.elapsed);
+                origin_ttfbs.push(response.origin_ttfb);
             }
             Err(error) => {
                 failed += 1;
@@ -260,7 +271,8 @@ fn run_against(
     if attempted == 0 {
         bail!("throughput run did not complete a request");
     }
-    latencies.sort_unstable();
+    full_latencies.sort_unstable();
+    origin_ttfbs.sort_unstable();
     Ok(Summary {
         protocol: options.protocol,
         duration: elapsed,
@@ -270,16 +282,24 @@ fn run_against(
         bytes,
         requests_per_second: succeeded as f64 / elapsed.as_secs_f64(),
         bytes_per_second: bytes as f64 / elapsed.as_secs_f64(),
-        latency_p50: percentile(&latencies, 0.50),
-        latency_p95: percentile(&latencies, 0.95),
-        latency_p99: percentile(&latencies, 0.99),
+        origin_ttfb_p50: percentile(&origin_ttfbs, 0.50),
+        origin_ttfb_p95: percentile(&origin_ttfbs, 0.95),
+        origin_ttfb_p99: percentile(&origin_ttfbs, 0.99),
+        latency_p50: percentile(&full_latencies, 0.50),
+        latency_p95: percentile(&full_latencies, 0.95),
+        latency_p99: percentile(&full_latencies, 0.99),
         deadline_expired,
     })
 }
 
 struct RequestResult {
     elapsed: Duration,
-    result: Result<usize>,
+    result: Result<ResponseMeasurement>,
+}
+
+struct ResponseMeasurement {
+    bytes: usize,
+    origin_ttfb: Duration,
 }
 
 fn execute(
@@ -288,9 +308,11 @@ fn execute(
     protocol: Protocol,
     expected: &[u8],
     timeout: Duration,
-) -> Result<usize> {
+) -> Result<ResponseMeasurement> {
+    let started = Instant::now();
     let stream = TcpStream::connect_timeout(&proxy, timeout)
         .with_context(|| format!("connecting to proxy {proxy}"))?;
+    stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let mut stream = BufReader::with_capacity(16 * 1024, stream);
@@ -313,7 +335,7 @@ fn execute(
         stream.get_mut(),
         "GET {target} HTTP/1.1\r\nHost: {origin}\r\nConnection: close\r\n\r\n"
     )?;
-    let headers = read_headers(&mut stream)?;
+    let (headers, origin_ttfb) = read_headers_with_first_byte(&mut stream, started)?;
     ensure!(
         status(&headers)? == 200,
         "origin returned status {}",
@@ -336,7 +358,10 @@ fn execute(
         received == expected,
         "response payload did not match deterministic fixture"
     );
-    Ok(received.len())
+    Ok(ResponseMeasurement {
+        bytes: received.len(),
+        origin_ttfb,
+    })
 }
 
 fn deterministic_payload(size: usize) -> Vec<u8> {
@@ -363,6 +388,40 @@ fn read_headers(reader: &mut impl BufRead) -> Result<Vec<u8>> {
         if headers.ends_with(b"\r\n\r\n") {
             return Ok(headers);
         }
+    }
+    bail!("response headers exceed {MAX_HEADERS} bytes")
+}
+
+fn read_headers_with_first_byte(
+    reader: &mut impl BufRead,
+    started: Instant,
+) -> Result<(Vec<u8>, Duration)> {
+    let mut headers = Vec::new();
+    let mut first_byte_at = None;
+    while headers.len() < MAX_HEADERS {
+        let buffer = reader.fill_buf().context("reading response headers")?;
+        ensure!(
+            !buffer.is_empty(),
+            "connection closed before response headers completed"
+        );
+        first_byte_at.get_or_insert_with(Instant::now);
+        let previous_len = headers.len();
+        let remaining = MAX_HEADERS - headers.len();
+        let take = buffer.len().min(remaining);
+        headers.extend_from_slice(&buffer[..take]);
+        if let Some(end) = headers
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+        {
+            reader.consume(end - previous_len);
+            headers.truncate(end);
+            return Ok((
+                headers,
+                first_byte_at.expect("nonempty buffer set first-byte time") - started,
+            ));
+        }
+        reader.consume(take);
     }
     bail!("response headers exceed {MAX_HEADERS} bytes")
 }
@@ -460,6 +519,10 @@ struct Origin {
 
 impl Origin {
     fn start(payload: Arc<Vec<u8>>) -> Result<Self> {
+        Self::start_with_body_delay(payload, Duration::ZERO)
+    }
+
+    fn start_with_body_delay(payload: Arc<Vec<u8>>, body_delay: Duration) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").context("binding origin")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -471,7 +534,7 @@ impl Origin {
                     Ok((stream, _)) => {
                         let payload = payload.clone();
                         thread::spawn(move || {
-                            let _ = respond(stream, &payload);
+                            let _ = respond(stream, &payload, body_delay);
                         });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -498,7 +561,8 @@ impl Drop for Origin {
     }
 }
 
-fn respond(stream: TcpStream, payload: &[u8]) -> Result<()> {
+fn respond(stream: TcpStream, payload: &[u8], body_delay: Duration) -> Result<()> {
+    stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::with_capacity(16 * 1024, stream);
     let headers = read_headers(&mut reader)?;
@@ -519,6 +583,10 @@ fn respond(stream: TcpStream, payload: &[u8]) -> Result<()> {
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     )?;
+    stream.flush()?;
+    if !body_delay.is_zero() {
+        thread::sleep(body_delay);
+    }
     stream.write_all(payload)?;
     Ok(())
 }
@@ -567,6 +635,9 @@ mod tests {
             bytes: 1_048_576,
             requests_per_second: 1.0,
             bytes_per_second: 1_048_576.0,
+            origin_ttfb_p50: Duration::from_micros(500),
+            origin_ttfb_p95: Duration::from_millis(1),
+            origin_ttfb_p99: Duration::from_millis(2),
             latency_p50: Duration::from_millis(1),
             latency_p95: Duration::from_millis(2),
             latency_p99: Duration::from_millis(3),
@@ -575,6 +646,8 @@ mod tests {
         .format_report();
         assert!(report.contains("throughput=1.00 MiB/s"));
         assert!(!report.contains("bytes/sec"));
+        assert!(report.contains("origin-ttfb p50=0.500ms p95=1.000ms p99=2.000ms"));
+        assert!(report.contains("full-latency p50=1.000ms p95=2.000ms p99=3.000ms"));
     }
 
     #[test]
@@ -594,5 +667,32 @@ mod tests {
         let mut response = vec![0; payload.len()];
         stream.read_exact(&mut response).unwrap();
         assert_eq!(response, *payload);
+    }
+
+    #[test]
+    fn origin_ttfb_precedes_a_delayed_body() {
+        let payload = Arc::new(deterministic_payload(1024));
+        let body_delay = Duration::from_millis(100);
+        let origin = Origin::start_with_body_delay(payload.clone(), body_delay).unwrap();
+        let stream = TcpStream::connect(origin.address).unwrap();
+        stream.set_nodelay(true).unwrap();
+        let mut stream = BufReader::new(stream);
+        let started = Instant::now();
+        write!(
+            stream.get_mut(),
+            "GET /data HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            origin.address
+        )
+        .unwrap();
+        let (headers, ttfb) = read_headers_with_first_byte(&mut stream, started).unwrap();
+        assert_eq!(status(&headers).unwrap(), 200);
+        assert!(
+            ttfb < body_delay / 2,
+            "headers arrived after {ttfb:?}, body delay was {body_delay:?}"
+        );
+        let mut response = vec![0; payload.len()];
+        stream.read_exact(&mut response).unwrap();
+        assert_eq!(response, *payload);
+        assert!(started.elapsed() >= body_delay);
     }
 }

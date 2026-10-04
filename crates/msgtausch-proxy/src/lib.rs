@@ -959,6 +959,45 @@ impl AsyncWrite for TunnelIo {
     }
 }
 
+/// Idle deadline that allocates its sleep once. Progress only records a
+/// timestamp. When the sleep fires early, it is re-armed for the time left.
+struct IdleTimer {
+    idle: Duration,
+    last_progress: Instant,
+    sleep: Pin<Box<dyn Future<Output = ()>>>,
+    arms: u32,
+}
+
+impl IdleTimer {
+    fn new(idle: Duration) -> Self {
+        Self {
+            idle,
+            last_progress: Instant::now(),
+            sleep: Box::pin(compio::time::sleep(idle)),
+            arms: 1,
+        }
+    }
+
+    fn record_progress(&mut self) {
+        self.last_progress = Instant::now();
+    }
+
+    /// Ready once `idle` has elapsed since the last recorded progress.
+    fn poll_expired(&mut self, cx: &mut TaskContext<'_>) -> Poll<()> {
+        loop {
+            if self.sleep.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            let elapsed = self.last_progress.elapsed();
+            if elapsed >= self.idle {
+                return Poll::Ready(());
+            }
+            self.sleep = Box::pin(compio::time::sleep(self.idle - elapsed));
+            self.arms += 1;
+        }
+    }
+}
+
 async fn run_tunnel<A, B>(
     client: &mut A,
     upstream: &mut B,
@@ -969,7 +1008,7 @@ where
     B: AsyncRead + AsyncWrite + Unpin,
 {
     let mut buffers = Box::new(TunnelBuffers::new());
-    let mut sleep: Pin<Box<dyn Future<Output = ()>>> = Box::pin(compio::time::sleep(idle));
+    let mut timer = IdleTimer::new(idle);
     let mut moved = 0u64;
 
     std::future::poll_fn(move |cx| {
@@ -989,9 +1028,9 @@ where
         let total = buffers.sent.copied + buffers.received.copied;
         if total != moved {
             moved = total;
-            sleep = Box::pin(compio::time::sleep(idle));
+            timer.record_progress();
         }
-        match sleep.as_mut().poll(cx) {
+        match timer.poll_expired(cx) {
             Poll::Ready(()) => Poll::Ready(Err(TunnelError::IdleTimeout)),
             Poll::Pending => Poll::Pending,
         }
@@ -1109,6 +1148,35 @@ mod tests {
     use compio::time::timeout;
     use http_body_util::BodyExt;
     use msgtausch_config::{ServerConfig, ServerKind};
+
+    #[compio::test]
+    async fn idle_timer_does_not_rearm_on_progress() {
+        let mut timer = IdleTimer::new(Duration::from_secs(60));
+        for _ in 0..1000 {
+            timer.record_progress();
+        }
+        let pending = std::future::poll_fn(|cx| Poll::Ready(timer.poll_expired(cx))).await;
+        assert!(pending.is_pending());
+        assert_eq!(timer.arms, 1);
+    }
+
+    #[compio::test]
+    async fn idle_timer_rearms_only_when_fired_early() {
+        let idle = Duration::from_millis(300);
+        let started = Instant::now();
+        let mut timer = IdleTimer::new(idle);
+        let first = std::future::poll_fn(|cx| Poll::Ready(timer.poll_expired(cx))).await;
+        assert!(first.is_pending());
+        compio::time::sleep(Duration::from_millis(200)).await;
+        timer.record_progress();
+        std::future::poll_fn(|cx| timer.poll_expired(cx)).await;
+        let total = started.elapsed();
+        assert_eq!(timer.arms, 2, "one re-arm after the early fire");
+        assert!(
+            total >= Duration::from_millis(500),
+            "expired after {total:?}"
+        );
+    }
 
     #[compio::test]
     async fn sequential_requests_reuse_upstream_connection() {

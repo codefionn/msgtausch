@@ -1,4 +1,5 @@
 //! Starts the real binary with several workers and drives it over TCP.
+#![cfg(unix)]
 
 use std::{
     fs,
@@ -231,6 +232,78 @@ fn sighup_restarts_all_workers_on_the_new_config() {
     proxy.stop(libc::SIGTERM);
 }
 
+/// An origin that echoes every byte it receives.
+fn start_echo_origin() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            thread::spawn(move || {
+                let mut buffer = [0u8; 1024];
+                while let Ok(count @ 1..) = stream.read(&mut buffer) {
+                    if stream.write_all(&buffer[..count]).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    address
+}
+
+fn open_tunnel(proxy: SocketAddr, origin: SocketAddr) -> TcpStream {
+    let mut stream = TcpStream::connect(proxy).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "CONNECT {origin} HTTP/1.1\r\nHost: {origin}\r\n\r\n"
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert_eq!(stream.read(&mut byte).unwrap(), 1, "CONNECT head closed");
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 200"));
+    stream
+}
+
+fn echo(stream: &mut TcpStream, message: &[u8]) {
+    stream.write_all(message).unwrap();
+    let mut reply = vec![0u8; message.len()];
+    stream.read_exact(&mut reply).unwrap();
+    assert_eq!(reply, message);
+}
+
+#[test]
+fn sighup_keeps_open_tunnels_on_every_worker() {
+    let directory = tempfile::tempdir().unwrap();
+    let origin = start_echo_origin();
+    let port = free_port();
+    let mut proxy = Proxy::start(directory.path(), port, 4);
+    // Enough tunnels that SO_REUSEPORT spreads them over every worker.
+    let mut tunnels: Vec<_> = (0..32)
+        .map(|_| open_tunnel(proxy.address, origin))
+        .collect();
+    for tunnel in &mut tunnels {
+        echo(tunnel, b"before");
+    }
+
+    write_config(&directory.path().join("config.json"), port, 2);
+    unsafe { libc::kill(proxy.child.id() as i32, libc::SIGHUP) };
+    proxy.wait_for_log_count("workers started", 2);
+
+    for tunnel in &mut tunnels {
+        echo(tunnel, b"after reload");
+    }
+    drop(tunnels);
+    proxy.stop(libc::SIGTERM);
+}
+
 #[test]
 fn bind_failure_exits_non_zero() {
     let directory = tempfile::tempdir().unwrap();
@@ -252,24 +325,15 @@ fn quic_only_config_stays_up_until_sigterm() {
     let directory = tempfile::tempdir().unwrap();
     let ca = directory.path().join("ca.pem");
     let key = directory.path().join("ca-key.pem");
-    let status = Command::new("openssl")
-        .args([
-            "req",
-            "-x509",
-            "-newkey",
-            "ec",
-            "-pkeyopt",
-            "ec_paramgen_curve:prime256v1",
-        ])
-        .args(["-nodes", "-days", "1", "-subj", "/CN=msgtausch-test"])
-        .arg("-keyout")
-        .arg(&key)
-        .arg("-out")
-        .arg(&ca)
-        .output()
-        .unwrap()
-        .status;
-    assert!(status.success());
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "msgtausch-test");
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let certificate = params.self_signed(&ca_key).unwrap();
+    fs::write(&ca, certificate.pem()).unwrap();
+    fs::write(&key, ca_key.serialize_pem()).unwrap();
     let config = directory.path().join("config.json");
     fs::write(
         &config,

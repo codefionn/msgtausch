@@ -1,5 +1,6 @@
 use std::{
     net::{SocketAddr, ToSocketAddrs},
+    panic::AssertUnwindSafe,
     path::PathBuf,
     sync::Arc,
     thread,
@@ -12,7 +13,7 @@ use compio::{
     runtime::{JoinHandle, spawn},
 };
 use futures_channel::{mpsc, oneshot};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use msgtausch_config::{Config, ServerKind};
 use msgtausch_observability::{Observability, init_tracing, spawn_prometheus};
 use msgtausch_proxy::ProxyRuntime;
@@ -60,7 +61,7 @@ async fn main() -> Result<()> {
                     match reload(&config_paths, cli.envfile.as_deref(), &config).await {
                         Ok(Some(next)) => {
                             tracing::info!("configuration changed, restarting listeners");
-                            service.shutdown().await;
+                            service.shutdown_for_reload().await;
                             (service, failures) = ServiceGroup::start(&next).await?;
                             config = next;
                         }
@@ -132,8 +133,18 @@ async fn reload(
 type FailureSender = mpsc::UnboundedSender<String>;
 type BoundListener = (ServerKind, std::net::TcpListener);
 
+/// How a worker thread stops.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// Exit once the listeners are closed. In-flight connections are dropped.
+    Now,
+    /// Close the listeners, then keep the runtime alive until in-flight
+    /// connections finish. A reload uses this, like worker 0's detached tasks.
+    Drain,
+}
+
 struct Worker {
-    shutdown: Option<oneshot::Sender<()>>,
+    shutdown: Option<oneshot::Sender<Stop>>,
     thread: thread::JoinHandle<()>,
 }
 
@@ -232,9 +243,17 @@ fn spawn_accept_loop(
     failures: FailureSender,
 ) -> JoinHandle<Result<()>> {
     spawn(async move {
-        if let Err(error) = accept_loop(listener, runtime, kind).await {
-            let _ = failures.unbounded_send(format!("{error:#}"));
-        }
+        // Compio stores a task's panic in its JoinHandle, which nobody awaits
+        // until shutdown, so report it here like an accept error.
+        let message = match AssertUnwindSafe(accept_loop(listener, runtime, kind))
+            .catch_unwind()
+            .await
+        {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => format!("{error:#}"),
+            Err(_) => "proxy accept loop panicked".to_owned(),
+        };
+        let _ = failures.unbounded_send(message);
         Ok(())
     })
 }
@@ -275,7 +294,7 @@ fn spawn_worker(
     failures: FailureSender,
 ) -> Result<(Worker, oneshot::Receiver<Result<(), String>>)> {
     let (ready_tx, ready_rx) = oneshot::channel();
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<Stop>();
     let thread = thread::Builder::new()
         .name(format!("msgtausch-worker-{index}"))
         .spawn(move || {
@@ -309,9 +328,14 @@ fn spawn_worker(
                     }
                 }
                 let _ = ready_tx.send(Ok(()));
-                let _ = shutdown_rx.await;
+                let stop = shutdown_rx.await.unwrap_or(Stop::Now);
                 for task in tasks {
                     task.cancel().await;
+                }
+                if stop == Stop::Drain {
+                    while runtime.active_client_tasks() > 0 {
+                        compio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             });
             // A startup error was already reported through `ready_tx`.
@@ -481,8 +505,19 @@ impl ServiceGroup {
         Ok(())
     }
 
-    /// Stop every listener and join the worker threads.
+    /// Stop every listener and join the worker threads. In-flight connections
+    /// on worker threads are dropped.
     async fn shutdown(&mut self) {
+        self.stop(Stop::Now).await;
+    }
+
+    /// Stop every listener for a reload. Worker threads finish their in-flight
+    /// connections in the background and are not joined.
+    async fn shutdown_for_reload(&mut self) {
+        self.stop(Stop::Drain).await;
+    }
+
+    async fn stop(&mut self, stop: Stop) {
         for listener in &self.quic {
             listener.close();
         }
@@ -499,8 +534,13 @@ impl ServiceGroup {
         }
         for worker in &mut self.workers {
             if let Some(shutdown) = worker.shutdown.take() {
-                let _ = shutdown.send(());
+                let _ = shutdown.send(stop);
             }
+        }
+        if stop == Stop::Drain {
+            // Dropping the handles detaches the draining threads.
+            self.workers.clear();
+            return;
         }
         for worker in self.workers.drain(..) {
             let name = worker.thread.thread().name().unwrap_or("worker").to_owned();

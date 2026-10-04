@@ -1380,6 +1380,7 @@ dependencies = [
  "msgtausch-observability",
  "msgtausch-proxy",
  "msgtausch-quic",
+ "rcgen",
  "socket2",
  "tempfile",
  "tracing",

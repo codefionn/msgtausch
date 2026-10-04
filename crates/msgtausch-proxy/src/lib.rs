@@ -6,7 +6,10 @@ use std::{
     net::{IpAddr, SocketAddr},
     pin::Pin,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    },
     task::{Context as TaskContext, Poll},
     time::{Duration, Instant},
 };
@@ -132,6 +135,29 @@ pub struct ProxyRuntime {
     interception: Option<InterceptionRuntime>,
     connect_interception_enabled: bool,
     upstream_pool: pool::UpstreamPool,
+    client_tasks: ClientTasks,
+}
+
+/// Counts client connections and tunnels in flight on one worker, so a
+/// draining worker knows when its runtime may exit. Upstream connection
+/// drivers are not counted, because idle pooled connections never end on
+/// their own.
+#[derive(Clone, Default)]
+struct ClientTasks(Arc<AtomicUsize>);
+
+struct ClientTask(Arc<AtomicUsize>);
+
+impl ClientTasks {
+    fn enter(&self) -> ClientTask {
+        self.0.fetch_add(1, AtomicOrdering::Relaxed);
+        ClientTask(self.0.clone())
+    }
+}
+
+impl Drop for ClientTask {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, AtomicOrdering::Relaxed);
+    }
 }
 
 const _: fn() = || {
@@ -170,6 +196,7 @@ impl ProxyRuntime {
             interception,
             connect_interception_enabled: config.interception.enabled && config.interception.https,
             upstream_pool: pool::UpstreamPool::new(Duration::from_secs(timeout), 32),
+            client_tasks: ClientTasks::default(),
         })
     }
 
@@ -179,8 +206,14 @@ impl ProxyRuntime {
     pub fn for_worker(&self) -> Self {
         Self {
             upstream_pool: pool::UpstreamPool::new(self.idle_timeout, 32),
+            client_tasks: ClientTasks::default(),
             ..self.clone()
         }
+    }
+
+    /// Client connections and tunnels still running on this worker's runtime.
+    pub fn active_client_tasks(&self) -> usize {
+        self.client_tasks.0.load(AtomicOrdering::Relaxed)
     }
 
     pub fn with_noop_metrics(config: &Config) -> Result<Self> {
@@ -326,6 +359,7 @@ impl ProxyRuntime {
         stream: TcpStream,
         peer: SocketAddr,
     ) -> Result<()> {
+        let _task = self.client_tasks.enter();
         self.metrics.connection_opened();
         let runtime = self.clone();
         let result = hyper::server::conn::http1::Builder::new()
@@ -353,6 +387,7 @@ impl ProxyRuntime {
         stream: TcpStream,
         peer: SocketAddr,
     ) -> Result<()> {
+        let _task = self.client_tasks.enter();
         let interception = self
             .interception
             .as_ref()
@@ -524,7 +559,9 @@ impl ProxyRuntime {
         if let (Some(client_upgrade), Some(upstream_upgrade)) = (client_upgrade, upstream_upgrade) {
             let idle = self.idle_timeout;
             let metrics = self.metrics.clone();
+            let task = self.client_tasks.enter();
             runtime::spawn(async move {
+                let _task = task;
                 let (client, upstream) = match (client_upgrade.await, upstream_upgrade.await) {
                     (Ok(client), Ok(upstream)) => (client, upstream),
                     _ => {
@@ -575,7 +612,9 @@ impl ProxyRuntime {
         let client = hyper::upgrade::on(&mut request);
         let idle = self.idle_timeout;
         let metrics = self.metrics.clone();
+        let task = self.client_tasks.enter();
         runtime::spawn(async move {
+            let _task = task;
             let client = match client.await {
                 Ok(client) => client,
                 Err(_) => {
@@ -605,7 +644,9 @@ impl ProxyRuntime {
     ) -> Response<ProxyBody> {
         let client = hyper::upgrade::on(&mut request);
         let runtime = self.clone();
+        let task = self.client_tasks.enter();
         runtime::spawn(async move {
+            let _task = task;
             let client = match client.await {
                 Ok(client) => client,
                 Err(_) => {

@@ -29,6 +29,8 @@ pub struct Config {
     pub timeout_seconds: u64,
     pub max_idle_conns: usize,
     pub max_idle_conns_per_host: usize,
+    /// Number of proxy worker threads. Zero selects the available parallelism.
+    pub worker_threads: usize,
     pub classifiers: BTreeMap<String, Classifier>,
     pub forwards: Vec<Forward>,
     pub allowlist: Option<Classifier>,
@@ -46,6 +48,7 @@ impl Default for Config {
             timeout_seconds: 30,
             max_idle_conns: 2048,
             max_idle_conns_per_host: 256,
+            worker_threads: 0,
             classifiers: BTreeMap::new(),
             forwards: Vec::new(),
             allowlist: None,
@@ -316,6 +319,15 @@ pub struct Target {
 }
 
 impl Config {
+    /// Resolve `worker_threads`: zero means the available parallelism, or one
+    /// when that cannot be determined.
+    pub fn resolved_worker_threads(&self) -> usize {
+        match self.worker_threads {
+            0 => std::thread::available_parallelism().map_or(1, usize::from),
+            count => count,
+        }
+    }
+
     /// Loads one file from defaults, then applies the supplied environment.
     pub fn load_file(
         path: impl AsRef<Path>,
@@ -497,6 +509,7 @@ impl Config {
                 "timeout-seconds",
                 "max-idle-conns",
                 "max-idle-conns-per-host",
+                "worker-threads",
                 "max-concurrent-connections",
                 "classifiers",
                 "forwards",
@@ -542,6 +555,12 @@ impl Config {
             root.get("max-idle-conns-per-host"),
             environment,
             "max-idle-conns-per-host",
+        )?;
+        set_usize(
+            &mut config.worker_threads,
+            root.get("worker-threads"),
+            environment,
+            "worker-threads",
         )?;
         if let Some(value) = root.get("classifiers") {
             let values = object(value.clone(), "classifiers")?;
@@ -594,6 +613,11 @@ impl Config {
             &mut self.max_idle_conns_per_host,
             environment,
             "MSGTAUSCH_MAXIDLECONNSPERHOST",
+        )?;
+        set_env_usize(
+            &mut self.worker_threads,
+            environment,
+            "MSGTAUSCH_WORKERTHREADS",
         )?;
         set_env_bool(
             &mut self.interception.enabled,
@@ -803,6 +827,7 @@ fn reject_underscore_keys(values: &Map<String, Value>, context: &str) -> Result<
         "timeout-seconds",
         "max-idle-conns",
         "max-idle-conns-per-host",
+        "worker-threads",
         "max-concurrent-connections",
         "max-connections",
         "connections-per-client",
@@ -1640,6 +1665,38 @@ mod tests {
         assert!(
             matches!(&json_config.forwards[0].kind, ForwardKind::Socks5 { username: Some(username), .. } if username == "operator")
         );
+    }
+
+    #[test]
+    fn worker_threads_parse_from_json_hcl_and_environment() {
+        let directory = tempdir().unwrap();
+        let json = directory.path().join("config.json");
+        let hcl = directory.path().join("config.hcl");
+        fs::write(&json, r#"{"worker-threads": 3}"#).unwrap();
+        fs::write(&hcl, "worker-threads = 3\n").unwrap();
+        let none = BTreeMap::new();
+        assert_eq!(Config::load_file(&json, &none).unwrap().worker_threads, 3);
+        assert_eq!(Config::load_file(&hcl, &none).unwrap().worker_threads, 3);
+        let env = environment(&[("MSGTAUSCH_WORKERTHREADS", "5")]);
+        assert_eq!(Config::load_file(&json, &env).unwrap().worker_threads, 5);
+        assert_eq!(Config::load_file(&hcl, &env).unwrap().worker_threads, 5);
+
+        let absent = directory.path().join("absent.json");
+        fs::write(&absent, "{}").unwrap();
+        let config = Config::load_file(&absent, &none).unwrap();
+        assert_eq!(config.worker_threads, 0);
+        let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+        assert_eq!(config.resolved_worker_threads(), parallelism);
+        let explicit = Config {
+            worker_threads: 7,
+            ..Config::default()
+        };
+        assert_eq!(explicit.resolved_worker_threads(), 7);
+
+        let underscore = directory.path().join("underscore.json");
+        fs::write(&underscore, r#"{"worker_threads": 2}"#).unwrap();
+        let error = Config::load_file(&underscore, &none).unwrap_err();
+        assert!(error.to_string().contains("worker-threads"));
     }
 
     #[test]

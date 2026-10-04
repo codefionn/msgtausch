@@ -13,10 +13,15 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 compio.workspace = true
+futures-channel.workspace = true
 futures-util.workspace = true
 libc.workspace = true
 msgtausch-config = { path = "../msgtausch-config" }
 msgtausch-observability = { path = "../msgtausch-observability" }
 msgtausch-proxy = { path = "../msgtausch-proxy" }
 msgtausch-quic = { path = "../msgtausch-quic" }
+socket2.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

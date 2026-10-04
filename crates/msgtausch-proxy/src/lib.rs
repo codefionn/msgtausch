@@ -134,6 +134,11 @@ pub struct ProxyRuntime {
     upstream_pool: pool::UpstreamPool,
 }
 
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ProxyRuntime>();
+};
+
 struct H3Session {
     remote: SocketAddr,
     authority: hyper::http::uri::Authority,
@@ -166,6 +171,16 @@ impl ProxyRuntime {
             connect_interception_enabled: config.interception.enabled && config.interception.https,
             upstream_pool: pool::UpstreamPool::new(Duration::from_secs(timeout), 32),
         })
+    }
+
+    /// A runtime for another worker thread. Classifiers, DNS cache, address
+    /// hints, interception state, and metrics are shared. The upstream pool
+    /// holds sockets bound to one compio runtime, so each worker gets its own.
+    pub fn for_worker(&self) -> Self {
+        Self {
+            upstream_pool: pool::UpstreamPool::new(self.idle_timeout, 32),
+            ..self.clone()
+        }
     }
 
     pub fn with_noop_metrics(config: &Config) -> Result<Self> {

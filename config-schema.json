@@ -20,6 +20,12 @@
       "minimum": 1,
       "maximum": 3600
     },
+    "worker-threads": {
+      "type": "integer",
+      "description": "Number of proxy worker threads. 0 or absent uses the available CPU parallelism",
+      "default": 0,
+      "minimum": 0
+    },
     "classifiers": {
       "type": "object",
       "description": "Named classifier definitions for traffic matching",

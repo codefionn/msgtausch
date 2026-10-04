@@ -1373,12 +1373,15 @@ dependencies = [
  "anyhow",
  "clap",
  "compio",
+ "futures-channel",
  "futures-util",
  "libc",
  "msgtausch-config",
  "msgtausch-observability",
  "msgtausch-proxy",
  "msgtausch-quic",
+ "socket2",
+ "tempfile",
  "tracing",
 ]
 

@@ -39,6 +39,7 @@ With no file or environment overrides, the service uses one standard listener at
 | `timeout-seconds` | Connect and tunnel idle timeout. |
 | `max-idle-conns` | Retained connection-pool setting. |
 | `max-idle-conns-per-host` | Retained per-host pool setting. |
+| `worker-threads` | Worker threads, each with its own runtime and an `SO_REUSEPORT` listener on every TCP port. `0` or absent uses the available CPU parallelism. Environment variable `MSGTAUSCH_WORKERTHREADS`. QUIC, Prometheus, and domain-list refresh run on the first worker only. |
 | `max-concurrent-connections` | Legacy admission limit. Accepted and ignored. |
 | `classifiers` | Named traffic classifiers. |
 | `allowlist` | Requests must match this classifier. |
@@ -182,7 +183,7 @@ Environment overrides:
 
 ## Environment and secrets
 
-The loader retains compatibility environment names, including `MSGTAUSCH_TIMEOUTSECONDS`, `MSGTAUSCH_MAXIDLECONNS`, `MSGTAUSCH_MAXIDLECONNSPERHOST`, `MSGTAUSCH_LISTENADDRESS`, interception variables, indexed server variables, indexed DNS variables, and cache variables. DNS cache settings use `MSGTAUSCH_DNS_CACHE_ENABLED`, `MSGTAUSCH_DNS_CACHE_CAPACITY`, `MSGTAUSCH_DNS_CACHE_MAX_TTL_SECONDS`, `MSGTAUSCH_DNS_NEGATIVE_CACHE_TTL_SECONDS`, and `MSGTAUSCH_DNS_HAPPY_EYEBALLS_DELAY_MILLIS`.
+The loader retains compatibility environment names, including `MSGTAUSCH_TIMEOUTSECONDS`, `MSGTAUSCH_MAXIDLECONNS`, `MSGTAUSCH_MAXIDLECONNSPERHOST`, `MSGTAUSCH_WORKERTHREADS`, `MSGTAUSCH_LISTENADDRESS`, interception variables, indexed server variables, indexed DNS variables, and cache variables. DNS cache settings use `MSGTAUSCH_DNS_CACHE_ENABLED`, `MSGTAUSCH_DNS_CACHE_CAPACITY`, `MSGTAUSCH_DNS_CACHE_MAX_TTL_SECONDS`, `MSGTAUSCH_DNS_NEGATIVE_CACHE_TTL_SECONDS`, and `MSGTAUSCH_DNS_HAPPY_EYEBALLS_DELAY_MILLIS`.
 
 Indexed servers stop at the first missing address:
 

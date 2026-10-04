@@ -246,3 +246,67 @@ fn bind_failure_exits_non_zero() {
         .status;
     assert!(!status.success());
 }
+
+#[test]
+fn quic_only_config_stays_up_until_sigterm() {
+    let directory = tempfile::tempdir().unwrap();
+    let ca = directory.path().join("ca.pem");
+    let key = directory.path().join("ca-key.pem");
+    let status = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+        ])
+        .args(["-nodes", "-days", "1", "-subj", "/CN=msgtausch-test"])
+        .arg("-keyout")
+        .arg(&key)
+        .arg("-out")
+        .arg(&ca)
+        .output()
+        .unwrap()
+        .status;
+    assert!(status.success());
+    let config = directory.path().join("config.json");
+    fs::write(
+        &config,
+        format!(
+            r#"{{
+  "servers": [{{"type": "quic", "listen-address": "127.0.0.1:0", "enabled": true}}],
+  "worker-threads": 1,
+  "interception": {{"ca-file": "{}", "ca-key-file": "{}"}},
+  "forwards": [{{"type": "default-network", "classifier": {{"type": "true"}}}}]
+}}"#,
+            ca.display(),
+            key.display()
+        ),
+    )
+    .unwrap();
+    let log = directory.path().join("output.log");
+    let log_file = fs::File::create(&log).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_msgtausch"))
+        .arg("--config")
+        .arg(&config)
+        .env("NO_COLOR", "1")
+        .env_remove("RUST_LOG")
+        .stdout(log_file.try_clone().unwrap())
+        .stderr(log_file)
+        .spawn()
+        .unwrap();
+    let mut proxy = Proxy {
+        child,
+        log,
+        address: "127.0.0.1:0".parse().unwrap(),
+    };
+    proxy.wait_for_log("workers started");
+    thread::sleep(Duration::from_secs(1));
+    assert!(
+        proxy.child.try_wait().unwrap().is_none(),
+        "exited early: {}",
+        proxy.log()
+    );
+    proxy.stop(libc::SIGTERM);
+}

@@ -142,6 +142,9 @@ struct ServiceGroup {
     prometheus: Option<JoinHandle<Result<()>>>,
     quic: Vec<H3Listener>,
     workers: Vec<Worker>,
+    /// Keeps the failure channel open for the group's lifetime, so a config
+    /// without TCP listeners or extra workers does not look like a failure.
+    _failures: FailureSender,
 }
 
 /// Reports a worker thread that unwinds. A normal exit disarms it.
@@ -355,6 +358,7 @@ impl ServiceGroup {
             prometheus,
             quic: Vec::new(),
             workers: Vec::new(),
+            _failures: failure_tx.clone(),
         };
         match group
             .start_services(config, runtime, per_worker, failure_tx)

@@ -6,12 +6,11 @@ use std::{
 
 use bytes::Bytes;
 use compio::{net::TcpStream, runtime, time::timeout};
-use cyper_core::HyperStream;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, StatusCode};
 use msgtausch_config::Config;
 
-use crate::ProxyRuntime;
+use crate::{ProxyRuntime, proxy_io::ProxyIo};
 
 #[compio::test]
 async fn rejects_conflicting_upstream_framing_and_recovers() {
@@ -54,7 +53,7 @@ async fn rejects_conflicting_upstream_framing_and_recovers() {
         });
         let stream = TcpStream::connect(proxy_address).await.unwrap();
         let (mut sender, connection) = hyper::client::conn::http1::handshake(
-            HyperStream::new_plain(stream),
+            ProxyIo::plain(stream),
         ).await.unwrap();
         let client_task = runtime::spawn(async move { let _ = connection.with_upgrades().await; });
         for index in 0..8 {

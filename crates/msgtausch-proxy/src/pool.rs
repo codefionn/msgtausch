@@ -19,7 +19,6 @@ use anyhow::{Context as _, Result};
 use bytes::Bytes;
 use compio::runtime;
 use compio::time::{sleep, timeout};
-use cyper_core::HyperStream;
 use hyper::{
     Request, Response,
     body::{Body, Frame, Incoming, SizeHint},
@@ -29,8 +28,10 @@ use hyper::{
 
 use msgtausch_policy::Target;
 
+use crate::proxy_io::ProxyIo;
+
 type Sender = SendRequest<Incoming>;
-type Stream = HyperStream<compio::net::TcpStream>;
+type Stream = ProxyIo;
 
 /// Identity of an upstream connection. `route` distinguishes the selected
 /// forward route so a changed policy cannot reuse a connection created for a
@@ -346,6 +347,7 @@ impl Body for PooledBody {
 
 #[cfg(test)]
 mod tests {
+    use crate::proxy_io::ProxyIo;
     use std::{
         convert::Infallible,
         sync::{
@@ -363,7 +365,6 @@ mod tests {
         runtime,
         time::timeout,
     };
-    use cyper_core::HyperStream;
     use futures_util::StreamExt;
     use http_body_util::{BodyExt, Full, StreamBody};
     use hyper::{
@@ -412,7 +413,7 @@ mod tests {
                 runtime::spawn(async move {
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(
-                            HyperStream::new_plain(stream),
+                            ProxyIo::plain(stream),
                             service_fn(|request: Request<Incoming>| async move {
                                 let body = if request.uri().path() == "/slow" {
                                     BodyExt::boxed(StreamBody::new(
@@ -452,7 +453,7 @@ mod tests {
         timeout(Duration::from_secs(5), async {
             let stream = TcpStream::connect(proxy_address).await.unwrap();
             let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(HyperStream::new_plain(stream))
+                hyper::client::conn::http1::handshake(ProxyIo::plain(stream))
                     .await
                     .unwrap();
             runtime::spawn(async move {
@@ -475,7 +476,7 @@ mod tests {
 
             let stream = TcpStream::connect(proxy_address).await.unwrap();
             let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(HyperStream::new_plain(stream))
+                hyper::client::conn::http1::handshake(ProxyIo::plain(stream))
                     .await
                     .unwrap();
             runtime::spawn(async move {
@@ -513,7 +514,7 @@ mod tests {
                 runtime::spawn(async move {
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(
-                            HyperStream::new_plain(stream),
+                            ProxyIo::plain(stream),
                             service_fn(move |_: Request<Incoming>| async move {
                                 let mut response =
                                     Response::new(Full::new(Bytes::from_static(b"ok")));
@@ -544,7 +545,7 @@ mod tests {
         timeout(Duration::from_secs(5), async {
             let stream = TcpStream::connect(proxy_address).await.unwrap();
             let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(HyperStream::new_plain(stream))
+                hyper::client::conn::http1::handshake(ProxyIo::plain(stream))
                     .await
                     .unwrap();
             runtime::spawn(async move {

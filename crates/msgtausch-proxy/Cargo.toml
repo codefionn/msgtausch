@@ -8,7 +8,6 @@ license.workspace = true
 anyhow.workspace = true
 bytes.workspace = true
 compio.workspace = true
-cyper-core.workspace = true
 futures-util.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
@@ -18,6 +17,7 @@ msgtausch-policy = { path = "../msgtausch-policy" }
 msgtausch-quic = { path = "../msgtausch-quic" }
 msgtausch-routing = { path = "../msgtausch-routing" }
 rustls.workspace = true
+send_wrapper.workspace = true
 
 [dev-dependencies]
 divan.workspace = true

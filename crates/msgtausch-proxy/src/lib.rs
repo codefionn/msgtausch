@@ -14,7 +14,6 @@ use std::{
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use compio::{net::TcpStream, runtime};
-use cyper_core::HyperStream;
 use futures_util::io::{AsyncRead, AsyncWrite};
 use http_body_util::Full;
 use hyper::{
@@ -29,10 +28,14 @@ use msgtausch_interception::InterceptionRuntime;
 use msgtausch_policy::{ClassifierEngine, Target};
 use msgtausch_quic::{H3Client, H3Connection, H3Request, H3Response, H3Upstream};
 use msgtausch_routing::{RouteMetrics, RoutePlanner};
+use proxy_io::{FuturesIo, IO_BUFFER, ProxyIo};
 
 #[cfg(test)]
 mod framing_tests;
+// `io` would shadow the `std::io` import used throughout this file.
 mod pool;
+#[path = "io.rs"]
+mod proxy_io;
 #[cfg(test)]
 mod reuse_tests;
 
@@ -313,7 +316,7 @@ impl ProxyRuntime {
         let result = hyper::server::conn::http1::Builder::new()
             .preserve_header_case(true)
             .serve_connection(
-                HyperStream::new_plain(stream),
+                ProxyIo::plain(stream),
                 service_fn(move |request| {
                     let runtime = runtime.clone();
                     async move { Ok::<_, Infallible>(runtime.handle(request, peer).await) }
@@ -374,7 +377,7 @@ impl ProxyRuntime {
             hyper::server::conn::http1::Builder::new()
                 .preserve_header_case(true)
                 .serve_connection(
-                    FuturesHyperIo(tls),
+                    ProxyIo::tls(tls),
                     service_fn(move |request| {
                         let runtime = runtime.clone();
                         let target = pinned_target.clone();
@@ -452,11 +455,11 @@ impl ProxyRuntime {
                     .interception
                     .as_ref()
                     .context("interception runtime is unavailable")?;
-                Ok(HyperStream::new_tls(
+                Ok(ProxyIo::tls(
                     interception.connect_upstream(stream, &target.host).await?,
                 ))
             } else {
-                Ok(HyperStream::new_plain(stream))
+                Ok(ProxyIo::plain(stream))
             }
         };
         if is_upgrade(&request) {
@@ -478,7 +481,7 @@ impl ProxyRuntime {
         &self,
         mut request: Request<Incoming>,
         target: Target,
-        stream: HyperStream<TcpStream>,
+        stream: ProxyIo,
     ) -> Result<Response<ProxyBody>> {
         let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
             .preserve_header_case(true)
@@ -515,7 +518,11 @@ impl ProxyRuntime {
                     }
                 };
                 let started = Instant::now();
-                report_tunnel(&*metrics, tunnel(client, upstream, idle).await, started);
+                report_tunnel(
+                    &*metrics,
+                    tunnel(client, TunnelIo::from_upgraded(upstream), idle).await,
+                    started,
+                );
             })
             .detach();
         }
@@ -564,7 +571,7 @@ impl ProxyRuntime {
             let started = Instant::now();
             report_tunnel(
                 &*metrics,
-                tunnel(client, HyperStream::new_plain(stream), idle).await,
+                tunnel(client, ProxyIo::plain(stream), idle).await,
                 started,
             );
         })
@@ -606,7 +613,7 @@ impl ProxyRuntime {
             let _ = hyper::server::conn::http1::Builder::new()
                 .preserve_header_case(true)
                 .serve_connection(
-                    FuturesHyperIo(tls),
+                    FuturesIo::new(tls),
                     service_fn(move |request| {
                         let runtime = service_runtime.clone();
                         let target = pinned_target.clone();
@@ -848,51 +855,6 @@ impl<T: hyper::rt::Write + Unpin> AsyncWrite for HyperIo<T> {
     }
 }
 
-/// Gives Hyper a futures-I/O TLS stream without introducing a second runtime.
-/// The stream is produced after Hyper has handed CONNECT's upgraded bytes to
-/// the Compio task, so no bytes are lost between the two protocol layers.
-struct FuturesHyperIo<T>(T);
-
-impl<T: futures_util::io::AsyncRead + Unpin> hyper::rt::Read for FuturesHyperIo<T> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        mut buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<io::Result<()>> {
-        let unfilled = unsafe { buf.as_mut() };
-        unfilled.fill(std::mem::MaybeUninit::new(0));
-        let read = futures_util::io::AsyncRead::poll_read(Pin::new(&mut self.0), cx, unsafe {
-            unfilled.assume_init_mut()
-        });
-        match read {
-            Poll::Ready(Ok(count)) => {
-                unsafe { buf.advance(count) };
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl<T: futures_util::io::AsyncWrite + Unpin> hyper::rt::Write for FuturesHyperIo<T> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        futures_util::io::AsyncWrite::poll_write(Pin::new(&mut self.0), cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        futures_util::io::AsyncWrite::poll_flush(Pin::new(&mut self.0), cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        futures_util::io::AsyncWrite::poll_close(Pin::new(&mut self.0), cx)
-    }
-}
-
 /// Why a tunnel ended without both directions closing cleanly.
 #[derive(Debug)]
 enum TunnelError {
@@ -919,12 +881,82 @@ fn report_tunnel(
 /// no lifetime cap.
 async fn tunnel(
     client: hyper::upgrade::Upgraded,
-    upstream: impl hyper::rt::Read + hyper::rt::Write + Unpin,
+    upstream: impl AsyncRead + AsyncWrite + Unpin,
     idle: Duration,
 ) -> Result<(u64, u64), TunnelError> {
-    let mut client = HyperIo(client);
-    let mut upstream = HyperIo(upstream);
+    let mut client = TunnelIo::from_upgraded(client);
+    let mut upstream = upstream;
     run_tunnel(&mut client, &mut upstream, idle).await
+}
+
+/// One side of a tunnel taken from a Hyper upgrade.
+///
+/// Hyper's own `Read` path would go through `HyperIo` and a zero-filled
+/// cursor, so when the upgraded connection is a [`ProxyIo`] this takes the
+/// stream back and reads it directly. Bytes Hyper had already buffered past
+/// the request head (`read_buf`) are delivered first.
+enum TunnelIo {
+    Direct { prefix: Bytes, io: ProxyIo },
+    Hyper(HyperIo<hyper::upgrade::Upgraded>),
+}
+
+impl TunnelIo {
+    fn from_upgraded(upgraded: hyper::upgrade::Upgraded) -> Self {
+        match upgraded.downcast::<ProxyIo>() {
+            Ok(parts) => Self::Direct {
+                prefix: parts.read_buf,
+                io: parts.io,
+            },
+            Err(upgraded) => Self::Hyper(HyperIo(upgraded)),
+        }
+    }
+}
+
+impl AsyncRead for TunnelIo {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Direct { prefix, io } => {
+                if !prefix.is_empty() {
+                    let count = prefix.len().min(buf.len());
+                    buf[..count].copy_from_slice(&prefix.split_to(count));
+                    return Poll::Ready(Ok(count));
+                }
+                AsyncRead::poll_read(Pin::new(io), cx, buf)
+            }
+            Self::Hyper(io) => AsyncRead::poll_read(Pin::new(io), cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for TunnelIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Direct { io, .. } => AsyncWrite::poll_write(Pin::new(io), cx, buf),
+            Self::Hyper(io) => AsyncWrite::poll_write(Pin::new(io), cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Direct { io, .. } => AsyncWrite::poll_flush(Pin::new(io), cx),
+            Self::Hyper(io) => AsyncWrite::poll_flush(Pin::new(io), cx),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Direct { io, .. } => AsyncWrite::poll_close(Pin::new(io), cx),
+            Self::Hyper(io) => AsyncWrite::poll_close(Pin::new(io), cx),
+        }
+    }
 }
 
 async fn run_tunnel<A, B>(
@@ -982,7 +1014,7 @@ impl TunnelBuffers {
 }
 
 struct CopyBuffer {
-    bytes: [u8; 16 * 1024],
+    bytes: Box<[u8]>,
     position: usize,
     capacity: usize,
     read_done: bool,
@@ -993,7 +1025,7 @@ struct CopyBuffer {
 impl CopyBuffer {
     fn new() -> Self {
         Self {
-            bytes: [0; 16 * 1024],
+            bytes: vec![0; IO_BUFFER].into_boxed_slice(),
             position: 0,
             capacity: 0,
             read_done: false,
@@ -1093,7 +1125,7 @@ mod tests {
                 runtime::spawn(async move {
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(
-                            HyperStream::new_plain(stream),
+                            ProxyIo::plain(stream),
                             service_fn(|_: Request<Incoming>| async {
                                 Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
                                     b"ok",
@@ -1117,7 +1149,7 @@ mod tests {
         timeout(Duration::from_secs(5), async {
             let stream = TcpStream::connect(proxy_address).await.unwrap();
             let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(HyperStream::new_plain(stream))
+                hyper::client::conn::http1::handshake(ProxyIo::plain(stream))
                     .await
                     .unwrap();
             runtime::spawn(async move {

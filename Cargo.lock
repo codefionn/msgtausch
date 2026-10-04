@@ -653,18 +653,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cyper-core"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03c8847069e286c64987119637d5f08cdb71e12e85be0294fed649dc8007d32e"
-dependencies = [
- "compio",
- "futures-util",
- "hyper",
- "send_wrapper",
-]
-
-[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1482,7 +1470,6 @@ dependencies = [
  "anyhow",
  "bytes",
  "compio",
- "cyper-core",
  "divan",
  "futures-util",
  "http-body-util",
@@ -1493,6 +1480,7 @@ dependencies = [
  "msgtausch-quic",
  "msgtausch-routing",
  "rustls",
+ "send_wrapper",
 ]
 
 [[package]]
@@ -2293,9 +2281,6 @@ name = "send_wrapper"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
-dependencies = [
- "futures-core",
-]
 
 [[package]]
 name = "serde"

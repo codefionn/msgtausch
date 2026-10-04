@@ -6,15 +6,31 @@ use msgtausch_throughput::{Protocol, RunOptions, run};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ProtocolArg {
+    Direct,
     Http,
     Connect,
+    /// http then connect
     Both,
+    /// direct, http, then connect
+    All,
+}
+
+impl ProtocolArg {
+    fn protocols(self) -> &'static [Protocol] {
+        match self {
+            Self::Direct => &[Protocol::Direct],
+            Self::Http => &[Protocol::Http],
+            Self::Connect => &[Protocol::Connect],
+            Self::Both => &[Protocol::Http, Protocol::Connect],
+            Self::All => &[Protocol::Direct, Protocol::Http, Protocol::Connect],
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
 #[command(
     name = "msgtausch-throughput",
-    about = "Measure real loopback HTTP or CONNECT proxy throughput"
+    about = "Measure real loopback direct, HTTP, or CONNECT proxy throughput"
 )]
 struct Cli {
     /// Existing proxy address. When omitted, starts --binary with a temporary config.
@@ -55,11 +71,7 @@ fn main() -> Result<()> {
         cli.duration.is_none() || cli.duration <= Some(cli.deadline),
         "duration must not exceed deadline"
     );
-    let protocols = match cli.protocol {
-        ProtocolArg::Http => &[Protocol::Http][..],
-        ProtocolArg::Connect => &[Protocol::Connect][..],
-        ProtocolArg::Both => &[Protocol::Http, Protocol::Connect][..],
-    };
+    let protocols = cli.protocol.protocols();
     for (index, protocol) in protocols.iter().enumerate() {
         if index > 0 {
             println!();
@@ -123,6 +135,23 @@ fn parse_duration(input: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_protocol_selection() {
+        let parse = |value: &str| {
+            Cli::try_parse_from(["t", "--protocol", value])
+                .unwrap()
+                .protocol
+                .protocols()
+        };
+        assert_eq!(parse("direct"), &[Protocol::Direct]);
+        assert_eq!(parse("both"), &[Protocol::Http, Protocol::Connect]);
+        assert_eq!(
+            parse("all"),
+            &[Protocol::Direct, Protocol::Http, Protocol::Connect]
+        );
+        assert_eq!(Protocol::Direct.label(), "direct");
+    }
 
     #[test]
     fn parses_duration_units() {

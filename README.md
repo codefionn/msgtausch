@@ -46,7 +46,7 @@ cargo build -p msgtausch-cli --bin msgtausch
 cargo run -p msgtausch-internet-test
 cargo run -p msgtausch-simulation -- 9000 --binary target/debug/msgtausch --runs 4 --jobs 2 --enable-policy-fixtures --stats
 cargo build --release -p msgtausch-cli --bin msgtausch
-cargo run --release -p msgtausch-throughput -- --protocol both --requests 1000 --concurrency 32 --body-size 65536
+cargo run --release -p msgtausch-throughput -- --protocol all --requests 1000 --concurrency 32 --body-size 65536
 cargo bench --workspace
 ```
 

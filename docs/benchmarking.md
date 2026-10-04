@@ -52,6 +52,17 @@ cargo run --release -p msgtausch-throughput -- \
 
 When it starts a proxy, the harness uses the `msgtausch` binary next to its
 own executable. A release harness therefore uses `target/release/msgtausch`.
+`--protocol` selects what to measure:
+
+- `direct` sends `GET /data` straight to the origin with no proxy. No proxy
+  process starts, and the report says `protocol=direct`. Use it as the
+  loopback baseline for the harness and the machine.
+- `http` and `connect` go through the proxy.
+- `both` runs `http`, then `connect`.
+- `all` runs `direct`, `http`, then `connect`.
+
+Compare `http` and `connect` against `direct` to see what the proxy adds.
+
 Pass `--binary PATH` to select another binary, or `--proxy HOST:PORT` to test
 an existing proxy.
 

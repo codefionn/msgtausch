@@ -26,6 +26,8 @@ const MAX_HEADERS: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
+    /// Request sent straight to the origin with no proxy in between.
+    Direct,
     Http,
     Connect,
 }
@@ -33,6 +35,7 @@ pub enum Protocol {
 impl Protocol {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Direct => "direct",
             Self::Http => "http",
             Self::Connect => "connect",
         }
@@ -115,6 +118,7 @@ pub fn run(options: &RunOptions) -> Result<Summary> {
     let origin = Origin::start(payload.clone())?;
     let mut child = None;
     let proxy = match options.proxy {
+        _ if options.protocol == Protocol::Direct => origin.address,
         Some(address) => address,
         None => {
             let address = reserve_address()?;
@@ -310,8 +314,13 @@ fn execute(
     timeout: Duration,
 ) -> Result<ResponseMeasurement> {
     let started = Instant::now();
-    let stream = TcpStream::connect_timeout(&proxy, timeout)
-        .with_context(|| format!("connecting to proxy {proxy}"))?;
+    let stream = TcpStream::connect_timeout(&proxy, timeout).with_context(|| {
+        if protocol == Protocol::Direct {
+            format!("connecting to origin {proxy}")
+        } else {
+            format!("connecting to proxy {proxy}")
+        }
+    })?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
@@ -331,6 +340,7 @@ fn execute(
     } else {
         "/data".into()
     };
+    // Direct and CONNECT both speak origin-form to the origin itself.
     write!(
         stream.get_mut(),
         "GET {target} HTTP/1.1\r\nHost: {origin}\r\nConnection: close\r\n\r\n"
@@ -524,22 +534,24 @@ impl Origin {
 
     fn start_with_body_delay(payload: Arc<Vec<u8>>, body_delay: Duration) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").context("binding origin")?;
-        listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = stopping.clone();
         let thread = thread::spawn(move || {
-            while !stop.load(AtomicOrdering::Relaxed) {
+            // Blocking accept. Drop sets the stop flag and then connects to
+            // the listener once so this call returns.
+            loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if stop.load(AtomicOrdering::SeqCst) {
+                            return;
+                        }
                         let payload = payload.clone();
                         thread::spawn(move || {
                             let _ = respond(stream, &payload, body_delay);
                         });
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(1));
-                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => return,
                 }
             }
@@ -554,8 +566,9 @@ impl Origin {
 
 impl Drop for Origin {
     fn drop(&mut self) {
-        self.stopping.store(true, AtomicOrdering::Relaxed);
+        self.stopping.store(true, AtomicOrdering::SeqCst);
         if let Some(thread) = self.thread.take() {
+            let _ = TcpStream::connect_timeout(&self.address, Duration::from_millis(100));
             let _ = thread.join();
         }
     }
@@ -648,6 +661,40 @@ mod tests {
         assert!(!report.contains("bytes/sec"));
         assert!(report.contains("origin-ttfb p50=0.500ms p95=1.000ms p99=2.000ms"));
         assert!(report.contains("full-latency p50=1.000ms p95=2.000ms p99=3.000ms"));
+    }
+
+    #[test]
+    fn idle_origin_shuts_down_promptly() {
+        let origin = Origin::start(Arc::new(deterministic_payload(16))).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        drop(origin);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "origin took {:?} to stop",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn direct_run_needs_no_proxy_and_reports_direct() {
+        let summary = run(&RunOptions {
+            proxy: None,
+            binary: "/nonexistent/msgtausch".into(),
+            protocol: Protocol::Direct,
+            requests: 8,
+            concurrency: 2,
+            body_size: 4096,
+            warmup: 1,
+            duration: None,
+            deadline: Duration::from_secs(10),
+            request_timeout: Duration::from_secs(5),
+            max_errors: 0,
+            max_error_rate: 0.0,
+        })
+        .unwrap();
+        assert_eq!(summary.succeeded, 8);
+        assert!(summary.format_report().starts_with("protocol=direct "));
     }
 
     #[test]

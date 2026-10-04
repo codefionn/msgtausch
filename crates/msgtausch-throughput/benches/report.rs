@@ -42,7 +42,13 @@ static CONNECT_SUMMARY: LazyLock<Summary> = LazyLock::new(|| Summary {
     deadline_expired: true,
 });
 
+static DIRECT_SUMMARY: LazyLock<Summary> = LazyLock::new(|| Summary {
+    protocol: Protocol::Direct,
+    ..HTTP_SUMMARY.clone()
+});
+
 fn main() {
+    LazyLock::force(&DIRECT_SUMMARY);
     LazyLock::force(&HTTP_SUMMARY);
     LazyLock::force(&CONNECT_SUMMARY);
     divan::main();
@@ -56,4 +62,9 @@ fn format_http_report() -> String {
 #[divan::bench]
 fn format_connect_report_with_failures() -> String {
     black_box(&*CONNECT_SUMMARY).format_report()
+}
+
+#[divan::bench]
+fn format_direct_report() -> String {
+    black_box(&*DIRECT_SUMMARY).format_report()
 }

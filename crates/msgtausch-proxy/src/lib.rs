@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use compio::{net::TcpStream, runtime, time::timeout};
+use compio::{net::TcpStream, runtime};
 use cyper_core::HyperStream;
 use futures_util::io::{AsyncRead, AsyncWrite};
 use http_body_util::Full;
@@ -35,6 +35,9 @@ mod framing_tests;
 mod pool;
 #[cfg(test)]
 mod reuse_tests;
+
+#[cfg(test)]
+mod tunnel_tests;
 
 /// A proxied upstream response or a locally generated response.
 ///
@@ -512,13 +515,7 @@ impl ProxyRuntime {
                     }
                 };
                 let started = Instant::now();
-                match timeout(idle, tunnel(client, upstream)).await {
-                    Ok(Ok((sent, received))) => {
-                        metrics.tunnel_finished(sent, received, started.elapsed());
-                    }
-                    Ok(Err(_)) => metrics.proxy_error("tunnel_io"),
-                    Err(_) => metrics.proxy_error("tunnel_timeout"),
-                }
+                report_tunnel(&*metrics, tunnel(client, upstream, idle).await, started);
             })
             .detach();
         }
@@ -565,13 +562,11 @@ impl ProxyRuntime {
                 }
             };
             let started = Instant::now();
-            match timeout(idle, tunnel(client, HyperStream::new_plain(stream))).await {
-                Ok(Ok((sent, received))) => {
-                    metrics.tunnel_finished(sent, received, started.elapsed());
-                }
-                Ok(Err(_)) => metrics.proxy_error("tunnel_io"),
-                Err(_) => metrics.proxy_error("tunnel_timeout"),
-            }
+            report_tunnel(
+                &*metrics,
+                tunnel(client, HyperStream::new_plain(stream), idle).await,
+                started,
+            );
         })
         .detach();
         Response::builder()
@@ -898,29 +893,75 @@ impl<T: futures_util::io::AsyncWrite + Unpin> hyper::rt::Write for FuturesHyperI
     }
 }
 
+/// Why a tunnel ended without both directions closing cleanly.
+#[derive(Debug)]
+enum TunnelError {
+    /// No bytes moved in either direction for the idle timeout.
+    IdleTimeout,
+    Io,
+}
+
+fn report_tunnel(
+    metrics: &dyn ProxyMetrics,
+    result: Result<(u64, u64), TunnelError>,
+    started: Instant,
+) {
+    match result {
+        Ok((sent, received)) => metrics.tunnel_finished(sent, received, started.elapsed()),
+        Err(TunnelError::Io) => metrics.proxy_error("tunnel_io"),
+        Err(TunnelError::IdleTimeout) => metrics.proxy_error("tunnel_timeout"),
+    }
+}
+
+/// Copies both directions until each side closes. The tunnel fails with
+/// `IdleTimeout` only after `idle` passes with no bytes moved in either
+/// direction. Any transferred byte re-arms the timer, so active tunnels have
+/// no lifetime cap.
 async fn tunnel(
     client: hyper::upgrade::Upgraded,
     upstream: impl hyper::rt::Read + hyper::rt::Write + Unpin,
-) -> io::Result<(u64, u64)> {
+    idle: Duration,
+) -> Result<(u64, u64), TunnelError> {
     let mut client = HyperIo(client);
     let mut upstream = HyperIo(upstream);
+    run_tunnel(&mut client, &mut upstream, idle).await
+}
+
+async fn run_tunnel<A, B>(
+    client: &mut A,
+    upstream: &mut B,
+    idle: Duration,
+) -> Result<(u64, u64), TunnelError>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buffers = Box::new(TunnelBuffers::new());
+    let mut sleep: Pin<Box<dyn Future<Output = ()>>> = Box::pin(compio::time::sleep(idle));
+    let mut moved = 0u64;
 
     std::future::poll_fn(move |cx| {
-        let sent_state = buffers.sent.poll(cx, &mut client, &mut upstream);
-        let received_state = buffers.received.poll(cx, &mut upstream, &mut client);
-        if let Poll::Ready(Err(error)) = sent_state {
-            return Poll::Ready(Err(error));
+        let sent_state = buffers.sent.poll(cx, client, upstream);
+        let received_state = buffers.received.poll(cx, upstream, client);
+        if let Poll::Ready(Err(_)) = sent_state {
+            return Poll::Ready(Err(TunnelError::Io));
         }
-        if let Poll::Ready(Err(error)) = received_state {
-            return Poll::Ready(Err(error));
+        if let Poll::Ready(Err(_)) = received_state {
+            return Poll::Ready(Err(TunnelError::Io));
         }
         if matches!(sent_state, Poll::Ready(Ok(())))
             && matches!(received_state, Poll::Ready(Ok(())))
         {
-            Poll::Ready(Ok((buffers.sent.copied, buffers.received.copied)))
-        } else {
-            Poll::Pending
+            return Poll::Ready(Ok((buffers.sent.copied, buffers.received.copied)));
+        }
+        let total = buffers.sent.copied + buffers.received.copied;
+        if total != moved {
+            moved = total;
+            sleep = Box::pin(compio::time::sleep(idle));
+        }
+        match sleep.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(TunnelError::IdleTimeout)),
+            Poll::Pending => Poll::Pending,
         }
     })
     .await
@@ -1033,6 +1074,7 @@ impl CopyBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use compio::time::timeout;
     use http_body_util::BodyExt;
     use msgtausch_config::{ServerConfig, ServerKind};
 

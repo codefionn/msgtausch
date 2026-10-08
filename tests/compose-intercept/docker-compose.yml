@@ -21,7 +21,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM docker.io/library/python:3.13-alpine
+        FROM docker.io/library/python:3.14.7-alpine3.24
         RUN apk add --no-cache wget ca-certificates \
             && adduser -D -H app
         WORKDIR /app
@@ -53,7 +53,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM docker.io/library/python:3.13-alpine
+        FROM docker.io/library/python:3.14.7-alpine3.24
         RUN apk add --no-cache wget ca-certificates \
             && adduser -D -H app
         WORKDIR /app
@@ -90,7 +90,7 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM docker.io/curlimages/curl:8.8.0
+        FROM docker.io/curlimages/curl:8.21.0
         COPY client/test.sh /test.sh
         COPY ca /ca
         ENTRYPOINT ["sh", "/test.sh"]

@@ -288,8 +288,21 @@ pub struct TelemetryGuard {
     provider: Option<SdkTracerProvider>,
 }
 
-#[derive(Debug, Default)]
-struct BlockingHttpClient;
+#[derive(Debug)]
+struct BlockingHttpClient {
+    client: ureq::Agent,
+}
+
+impl Default for BlockingHttpClient {
+    fn default() -> Self {
+        Self {
+            client: ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .into(),
+        }
+    }
+}
 
 #[async_trait]
 impl HttpClient for BlockingHttpClient {
@@ -298,7 +311,7 @@ impl HttpClient for BlockingHttpClient {
         request: Request<Bytes>,
     ) -> std::result::Result<Response<Bytes>, HttpError> {
         let request = request.map(|body| body.to_vec());
-        let response = ureq::run(request)?;
+        let response = self.client.run(request)?;
         let (parts, mut body) = response.into_parts();
         let body = body.read_to_vec()?;
         Ok(Response::from_parts(parts, Bytes::from(body)))
@@ -331,7 +344,7 @@ pub fn init_tracing(
     let provider = if let Some(endpoint) = &config.otlp_endpoint {
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
-            .with_http_client(BlockingHttpClient)
+            .with_http_client(BlockingHttpClient::default())
             .with_endpoint(endpoint)
             .build()
             .context("creating OTLP span exporter")?;
@@ -440,6 +453,43 @@ pub fn spawn_prometheus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[compio::test]
+    async fn otlp_http_client_preserves_error_response() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy",
+                )
+                .unwrap();
+        });
+        let request = Request::get(format!("http://{address}/v1/traces"))
+            .body(Bytes::new())
+            .unwrap();
+        let response = BlockingHttpClient::default()
+            .send_bytes(request)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "3");
+        assert_eq!(response.body().as_ref(), b"busy");
+    }
 
     #[compio::test]
     async fn prometheus_waits_for_an_http_request() {

@@ -7,9 +7,9 @@ stages:
   - release
 
 default:
-  image: docker:24.0
+  image: docker:29.8.2
   services:
-    - docker:24.0-dind
+    - docker:29.8.2-dind
   before_script:
     - docker version
     - docker buildx version

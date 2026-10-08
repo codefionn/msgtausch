@@ -1,8 +1,8 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 
 # Run the compiler on the builder's native CPU. Zig supplies the target musl
 # toolchain, so an amd64 runner can produce arm64 binaries without QEMU.
-FROM --platform=${BUILDPLATFORM} docker.io/rust:1.97-alpine AS rust-builder
+FROM --platform=${BUILDPLATFORM} docker.io/rust:1.99-alpine AS rust-builder
 ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG BUILDARCH
@@ -11,7 +11,7 @@ RUN test "${TARGETPLATFORM}" = "linux/amd64" || test "${TARGETPLATFORM}" = "linu
 RUN apk add --no-cache musl-dev pkgconfig protobuf && \
     if [ "${TARGETARCH}" != "${BUILDARCH}" ]; then \
       apk add --no-cache zig && \
-      cargo install cargo-zigbuild --version 0.23.0 --locked; \
+      cargo install cargo-zigbuild --version 0.23.4 --locked; \
     fi
 RUN if [ "${TARGETARCH}" != "${BUILDARCH}" ]; then \
       case "${TARGETARCH}" in \
@@ -45,7 +45,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM scratch AS binary
 COPY --from=rust-builder /tmp/msgtausch /msgtausch
 
-FROM --platform=${BUILDPLATFORM} docker.io/rust:1.97-alpine AS rust-checks
+FROM --platform=${BUILDPLATFORM} docker.io/rust:1.99-alpine AS rust-checks
 RUN apk add --no-cache musl-dev pkgconfig protobuf && \
     rustup component add clippy rustfmt
 WORKDIR /src
@@ -86,7 +86,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build -p msgtausch-cli --bin msgtausch && \
     cargo run -p msgtausch-throughput -- --protocol both --requests 16 --concurrency 2 --body-size 8192 --warmup 1 --deadline 30s
 
-FROM --platform=${TARGETPLATFORM} docker.io/library/alpine:3.22.1 AS runtime-dev
+FROM --platform=${TARGETPLATFORM} docker.io/library/alpine:3.24.2 AS runtime-dev
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -H app
 COPY --from=rust-builder /tmp/msgtausch /msgtausch
 USER app
@@ -96,7 +96,7 @@ CMD ["--config", "/config.json"]
 
 FROM runtime-dev AS runtime-release
 
-FROM nixos/nix:2.28.3 AS nix-build
+FROM nixos/nix:2.35.2 AS nix-build
 WORKDIR /src
 RUN nix --version
 COPY flake.nix flake.lock ./

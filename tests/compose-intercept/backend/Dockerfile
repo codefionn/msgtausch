@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.13-alpine
+FROM docker.io/library/python:3.14.7-alpine3.24
 RUN adduser -D -H app
 WORKDIR /app
 COPY server.py /app/server.py

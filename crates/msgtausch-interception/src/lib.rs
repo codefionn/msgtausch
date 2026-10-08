@@ -8,7 +8,7 @@ use std::{
 
 use aes::{
     Aes128, Aes192, Aes256,
-    cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7},
+    cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7},
 };
 use anyhow::{Context, Result, bail};
 use compio::{
@@ -20,8 +20,12 @@ use futures_rustls::{TlsAcceptor as FuturesTlsAcceptor, server::TlsStream as Ser
 use lru::LruCache;
 use md5::{Digest, Md5};
 use pkcs8::{
-    AlgorithmIdentifierRef, EncryptedPrivateKeyInfo, ObjectIdentifier, PrivateKeyInfo,
-    der::{SecretDocument, asn1::AnyRef, pem::LineEnding},
+    AlgorithmIdentifierRef, EncryptedPrivateKeyInfoRef, ObjectIdentifier, PrivateKeyInfoRef,
+    der::{
+        SecretDocument,
+        asn1::{AnyRef, OctetStringRef},
+        pem::LineEnding,
+    },
 };
 use rcgen::{CertificateParams, Issuer, KeyPair};
 use rustls::{
@@ -301,9 +305,10 @@ fn decrypt_ca_key(key_pem: &str, password: Option<&str>) -> Result<String> {
     if block.tag() == "ENCRYPTED PRIVATE KEY" {
         let password =
             password.context("encrypted PKCS#8 interception CA key requires ca-key-passwd")?;
-        let encrypted = EncryptedPrivateKeyInfo::try_from(block.contents()).map_err(|error| {
-            anyhow::anyhow!("parsing encrypted PKCS#8 interception CA key: {error:?}")
-        })?;
+        let encrypted =
+            EncryptedPrivateKeyInfoRef::try_from(block.contents()).map_err(|error| {
+                anyhow::anyhow!("parsing encrypted PKCS#8 interception CA key: {error:?}")
+            })?;
         let decrypted = encrypted.decrypt(password).map_err(|error| {
             anyhow::anyhow!("decrypting encrypted PKCS#8 interception CA key: {error:?}")
         })?;
@@ -358,7 +363,9 @@ fn encode_pkcs8(tag: &str, private_key: &[u8]) -> Result<String> {
         },
         _ => bail!("unsupported legacy interception CA key type {tag}"),
     };
-    let key = PrivateKeyInfo::new(algorithm, private_key);
+    let private_key = OctetStringRef::new(private_key)
+        .map_err(|error| anyhow::anyhow!("encoding PKCS#8 CA private key: {error:?}"))?;
+    let key = PrivateKeyInfoRef::new(algorithm, private_key);
     let document = SecretDocument::encode_msg(&key)
         .map_err(|error| anyhow::anyhow!("encoding PKCS#8 CA key: {error:?}"))?;
     Ok(document
@@ -397,19 +404,19 @@ fn decrypt_legacy_pem(block: &pem::Pem, password: &str) -> Result<Vec<u8>> {
     let plaintext = match algorithm {
         "AES-128-CBC" => cbc::Decryptor::<Aes128>::new_from_slices(&key, &iv)
             .map_err(|_| anyhow::anyhow!("invalid AES-128-CBC key or IV"))?
-            .decrypt_padded_mut::<Pkcs7>(&mut ciphertext)
+            .decrypt_padded::<Pkcs7>(&mut ciphertext)
             .map_err(|_| anyhow::anyhow!("invalid legacy AES-128-CBC key password or padding"))?,
         "AES-192-CBC" => cbc::Decryptor::<Aes192>::new_from_slices(&key, &iv)
             .map_err(|_| anyhow::anyhow!("invalid AES-192-CBC key or IV"))?
-            .decrypt_padded_mut::<Pkcs7>(&mut ciphertext)
+            .decrypt_padded::<Pkcs7>(&mut ciphertext)
             .map_err(|_| anyhow::anyhow!("invalid legacy AES-192-CBC key password or padding"))?,
         "AES-256-CBC" => cbc::Decryptor::<Aes256>::new_from_slices(&key, &iv)
             .map_err(|_| anyhow::anyhow!("invalid AES-256-CBC key or IV"))?
-            .decrypt_padded_mut::<Pkcs7>(&mut ciphertext)
+            .decrypt_padded::<Pkcs7>(&mut ciphertext)
             .map_err(|_| anyhow::anyhow!("invalid legacy AES-256-CBC key password or padding"))?,
         "DES-CBC" => cbc::Decryptor::<Des>::new_from_slices(&key, &iv)
             .map_err(|_| anyhow::anyhow!("invalid DES-CBC key or IV"))?
-            .decrypt_padded_mut::<Pkcs7>(&mut ciphertext)
+            .decrypt_padded::<Pkcs7>(&mut ciphertext)
             .map_err(|_| anyhow::anyhow!("invalid legacy DES-CBC key password or padding"))?,
         _ => unreachable!("validated above"),
     };
@@ -583,7 +590,7 @@ mod tests {
 
     #[test]
     fn decrypts_a_legacy_des_cbc_key() {
-        use aes::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+        use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
         let iv = [0x11; 8];
         let key = evp_bytes_to_key(PASSWORD.as_bytes(), &iv, 8);
@@ -591,7 +598,7 @@ mod tests {
         encrypted[..4].copy_from_slice(b"key!");
         let ciphertext = cbc::Encryptor::<Des>::new_from_slices(&key, &iv)
             .unwrap()
-            .encrypt_padded_mut::<Pkcs7>(&mut encrypted, 4)
+            .encrypt_padded::<Pkcs7>(&mut encrypted, 4)
             .unwrap()
             .to_vec();
         let mut block = pem::Pem::new("RSA PRIVATE KEY", ciphertext);

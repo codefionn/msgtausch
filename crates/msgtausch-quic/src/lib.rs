@@ -472,7 +472,7 @@ fn client_config(mut tls: rustls::ClientConfig) -> Result<ClientConfig> {
 
 fn pinned_uri(authority: &hyper::http::uri::Authority, original: &Uri) -> Result<Uri> {
     if let Some(actual) = original.authority()
-        && actual != authority
+        && !authority_matches(actual, authority)
     {
         bail!("request authority differs from pinned upstream authority");
     }
@@ -486,6 +486,17 @@ fn pinned_uri(authority: &hyper::http::uri::Authority, original: &Uri) -> Result
         .path_and_query(path)
         .build()
         .context("building pinned request URI")
+}
+
+/// Compare an inbound authority with the pinned one. Clients normally omit
+/// the default port while the pinned form always carries it, so equality is
+/// decided on host and effective port, not on the raw strings.
+fn authority_matches(
+    actual: &hyper::http::uri::Authority,
+    pinned: &hyper::http::uri::Authority,
+) -> bool {
+    actual.host().eq_ignore_ascii_case(pinned.host())
+        && actual.port_u16().unwrap_or(443) == pinned.port_u16().unwrap_or(443)
 }
 
 fn h3_headers(headers: HeaderMap) -> HeaderMap {
@@ -506,16 +517,40 @@ fn h3_headers(headers: HeaderMap) -> HeaderMap {
     headers
 }
 
+/// Upper bound on a buffered HTTP/3 request body. Requests are collected
+/// before forwarding, so without a cap a single QUIC client could exhaust
+/// proxy memory by streaming DATA frames. Larger uploads belong to HTTP/1,
+/// whose request bodies stream without buffering.
+pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 async fn read_body<S>(stream: &mut S, expected: Option<usize>) -> Result<Bytes>
 where
     S: H3Readable,
 {
+    read_body_limited(stream, expected, MAX_REQUEST_BODY_BYTES).await
+}
+
+async fn read_body_limited<S>(
+    stream: &mut S,
+    expected: Option<usize>,
+    limit: usize,
+) -> Result<Bytes>
+where
+    S: H3Readable,
+{
+    // Reject an oversized declared length before reading a single byte.
+    if expected.is_some_and(|expected| expected > limit) {
+        bail!("HTTP/3 request body exceeds the {limit}-byte limit");
+    }
     let mut body = Vec::new();
     while let Some(mut chunk) = stream.next_data().await? {
         let length = body
             .len()
             .checked_add(chunk.remaining())
             .context("HTTP/3 request body is too large")?;
+        if length > limit {
+            bail!("HTTP/3 request body exceeds the {limit}-byte limit");
+        }
         if let Some(expected) = expected
             && length > expected
         {
@@ -679,6 +714,55 @@ mod tests {
                 .parse::<Uri>()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn pinned_uri_treats_an_omitted_default_port_as_matching() {
+        // Standard clients send ":authority: host" without the default port
+        // while the pinned form always carries it.
+        let authority = "upstream.test:443".parse().unwrap();
+        let uri = pinned_uri(&authority, &"https://upstream.test/x".parse().unwrap()).unwrap();
+        assert_eq!(uri, "https://upstream.test:443/x".parse::<Uri>().unwrap());
+    }
+
+    #[test]
+    fn pinned_uri_still_rejects_a_different_host_or_port() {
+        let authority = "upstream.test:8443".parse().unwrap();
+        assert!(pinned_uri(&authority, &"https://upstream.test/x".parse().unwrap()).is_err());
+        assert!(pinned_uri(&authority, &"https://other.test:8443/x".parse().unwrap()).is_err());
+    }
+
+    struct ChunkStream(Vec<Bytes>);
+
+    impl H3Readable for ChunkStream {
+        type Chunk = Bytes;
+        async fn next_data(&mut self) -> Result<Option<Bytes>> {
+            Ok(if self.0.is_empty() {
+                None
+            } else {
+                Some(self.0.remove(0))
+            })
+        }
+    }
+
+    #[compio::test]
+    async fn read_body_collects_a_body_within_the_limit() {
+        let mut stream = ChunkStream(vec![Bytes::from_static(b"abc"), Bytes::from_static(b"def")]);
+        let body = read_body_limited(&mut stream, Some(6), 6).await.unwrap();
+        assert_eq!(body, Bytes::from_static(b"abcdef"));
+    }
+
+    #[compio::test]
+    async fn read_body_rejects_an_undeclared_body_over_the_limit() {
+        let mut stream = ChunkStream(vec![Bytes::from_static(b"abc"), Bytes::from_static(b"def")]);
+        assert!(read_body_limited(&mut stream, None, 5).await.is_err());
+    }
+
+    #[compio::test]
+    async fn read_body_rejects_an_oversized_content_length_before_reading() {
+        let mut stream = ChunkStream(vec![Bytes::from_static(b"abc")]);
+        assert!(read_body_limited(&mut stream, Some(6), 5).await.is_err());
+        assert_eq!(stream.0.len(), 1, "no chunk may be consumed");
     }
 
     #[test]

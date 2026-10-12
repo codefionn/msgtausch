@@ -23,9 +23,20 @@ pub struct Target {
 }
 
 impl Target {
+    /// Normalize the host the way policy rules and connection keys compare it.
+    /// URI authorities spell IPv6 literals bracketed (`[::1]`) while SNI and
+    /// domain rules spell them bare, so brackets are stripped here and
+    /// restored by [`Target::authority`]. The trailing root dot is dropped and
+    /// case is folded.
     pub fn new(host: impl Into<String>, port: u16, client_ip: Option<IpAddr>) -> Self {
+        let host = host.into();
+        let trimmed = host.trim_end_matches('.');
+        let bare = trimmed
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(trimmed);
         Self {
-            host: host.into().trim_end_matches('.').to_ascii_lowercase(),
+            host: bare.to_ascii_lowercase(),
             port,
             client_ip,
         }
@@ -450,6 +461,17 @@ mod tests {
             .matches(&target, &named)
             .unwrap()
         );
+    }
+
+    #[test]
+    fn target_normalizes_bracketed_ipv6_literals_and_rebrackets_authorities() {
+        let target = Target::new("[2001:DB8::1].", 8443, None);
+        assert_eq!(target.host, "2001:db8::1");
+        assert_eq!(target.authority(), "[2001:db8::1]:8443");
+
+        let host = Target::new("Example.COM", 443, None);
+        assert_eq!(host.host, "example.com");
+        assert_eq!(host.authority(), "example.com:443");
     }
 
     #[test]

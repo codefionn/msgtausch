@@ -37,6 +37,12 @@ use msgtausch_policy::{ClassifierEngine, CompiledClassifier, Target};
 
 const LEAF_CACHE_CAPACITY: usize = 256;
 
+/// Longest host name a generated leaf may cover. Hosts arrive from CONNECT
+/// authorities and ClientHello SNI, and each one is embedded in a generated
+/// certificate and its cache entry, so the name length must stay within DNS
+/// limits before any key generation happens.
+const MAX_LEAF_HOST_LEN: usize = 253;
+
 /// Immutable interception state. It is absent when interception is disabled,
 /// so normal CONNECT tunnelling does not pay for certificate machinery.
 #[derive(Clone)]
@@ -233,6 +239,10 @@ impl InterceptionRuntime {
     }
 
     fn issue_leaf(&self, host: &str) -> Result<Arc<CachedLeaf>> {
+        anyhow::ensure!(
+            host.len() <= MAX_LEAF_HOST_LEN,
+            "interception host name exceeds {MAX_LEAF_HOST_LEN} bytes"
+        );
         let params = CertificateParams::new(vec![host.to_owned()])
             .with_context(|| format!("creating certificate SAN for {host}"))?;
         let leaf_key = KeyPair::generate().context("generating intercepted leaf key")?;
@@ -629,6 +639,13 @@ mod tests {
         }
         let replacement = runtime.downstream_config("host-0.example").unwrap();
         assert!(!Arc::ptr_eq(&first, &replacement));
+    }
+
+    #[test]
+    fn rejects_oversized_host_names_before_generating_a_leaf() {
+        let runtime = test_runtime();
+        let oversized = "a".repeat(MAX_LEAF_HOST_LEN + 1);
+        assert!(runtime.downstream_config(&oversized).is_err());
     }
 
     #[test]

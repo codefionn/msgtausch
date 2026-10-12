@@ -392,10 +392,15 @@ impl ProxyRuntime {
             .interception
             .as_ref()
             .context("HTTPS listener requires CA certificate state")?;
-        let handshake =
-            compio::tls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream)
-                .await
-                .context("reading HTTPS listener ClientHello")?;
+        // A client that never finishes its ClientHello must not hold the
+        // connection and its runtime slot forever, so the read is bounded.
+        let handshake = compio::time::timeout(
+            self.idle_timeout,
+            compio::tls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream),
+        )
+        .await
+        .context("HTTPS listener ClientHello timed out")?
+        .context("reading HTTPS listener ClientHello")?;
         let host = handshake
             .client_hello()
             .server_name()
@@ -553,8 +558,13 @@ impl ProxyRuntime {
             .context("forwarding HTTP request")?;
         validate_upstream_framing(upstream.headers())?;
         let status = upstream.status();
-        let upstream_upgrade = (wants_upgrade && status == StatusCode::SWITCHING_PROTOCOLS)
-            .then(|| hyper::upgrade::on(&mut upstream));
+        let established_upgrade = wants_upgrade && status == StatusCode::SWITCHING_PROTOCOLS;
+        if !established_upgrade {
+            // Without a protocol switch the response hop-by-hop fields belong
+            // to the upstream connection and must not cross to the client.
+            strip_response_connection_headers(upstream.headers_mut());
+        }
+        let upstream_upgrade = established_upgrade.then(|| hyper::upgrade::on(&mut upstream));
         let response = upstream.map(ProxyBody::Incoming);
         if let (Some(client_upgrade), Some(upstream_upgrade)) = (client_upgrade, upstream_upgrade) {
             let idle = self.idle_timeout;
@@ -762,6 +772,12 @@ fn h3_failure(status: StatusCode, message: &str) -> H3Response {
 }
 
 fn target_from_request<B>(request: &Request<B>, client_ip: IpAddr) -> Result<Target> {
+    // RFC 9112 §5.4: more than one Host header is ambiguous. Picking the first
+    // one would check policy against one host while forwarding both upstream.
+    anyhow::ensure!(
+        request.headers().get_all(HOST).iter().count() <= 1,
+        "request has multiple Host headers"
+    );
     let uri = request.uri();
     let parsed;
     let authority = if let Some(authority) = uri.authority() {
@@ -780,14 +796,38 @@ fn target_from_request<B>(request: &Request<B>, client_ip: IpAddr) -> Result<Tar
         parsed = value.parse().context("malformed target authority")?;
         &parsed
     };
-    let port = authority.port_u16().unwrap_or_else(|| {
-        if uri.scheme_str() == Some("https") || request.method() == Method::CONNECT {
-            443
-        } else {
-            80
-        }
-    });
+    let port = match authority_port(authority)? {
+        Some(port) => port,
+        None if uri.scheme_str() == Some("https") || request.method() == Method::CONNECT => 443,
+        None => 80,
+    };
     Ok(Target::new(authority.host(), port, Some(client_ip)))
+}
+
+/// `Authority::port_u16` returns `None` both when the authority carries no
+/// port and when its port is malformed ("example.com:8080x"). A malformed port
+/// must fail the request instead of silently becoming the scheme default.
+fn authority_port(authority: &hyper::http::uri::Authority) -> Result<Option<u16>> {
+    let host_port = authority
+        .as_str()
+        .rsplit('@')
+        .next()
+        .expect("splitting yields a last item");
+    let rest = if let Some(bracketed) = host_port.strip_prefix('[') {
+        let (_, rest) = bracketed
+            .split_once(']')
+            .context("malformed target authority")?;
+        rest.strip_prefix(':').unwrap_or(rest)
+    } else if let Some((_, rest)) = host_port.split_once(':') {
+        anyhow::ensure!(!rest.contains(':'), "malformed target authority");
+        rest
+    } else {
+        ""
+    };
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(rest.parse().context("malformed target port")?))
 }
 
 fn rewrite_to_origin_form<B>(request: &mut Request<B>, target: &Target) -> Result<()> {
@@ -812,15 +852,22 @@ fn rewrite_to_origin_form<B>(request: &mut Request<B>, target: &Target) -> Resul
 
 fn is_upgrade<B>(request: &Request<B>) -> bool {
     request.headers().get(UPGRADE).is_some()
-        && request
-            .headers()
-            .get(CONNECTION)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(',')
-                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
-            })
+        && connection_tokens(request.headers())
+            .iter()
+            .any(|token| token.as_str() == "upgrade")
+}
+
+/// Every token across all `Connection` header values names a hop-by-hop header
+/// (RFC 9112 §7.6.1), and a message may carry more than one such value.
+fn connection_tokens(headers: &hyper::HeaderMap) -> Vec<hyper::header::HeaderName> {
+    headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter_map(|name| hyper::header::HeaderName::from_bytes(name.as_bytes()).ok())
+        .collect()
 }
 
 fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
@@ -828,12 +875,11 @@ fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
     request.headers_mut().remove(PROXY_AUTHENTICATE);
     request.headers_mut().remove("proxy-connection");
     if !preserve_upgrade {
-        let connection = request.headers_mut().remove(CONNECTION);
+        let named = connection_tokens(request.headers());
+        request.headers_mut().remove(CONNECTION);
         request.headers_mut().remove(UPGRADE);
-        if let Some(value) = connection.as_ref().and_then(|value| value.to_str().ok()) {
-            for name in value.split(',').map(str::trim) {
-                request.headers_mut().remove(name);
-            }
+        for name in named {
+            request.headers_mut().remove(name);
         }
     }
 }
@@ -850,14 +896,7 @@ fn validate_upstream_framing(headers: &hyper::HeaderMap) -> Result<()> {
 }
 
 fn strip_response_connection_headers(headers: &mut hyper::HeaderMap) {
-    let named = headers
-        .get_all(CONNECTION)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(',').map(str::trim))
-        .filter_map(|name| hyper::header::HeaderName::from_bytes(name.as_bytes()).ok())
-        .collect::<Vec<_>>();
-    for name in named {
+    for name in connection_tokens(headers) {
         headers.remove(name);
     }
     // The upstream's socket lifetime is independent of the downstream socket.
@@ -1454,6 +1493,132 @@ mod tests {
 
         assert!(!request.headers().contains_key(CONNECTION));
         assert!(!request.headers().contains_key("x-private"));
+    }
+
+    #[test]
+    fn every_connection_header_value_names_hop_by_hop_headers() {
+        let mut request = Request::builder()
+            .uri("/")
+            .header(CONNECTION, "x-first")
+            .header(CONNECTION, "x-second")
+            .header("x-first", "remove me")
+            .header("x-second", "remove me too")
+            .header("x-public", "keep me")
+            .body(())
+            .unwrap();
+
+        strip_proxy_headers(&mut request, false);
+
+        assert!(!request.headers().contains_key("x-first"));
+        assert!(!request.headers().contains_key("x-second"));
+        assert_eq!(request.headers()["x-public"], "keep me");
+    }
+
+    #[test]
+    fn response_hop_by_hop_headers_are_stripped_across_all_connection_values() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(CONNECTION, "x-first".parse().unwrap());
+        headers.append(CONNECTION, "x-second".parse().unwrap());
+        headers.insert("x-first", "remove me".parse().unwrap());
+        headers.insert("x-second", "remove me too".parse().unwrap());
+        headers.insert("x-public", "keep me".parse().unwrap());
+
+        strip_response_connection_headers(&mut headers);
+
+        assert!(!headers.contains_key("x-first"));
+        assert!(!headers.contains_key("x-second"));
+        assert_eq!(headers["x-public"], "keep me");
+    }
+
+    #[test]
+    fn upgrade_detection_reads_every_connection_header() {
+        let mut request = request(Method::GET, "/");
+        request
+            .headers_mut()
+            .insert(UPGRADE, "websocket".parse().unwrap());
+        request
+            .headers_mut()
+            .insert(CONNECTION, "keep-alive".parse().unwrap());
+        assert!(!is_upgrade(&request));
+
+        request
+            .headers_mut()
+            .append(CONNECTION, "UpGrAdE".parse().unwrap());
+        assert!(is_upgrade(&request));
+    }
+
+    #[test]
+    fn target_rejects_multiple_host_headers() {
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "first.example")
+            .header(HOST, "second.example")
+            .body(())
+            .unwrap();
+        let error = target_from_request(&request, "127.0.0.1".parse().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("multiple Host headers"));
+    }
+
+    #[test]
+    fn target_rejects_a_malformed_port_instead_of_defaulting() {
+        let client_ip = "127.0.0.1".parse().unwrap();
+        for authority in ["example.com:8080x", "example.com:80:90", "[2001:db8::1]:4x"] {
+            // An authority the http crate rejects stops even earlier.
+            if let Ok(parsed) = authority.parse::<hyper::http::uri::Authority>() {
+                assert!(
+                    authority_port(&parsed).is_err(),
+                    "{authority} must not be accepted"
+                );
+            }
+            let request = Request::builder()
+                .uri("/")
+                .header(HOST, authority)
+                .body(())
+                .unwrap();
+            assert!(target_from_request(&request, client_ip).is_err());
+        }
+    }
+
+    #[test]
+    fn target_accepts_authorities_with_and_without_a_well_formed_port() {
+        assert_eq!(
+            authority_port(&"example.com".parse().unwrap()).unwrap(),
+            None
+        );
+        assert_eq!(
+            authority_port(&"example.com:".parse().unwrap()).unwrap(),
+            None
+        );
+        assert_eq!(
+            authority_port(&"example.com:8080".parse().unwrap()).unwrap(),
+            Some(8080)
+        );
+        assert_eq!(
+            authority_port(&"[2001:db8::1]:8443".parse().unwrap()).unwrap(),
+            Some(8443)
+        );
+        assert_eq!(
+            authority_port(&"[2001:db8::1]".parse().unwrap()).unwrap(),
+            None
+        );
+        assert_eq!(
+            authority_port(&"user@host:8443".parse().unwrap()).unwrap(),
+            Some(8443)
+        );
+    }
+
+    #[test]
+    fn target_normalizes_ipv6_literal_hosts() {
+        let request = Request::builder()
+            .uri("/")
+            .header(HOST, "[2001:db8::1]:8443")
+            .body(())
+            .unwrap();
+        let target = target_from_request(&request, "127.0.0.1".parse().unwrap()).unwrap();
+
+        assert_eq!(target.host, "2001:db8::1");
+        assert_eq!(target.port, 8443);
+        assert_eq!(target.authority(), "[2001:db8::1]:8443");
     }
 
     #[test]

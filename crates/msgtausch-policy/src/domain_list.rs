@@ -282,13 +282,14 @@ impl RemoteDomainList {
             .with_context(|| {
                 format!(
                     "failed to fetch domain list from {} and its mirrors",
-                    self.key.primary
+                    redact_url(&self.key.primary)
                 )
             })
     }
 }
 
 fn fetch_domains(url: &str, format: DomainsUrlFormat, timeout: Duration) -> Result<Vec<String>> {
+    let label = redact_url(url);
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .build()
@@ -297,15 +298,36 @@ fn fetch_domains(url: &str, format: DomainsUrlFormat, timeout: Duration) -> Resu
         .get(url)
         .header("User-Agent", "msgtausch/0.1")
         .call()
-        .with_context(|| format!("GET {url} failed"))?;
+        .with_context(|| format!("GET {label} failed"))?;
     if !response.status().is_success() {
-        bail!("GET {url} returned HTTP {}", response.status());
+        bail!("GET {label} returned HTTP {}", response.status());
     }
     let body = response
         .into_body()
         .read_to_string()
-        .with_context(|| format!("could not read response body from {url}"))?;
+        .with_context(|| format!("could not read response body from {label}"))?;
     Ok(parse_domains(&body, format))
+}
+
+/// Render a source URL for an error message. Feed URLs routinely embed access
+/// credentials in the userinfo or query string, and these messages are cached
+/// and logged, so those parts are dropped before the URL is shown anywhere.
+fn redact_url(url: &str) -> String {
+    let without_fragment = url.split_once('#').map_or(url, |(prefix, _)| prefix);
+    let without_query = without_fragment
+        .split_once('?')
+        .map_or(without_fragment, |(prefix, _)| prefix);
+    let Some((scheme, rest)) = without_query.split_once("://") else {
+        return without_query.to_owned();
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!("{scheme}://{host}{path}")
 }
 
 fn parse_domains(content: &str, format: DomainsUrlFormat) -> Vec<String> {
@@ -417,5 +439,40 @@ mod tests {
         assert!(matcher.matches("EXAMPLE.COM."));
         assert!(matcher.matches("api.example.com"));
         assert!(!matcher.matches("notexample.com"));
+    }
+
+    #[test]
+    fn redacts_credentials_and_fragments_from_source_urls() {
+        assert_eq!(
+            redact_url("https://user:secret@example.com:8443/lists/feed.txt?token=abc#frag"),
+            "https://example.com:8443/lists/feed.txt"
+        );
+        assert_eq!(
+            redact_url("https://example.com/feed.txt"),
+            "https://example.com/feed.txt"
+        );
+        assert_eq!(redact_url("example.com/feed.txt"), "example.com/feed.txt");
+    }
+
+    #[test]
+    fn fetch_failures_never_echo_query_credentials() {
+        let list = RemoteDomainList::new(
+            "http://127.0.0.1:9/never-reached?token=topsecret".into(),
+            vec![],
+            DomainsUrlFormat::Plain,
+            1,
+            &CacheConfig {
+                max_retries: 0,
+                retry_delay_seconds: 0,
+                ..CacheConfig::default()
+            },
+        )
+        .unwrap();
+        let error = list.refresh().unwrap_err().to_string();
+        assert!(!error.contains("topsecret"), "leaked query token: {error}");
+        assert!(
+            error.contains("http://127.0.0.1:9/never-reached"),
+            "redaction removed the whole source: {error}"
+        );
     }
 }

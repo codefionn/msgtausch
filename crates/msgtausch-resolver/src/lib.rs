@@ -5,6 +5,7 @@
 //! round-robin order. A query never spills over into the next server.
 
 use std::{
+    collections::{HashMap, HashSet},
     error::Error,
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -30,6 +31,7 @@ use lru::LruCache;
 use msgtausch_config::{DnsConfig, DnsServerConfig, DnsServerKind};
 
 const TYPE_A: u16 = 1;
+const TYPE_CNAME: u16 = 5;
 const TYPE_AAAA: u16 = 28;
 const CLASS_IN: u16 = 1;
 
@@ -105,7 +107,6 @@ struct Records {
 pub struct Resolver {
     servers: Vec<DnsServerConfig>,
     next_server: AtomicUsize,
-    next_id: AtomicUsize,
     cache: Mutex<DnsCache>,
     cache_enabled: bool,
     cache_max_ttl: Duration,
@@ -118,7 +119,6 @@ impl Resolver {
         (config.enabled && !config.servers.is_empty()).then(|| Self {
             servers: config.servers.clone(),
             next_server: AtomicUsize::new(0),
-            next_id: AtomicUsize::new(1),
             cache: Mutex::new(DnsCache::new(config.cache_capacity)),
             cache_enabled: config.cache_enabled && config.cache_capacity > 0,
             cache_max_ttl: Duration::from_secs(config.cache_max_ttl_seconds),
@@ -202,10 +202,11 @@ impl Resolver {
     }
 
     async fn lookup_server(&self, server: &DnsServerConfig, host: &str) -> Result<Records> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u16;
+        // Transaction IDs are per-query randomness so an off-path attacker
+        // cannot predict them from an earlier observed query.
         let (a, aaaa) = join(
-            self.query(server, host, TYPE_A, id),
-            self.query(server, host, TYPE_AAAA, id.wrapping_add(1)),
+            self.query(server, host, TYPE_A, random_id()?),
+            self.query(server, host, TYPE_AAAA, random_id()?),
         )
         .await;
         combine_records([a, aaaa])
@@ -261,6 +262,15 @@ fn combine_records(results: [Result<Records>; 2]) -> Result<Records> {
     })
 }
 
+/// One unpredictable transaction ID per query. Predictable IDs let an off-path
+/// attacker forge a reply that matches an in-flight question.
+fn random_id() -> Result<u16> {
+    let mut bytes = [0_u8; 2];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("gathering DNS transaction ID randomness: {error}"))?;
+    Ok(u16::from_be_bytes(bytes))
+}
+
 async fn udp_exchange(address: &str, packet: Vec<u8>) -> Result<Vec<u8>> {
     let bind = if address.contains('[')
         || address
@@ -274,10 +284,16 @@ async fn udp_exchange(address: &str, packet: Vec<u8>) -> Result<Vec<u8>> {
     let socket = UdpSocket::bind(bind)
         .await
         .context("binding DNS UDP socket")?;
-    let BufResult(sent, _) = socket.send_to(packet.clone(), address).await;
+    // A connected UDP socket makes the kernel discard datagrams from any other
+    // source address, so a forged off-path reply never reaches the parser.
+    socket
+        .connect(address)
+        .await
+        .context("connecting DNS UDP socket")?;
+    let BufResult(sent, _) = socket.send(packet).await;
     sent.context("sending DNS UDP query")?;
-    let BufResult(received, buffer) = socket.recv_from(Vec::with_capacity(4096)).await;
-    let (length, _) = received.context("receiving DNS UDP reply")?;
+    let BufResult(received, buffer) = socket.recv(Vec::with_capacity(4096)).await;
+    let length = received.context("receiving DNS UDP reply")?;
     if length == buffer.len() {
         Ok(buffer)
     } else {
@@ -361,6 +377,48 @@ fn parse_response(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Vec<
     Ok(parse_records(packet, host, qtype, id)?.addresses)
 }
 
+/// One answer-section resource record. CNAME targets are decoded during the
+/// scan because their RDATA compression pointers resolve against the packet.
+struct Record<'a> {
+    name: String,
+    typ: u16,
+    class: u16,
+    ttl: u32,
+    data: &'a [u8],
+    cname_target: Option<String>,
+}
+
+/// Owner names whose address records legitimately answer `host`: the name
+/// itself and every name reachable from it through the reply's CNAME chain.
+fn answer_names(records: &[Record<'_>], host: &str) -> HashSet<String> {
+    let mut aliases: HashMap<&str, Vec<&str>> = HashMap::new();
+    for record in records {
+        if record.typ == TYPE_CNAME
+            && record.class == CLASS_IN
+            && let Some(target) = &record.cname_target
+        {
+            aliases
+                .entry(record.name.as_str())
+                .or_default()
+                .push(target.as_str());
+        }
+    }
+    let mut names = HashSet::from([normalize_name(host)]);
+    let mut pending = vec![normalize_name(host)];
+    while let Some(name) = pending.pop() {
+        let Some(targets) = aliases.get(name.as_str()) else {
+            continue;
+        };
+        for target in targets {
+            let target = normalize_name(target);
+            if names.insert(target.clone()) {
+                pending.push(target);
+            }
+        }
+    }
+    names
+}
+
 fn parse_records(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Records> {
     if packet.len() < 12 {
         bail!("DNS reply is shorter than its header");
@@ -390,10 +448,11 @@ fn parse_records(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Recor
     if !names_equal(&question, host) || reply_type != qtype || reply_class != CLASS_IN {
         bail!("DNS reply question does not match request");
     }
-    let mut addresses = Vec::new();
-    let mut min_ttl = None;
+    // Collect the answer section before interpreting it: which owner names are
+    // legitimate answers depends on the CNAME chain inside the same reply.
+    let mut records = Vec::new();
     for _ in 0..answers {
-        let _name = read_name(packet, &mut cursor)?;
+        let name = read_name(packet, &mut cursor)?;
         let typ = read_u16(packet, &mut cursor)?;
         let class = read_u16(packet, &mut cursor)?;
         let ttl = read_u32(packet, &mut cursor)?;
@@ -401,20 +460,54 @@ fn parse_records(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Recor
         let data = packet
             .get(cursor..cursor + length)
             .context("truncated DNS resource record")?;
+        let cname_target = if typ == TYPE_CNAME {
+            // RDATA is one domain name; compression pointers resolve against
+            // the whole packet, so parse it in place.
+            let mut target_cursor = cursor;
+            Some(read_name(packet, &mut target_cursor)?)
+        } else {
+            None
+        };
         cursor += length;
-        if class != CLASS_IN || typ != qtype {
+        records.push(Record {
+            name,
+            typ,
+            class,
+            ttl,
+            data,
+            cname_target,
+        });
+    }
+    let answer_names = answer_names(&records, host);
+    let mut addresses = Vec::new();
+    let mut min_ttl = None;
+    for record in &records {
+        let Record {
+            name,
+            typ,
+            class,
+            ttl,
+            data,
+            ..
+        } = record;
+        if *class != CLASS_IN || *typ != qtype {
             continue;
         }
-        match (typ, data) {
+        // Ignore records outside the queried name's CNAME chain. Accepting
+        // them would let a forged reply inject addresses for unrelated names.
+        if !answer_names.contains(&normalize_name(name)) {
+            continue;
+        }
+        match (*typ, *data) {
             (TYPE_A, [a, b, c, d]) => {
                 addresses.push(IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d)));
-                min_ttl = Some(min_ttl.map_or(ttl, |current: u32| current.min(ttl)));
+                min_ttl = Some(min_ttl.map_or(*ttl, |current: u32| current.min(*ttl)));
             }
             (TYPE_AAAA, bytes) if bytes.len() == 16 => {
                 let mut octets = [0; 16];
                 octets.copy_from_slice(bytes);
                 addresses.push(IpAddr::V6(Ipv6Addr::from(octets)));
-                min_ttl = Some(min_ttl.map_or(ttl, |current: u32| current.min(ttl)));
+                min_ttl = Some(min_ttl.map_or(*ttl, |current: u32| current.min(*ttl)));
             }
             _ => bail!("DNS reply has an invalid address record length"),
         }
@@ -494,8 +587,10 @@ fn read_u32(p: &[u8], c: &mut usize) -> Result<u32> {
     Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
 }
 fn names_equal(left: &str, right: &str) -> bool {
-    left.trim_end_matches('.')
-        .eq_ignore_ascii_case(right.trim_end_matches('.'))
+    normalize_name(left) == normalize_name(right)
+}
+fn normalize_name(name: &str) -> String {
+    name.trim_end_matches('.').to_ascii_lowercase()
 }
 fn is_no_records(error: &anyhow::Error) -> bool {
     error.downcast_ref::<NoRecords>().is_some()
@@ -532,6 +627,38 @@ mod tests {
         reply.extend_from_slice(&ttl.to_be_bytes());
         reply.extend_from_slice(&(data.len() as u16).to_be_bytes());
         reply.extend_from_slice(data);
+    }
+
+    fn encode_name(name: &str) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        for label in name.split('.') {
+            encoded.push(label.len() as u8);
+            encoded.extend_from_slice(label.as_bytes());
+        }
+        encoded.push(0);
+        encoded
+    }
+
+    fn append_answer_with_raw(
+        reply: &mut Vec<u8>,
+        owner: &[u8],
+        qtype: u16,
+        ttl: u32,
+        data: &[u8],
+    ) {
+        let answer_count = u16::from_be_bytes([reply[6], reply[7]]) + 1;
+        reply[6..8].copy_from_slice(&answer_count.to_be_bytes());
+        reply.extend_from_slice(owner);
+        reply.extend_from_slice(&qtype.to_be_bytes());
+        reply.extend_from_slice(&CLASS_IN.to_be_bytes());
+        reply.extend_from_slice(&ttl.to_be_bytes());
+        reply.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        reply.extend_from_slice(data);
+    }
+
+    fn append_answer_with_name(reply: &mut Vec<u8>, name: &str, qtype: u16, data: &[u8]) {
+        let owner = encode_name(name);
+        append_answer_with_raw(reply, &owner, qtype, 60, data);
     }
 
     #[test]
@@ -651,6 +778,42 @@ mod tests {
         let mut reply = build_query("other.test", TYPE_A, 7).unwrap();
         reply[2] = 0x81;
         reply[3] = 0x80;
+        assert!(parse_response(&reply, "example.test", TYPE_A, 7).is_err());
+    }
+
+    #[test]
+    fn ignores_address_records_outside_the_queried_name() {
+        // A forged reply that answers the right question but smuggles the
+        // address under an unrelated owner name must not be accepted.
+        let mut reply = reply_for("example.test", TYPE_A, 7);
+        append_answer_with_name(&mut reply, "other.test", TYPE_A, &[127, 0, 0, 1]);
+        assert!(parse_response(&reply, "example.test", TYPE_A, 7).is_err());
+    }
+
+    #[test]
+    fn accepts_addresses_reached_through_a_cname_chain() {
+        let mut reply = reply_for("example.test", TYPE_A, 7);
+        let chain_target = encode_name("cdn.test");
+        append_answer_with_raw(&mut reply, &[0xc0, 0x0c], TYPE_CNAME, 60, &chain_target);
+        append_answer_with_name(&mut reply, "cdn.test", TYPE_A, &[127, 0, 0, 1]);
+        assert_eq!(
+            parse_response(&reply, "example.test", TYPE_A, 7).unwrap(),
+            vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]
+        );
+    }
+
+    #[test]
+    fn rejects_addresses_on_an_unrelated_cname_chain() {
+        let mut reply = reply_for("example.test", TYPE_A, 7);
+        let chain_target = encode_name("cdn.test");
+        append_answer_with_raw(
+            &mut reply,
+            &encode_name("other.test"),
+            TYPE_CNAME,
+            60,
+            &chain_target,
+        );
+        append_answer_with_name(&mut reply, "cdn.test", TYPE_A, &[127, 0, 0, 1]);
         assert!(parse_response(&reply, "example.test", TYPE_A, 7).is_err());
     }
 
@@ -779,7 +942,6 @@ mod tests {
                     tls_host: None,
                 }],
                 next_server: AtomicUsize::new(0),
-                next_id: AtomicUsize::new(20),
                 cache: Mutex::new(DnsCache::new(0)),
                 cache_enabled: false,
                 cache_max_ttl: Duration::from_secs(60),
@@ -838,7 +1000,6 @@ mod tests {
                     tls_host: None,
                 }],
                 next_server: AtomicUsize::new(0),
-                next_id: AtomicUsize::new(40),
                 cache: Mutex::new(DnsCache::new(4)),
                 cache_enabled: true,
                 cache_max_ttl: Duration::from_secs(60),

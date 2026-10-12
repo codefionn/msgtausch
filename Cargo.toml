@@ -23,6 +23,7 @@ divan = "0.1.21"
 futures-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 futures-channel = "0.3"
 futures-util = "0.3"
+getrandom = "0.3"
 hcl-rs = "0.19"
 http-body-util = "0.1"
 hyper = { version = "1.12", default-features = false, features = ["client", "http1", "server"] }

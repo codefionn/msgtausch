@@ -52,6 +52,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY examples ./examples
+COPY tests ./tests
 
 FROM rust-checks AS format-check
 RUN cargo fmt --all --check
@@ -103,6 +104,7 @@ COPY flake.nix flake.lock ./
 COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY examples ./examples
+COPY tests ./tests
 RUN nix --extra-experimental-features 'nix-command flakes' build .#msgtausch && \
     test -x result/bin/msgtausch && \
     result/bin/msgtausch --help

@@ -718,13 +718,14 @@ impl ProxyRuntime {
                 "interception runtime is unavailable",
             )
         } else {
-            request.headers_mut().insert(
-                HOST,
-                target
-                    .authority()
-                    .parse()
-                    .expect("target authority is a header value"),
-            );
+            match target.authority().parse() {
+                Ok(host) => {
+                    request.headers_mut().insert(HOST, host);
+                }
+                Err(error) => {
+                    return self.failure(StatusCode::BAD_REQUEST, "invalid_target", error);
+                }
+            }
             self.forward_reusing(request, target, true)
                 .await
                 .unwrap_or_else(|error| {
@@ -796,12 +797,32 @@ fn target_from_request<B>(request: &Request<B>, client_ip: IpAddr) -> Result<Tar
         parsed = value.parse().context("malformed target authority")?;
         &parsed
     };
-    let port = match authority_port(authority)? {
-        Some(port) => port,
-        None if uri.scheme_str() == Some("https") || request.method() == Method::CONNECT => 443,
-        None => 80,
+    let default_port = if uri.scheme_str() == Some("https") || request.method() == Method::CONNECT {
+        443
+    } else {
+        80
     };
-    Ok(Target::new(authority.host(), port, Some(client_ip)))
+    let port = authority_port(authority)?.unwrap_or(default_port);
+    let target = Target::new(authority.host(), port, Some(client_ip));
+    // RFC 9112 §3.2.2/§5.4: a Host header that disagrees with the request-target
+    // authority is request confusion — policy would allow one host while the
+    // origin receives a different one in Host.
+    if let Some(host_value) = request
+        .headers()
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+    {
+        let host_authority = host_value
+            .parse::<hyper::http::uri::Authority>()
+            .context("malformed Host header")?;
+        let host_port = authority_port(&host_authority)?.unwrap_or(default_port);
+        let host_target = Target::new(host_authority.host(), host_port, None);
+        anyhow::ensure!(
+            host_target.host == target.host && host_target.port == target.port,
+            "Host header conflicts with request-target authority"
+        );
+    }
+    Ok(target)
 }
 
 /// `Authority::port_u16` returns `None` both when the authority carries no
@@ -831,6 +852,9 @@ fn authority_port(authority: &hyper::http::uri::Authority) -> Result<Option<u16>
 }
 
 fn rewrite_to_origin_form<B>(request: &mut Request<B>, target: &Target) -> Result<()> {
+    // An absolute-form request-target is authoritative: canonicalize Host to it
+    // so the origin can never see a different host than the one policy allowed.
+    let absolute_form = request.uri().authority().is_some();
     let uri = request
         .uri()
         .path_and_query()
@@ -838,14 +862,12 @@ fn rewrite_to_origin_form<B>(request: &mut Request<B>, target: &Target) -> Resul
         .map(Uri::from)
         .unwrap_or_else(|| Uri::from_static("/"));
     *request.uri_mut() = uri;
-    if !request.headers().contains_key(HOST) {
-        request.headers_mut().insert(
-            HOST,
-            target
-                .authority()
-                .parse()
-                .expect("target authority is a header value"),
-        );
+    if absolute_form || !request.headers().contains_key(HOST) {
+        let host = target
+            .authority()
+            .parse()
+            .context("target authority is not a valid header value")?;
+        request.headers_mut().insert(HOST, host);
     }
     Ok(())
 }
@@ -874,13 +896,18 @@ fn strip_proxy_headers<B>(request: &mut Request<B>, preserve_upgrade: bool) {
     request.headers_mut().remove(PROXY_AUTHORIZATION);
     request.headers_mut().remove(PROXY_AUTHENTICATE);
     request.headers_mut().remove("proxy-connection");
+    // Headers named by Connection are hop-by-hop and must never cross the proxy,
+    // even when the Connection/Upgrade pair itself is preserved for an upgrade.
+    let named = connection_tokens(request.headers());
     if !preserve_upgrade {
-        let named = connection_tokens(request.headers());
         request.headers_mut().remove(CONNECTION);
         request.headers_mut().remove(UPGRADE);
-        for name in named {
-            request.headers_mut().remove(name);
+    }
+    for name in named {
+        if preserve_upgrade && (name == CONNECTION || name == UPGRADE) {
+            continue;
         }
+        request.headers_mut().remove(name);
     }
 }
 
@@ -1426,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn origin_form_rewrite_preserves_path_query_and_existing_host() {
+    fn origin_form_rewrite_preserves_path_query_and_canonicalizes_host() {
         let target = Target::new("upstream.example", 8443, None);
         let mut without_host =
             request(Method::GET, "http://upstream.example:8443/a/path?key=value");
@@ -1434,13 +1461,95 @@ mod tests {
         assert_eq!(without_host.uri(), "/a/path?key=value");
         assert_eq!(without_host.headers()[HOST], "upstream.example:8443");
 
+        // Absolute-form is authoritative: a stale Host header is replaced with
+        // the canonical target authority instead of being forwarded as-is.
         let mut with_host = Request::builder()
             .uri("http://upstream.example:8443/")
             .header(HOST, "original.example")
             .body(())
             .unwrap();
         rewrite_to_origin_form(&mut with_host, &target).unwrap();
-        assert_eq!(with_host.headers()[HOST], "original.example");
+        assert_eq!(with_host.headers()[HOST], "upstream.example:8443");
+
+        // Origin-form keeps the Host header that produced the target.
+        let mut origin = Request::builder()
+            .uri("/a/path?key=value")
+            .header(HOST, "upstream.example:8443")
+            .body(())
+            .unwrap();
+        rewrite_to_origin_form(&mut origin, &target).unwrap();
+        assert_eq!(origin.uri(), "/a/path?key=value");
+        assert_eq!(origin.headers()[HOST], "upstream.example:8443");
+    }
+
+    #[test]
+    fn target_rejects_host_header_conflicting_with_absolute_form() {
+        let client_ip = "127.0.0.1".parse().unwrap();
+        let conflicting_host = Request::builder()
+            .uri("http://allowed.example/")
+            .header(HOST, "evil.example")
+            .body(())
+            .unwrap();
+        let error = target_from_request(&conflicting_host, client_ip).unwrap_err();
+        assert!(error.to_string().contains("conflicts"));
+
+        // Host without a port means the scheme default (80), conflicting with :8080.
+        let mismatched_port = Request::builder()
+            .uri("http://allowed.example:8080/")
+            .header(HOST, "allowed.example")
+            .body(())
+            .unwrap();
+        assert!(target_from_request(&mismatched_port, client_ip).is_err());
+
+        let matching = Request::builder()
+            .uri("http://allowed.example:8080/")
+            .header(HOST, "allowed.example:8080")
+            .body(())
+            .unwrap();
+        let target = target_from_request(&matching, client_ip).unwrap();
+        assert_eq!(target.host, "allowed.example");
+        assert_eq!(target.port, 8080);
+    }
+
+    #[test]
+    fn target_rejects_host_header_conflicting_with_connect() {
+        let client_ip = "127.0.0.1".parse().unwrap();
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri("tunnel.example:443")
+            .header(HOST, "other.example:443")
+            .body(())
+            .unwrap();
+        let error = target_from_request(&request, client_ip).unwrap_err();
+        assert!(error.to_string().contains("conflicts"));
+
+        // A CONNECT target with default port accepts a portless matching Host.
+        let matching = Request::builder()
+            .method(Method::CONNECT)
+            .uri("tunnel.example:443")
+            .header(HOST, "tunnel.example")
+            .body(())
+            .unwrap();
+        let target = target_from_request(&matching, client_ip).unwrap();
+        assert_eq!(target.host, "tunnel.example");
+        assert_eq!(target.port, 443);
+    }
+
+    #[test]
+    fn upgrade_preserves_connection_and_upgrade_but_strips_named_headers() {
+        let mut request = Request::builder()
+            .uri("/")
+            .header(CONNECTION, "keep-alive, Upgrade, x-private")
+            .header(UPGRADE, "websocket")
+            .header("x-private", "remove me")
+            .body(())
+            .unwrap();
+
+        strip_proxy_headers(&mut request, true);
+
+        assert!(request.headers().contains_key(CONNECTION));
+        assert!(request.headers().contains_key(UPGRADE));
+        assert!(!request.headers().contains_key("x-private"));
     }
 
     #[test]
@@ -1622,13 +1731,13 @@ mod tests {
     }
 
     #[test]
-    fn preserving_upgrade_keeps_upgrade_and_connection_headers() {
+    fn preserving_upgrade_keeps_upgrade_and_connection_but_strips_named_headers() {
         let mut request = Request::builder()
             .uri("/")
             .header(PROXY_AUTHORIZATION, "secret")
             .header(CONNECTION, "upgrade, x-private")
             .header(UPGRADE, "websocket")
-            .header("x-private", "needed by upgrade")
+            .header("x-private", "hop-by-hop, must not cross the proxy")
             .body(())
             .unwrap();
 
@@ -1637,7 +1746,8 @@ mod tests {
         assert!(!request.headers().contains_key(PROXY_AUTHORIZATION));
         assert_eq!(request.headers()[CONNECTION], "upgrade, x-private");
         assert_eq!(request.headers()[UPGRADE], "websocket");
-        assert_eq!(request.headers()["x-private"], "needed by upgrade");
+        // Headers named by Connection are hop-by-hop even in an upgrade request.
+        assert!(!request.headers().contains_key("x-private"));
     }
 
     #[test]

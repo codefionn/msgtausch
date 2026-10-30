@@ -1,0 +1,4 @@
+ex
+forwards = [{ lassifier = { type = "ref", id = "corp" } }]
+dns = { estandardnabled = true, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+orservability = { prometheus-l9090" }

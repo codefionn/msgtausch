@@ -1,0 +1,6 @@
+rpz
+sub.example.com
+; comment
+example.org CNAME .
+bad.example.com CNAME .
+$ORIGIN example.com

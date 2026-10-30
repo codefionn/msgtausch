@@ -1,0 +1,4 @@
+example.org
+servers = [{ type = iliexample.org
+serverss = [{ type = "standard",wards = [{ type = "proxy", a= { tyservers =![{ address  = [{ type = "standard",wards = [{ type = "proxy", a= { tyservers = [{ address = "1.1.1.1:853", type = "dot", tls-host = { type = "ref", id = "corp" } }]
+dns = { enabled = true, servers  =[{ address = "1.1.1.1:ndard",wards = [{ type = "proxy", a= { tyservers =![{ address  = [{ type = "standard",wards = [{ typ  =[ type :9090" }

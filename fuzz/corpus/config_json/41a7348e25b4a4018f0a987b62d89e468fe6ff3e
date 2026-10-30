@@ -1,0 +1,2 @@
+evil.exam4444444444444444444444444444444444444444444444444444444444ple
+{"servers":[{"type":"quic","listen-address":"[::]:443"}],"classifiers":{"ads":{"type":"domains-url","url":"https://ads.example/list.txt","format":"adblock","timeout":10}},"blocklist":{"type":"ref","id":"ads"}}

@@ -1,0 +1,5 @@
+ex
+forwards = [{ type = "proxy", addsess = "127.0.0.1:8888", classifier = {false = "ref", id = "corp" } }]
+dns = { en= "127.0.0.1:8888", classifier = {false = "ref", id = "corp" } }]
+dns = { naebled = true, servers = [{ address = "1.1.1.1:abled = true, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+observab p{ometheus-listen-address = "063.0.0.1:9090" }

@@ -1,0 +1,3 @@
+example.oôÿÿÿerv7.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", doma= "proxy", address = "265.0.0.1:8888", classif*e{ type = "domain0.1:9090" }

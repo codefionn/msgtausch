@@ -1,0 +1,2 @@
+ex
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", enabled = true, servers = [{ address = "0.1.1.}

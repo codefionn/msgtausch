@@ -1,0 +1,6 @@
+8080" }]
+timeout-seconds = 13
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwar{ corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy", address = "132.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+dns = { enadrdeess = "127.0.0.1:9090" }

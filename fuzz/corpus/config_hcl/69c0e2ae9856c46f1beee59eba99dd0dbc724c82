@@ -1,0 +1,2 @@
+example.org
+sers = { corp = { type = "domain", si= "1.1.1.1:853", type = "dos-ho.1:9090" }

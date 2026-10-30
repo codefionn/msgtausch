@@ -1,0 +1,4 @@
+ex
+forwards = [{ type = "proxy", addressref = "127.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+dns = { enabled = true, serversudp = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+obNNNNNNNNNNNNNNNservability = { prometheus-ten-address = "127.0.0.1:9090" }

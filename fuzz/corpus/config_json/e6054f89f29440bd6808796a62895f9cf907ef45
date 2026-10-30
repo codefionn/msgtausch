@@ -1,0 +1,11 @@
+example.com
+{
+  "servers": [
+    {
+      "type": "standard",
+ statisticsen-address": "127.0.0.1:8080",
+      "enabled": tra.b.c
+{"serveus":[{"type":"https","listen-address":"0.0.0.0:8443","max-connections":10,"connections-per-client":1}],"max-concurrent-connections":100}rvability": {
+    "prometheus-listen-address": "127.0.0.1:9090"
+  }
+}

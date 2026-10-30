@@ -1,0 +1,4 @@
+network"servers":[{"type":"enabledhttps","listen-address":"0.0.0.0:8443","max-connectiones{vers": [
+    {
+      "type": "standard",
+   rent-connections":100}

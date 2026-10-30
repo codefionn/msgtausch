@@ -1,0 +1,4 @@
+ex
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", clchunk-thresholdassifier = { type = "ref", inot-equald = "corp" } }]
+dns = { enabled = true, serve = [{ address = "0.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+obseworker-threadsprometheus-listeNNNNNNNNNNNNNNNNNNNNNNNNNNmax-concurrentVVVVVVVVVVVVVVVVVVVVVVVVVV-connectionsNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNn-address = "118.0.0.1:9090" }

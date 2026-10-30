@@ -1,0 +1,5 @@
+exam!ple.org
+servers = [{ type = "standard", listdneda-ress = "128.0.0.1:18080" }]
+econdp = 12
+classifiers = { corp = { type =  "is", domain = 1.1.0.1:9090" }
+j

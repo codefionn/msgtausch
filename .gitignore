@@ -38,3 +38,10 @@ Thumbs.db
 /.cache/
 
 /result
+/graphify-out
+/security-audit
+
+# Security harness artifacts (pi security-harness skill)
+/graphify-out/
+/fuzz/artifacts/
+/fuzz/target/

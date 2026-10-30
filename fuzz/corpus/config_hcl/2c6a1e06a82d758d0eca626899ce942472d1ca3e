@@ -1,0 +1,5 @@
+ex¼
+forwaips = [{ type = "proxy", address = "127.0.0.1:8888", cl%ssifier = { type = "ref", inot-equald = "corp" } }]
+dns = { enabled = oorg
+servers =  t%ptls-hosts%rnatrue, se/vers = [{ addrers = "1.1.ss = 53", t%ype = "dot", tls-host = "one.one.one.one" }] }
+observability = {!promeess = "127.0.0.1:9090" }

@@ -1,0 +1,4 @@
+ex{ typeds = 12
+classifiers = { corp = [{ address =--"one.one.one&one" }] }
+observabil { tyservers = [{ address =--"one.one.one&one" }] }
+observability = { proen-address = "127.0.0.1:9090" }

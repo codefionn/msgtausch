@@ -1,0 +1,33 @@
+[package]
+name = "msgtausch-fuzz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+msgtausch-config = { path = "../crates/msgtausch-config" }
+msgtausch-policy = { path = "../crates/msgtausch-policy" }
+msgtausch-resolver = { path = "../crates/msgtausch-resolver" }
+
+# Keep the fuzz crate out of the main workspace (members = ["crates/*"]).
+[workspace]
+
+[[bin]]
+name = "config_json"
+path = "fuzz_targets/config_json.rs"
+
+[[bin]]
+name = "config_hcl"
+path = "fuzz_targets/config_hcl.rs"
+
+[[bin]]
+name = "domain_list"
+path = "fuzz_targets/domain_list.rs"
+
+[[bin]]
+name = "dns_reply"
+path = "fuzz_targets/dns_reply.rs"

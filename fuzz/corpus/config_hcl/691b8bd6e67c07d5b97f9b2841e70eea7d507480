@@ -1,0 +1,5 @@
+ex¼
+forwaips = [{ type = "proxy", address = "127.0.0.1:8888", cl%ssifier = { type = "ref", inot-equald = "corp" } }]
+dns = { enabled = oorg
+servers =  t%ptls-hosts%rnatrue, se/vers = [{ address = "2.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+observability = {!prometh/us-listen-address = "127.0.0.1:9090" }

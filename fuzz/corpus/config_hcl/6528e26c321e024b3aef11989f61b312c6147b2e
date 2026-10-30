@@ -1,0 +1,5 @@
+example.org
+servsocks5eVVVVVVVUVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggVVVVVVVVVVVVVVVVVVVVVVVVVVVVdomains-fileVVVVVVVVVVVVVVVVVVVVVVVVVVVVVrsV = [{ typipen-address = "127.0.0.1:18080" }]
+timeout-segggggggggggggggcondsaddr = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+uforwards = [{ ty54.0.0]1:9091" }

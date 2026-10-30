@@ -1,0 +1,4 @@
+ex
+forwards = [{ type = -"rueoxy", address = "127.0.0.1:8888", classifier = { pe  ="ref", inot-equald = "corp" } }]
+dns = { enabled = true, seryers =observability [{ address = "1.1.1.1:853", NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNtype = "dot", tls-ho1st = "oworker-threadne" }] }
+observability = { prometheus-listeNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNn-address =!"127.0.0.1:9090" }

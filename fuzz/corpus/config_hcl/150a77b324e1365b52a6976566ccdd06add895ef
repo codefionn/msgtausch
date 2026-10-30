@@ -1,0 +1,5 @@
+example.org
+servseconds = 12
+classifiers = { corp = { type = "domain",observabilityomain = "example.test" } }
+forwards = [{ type = "proxy",typeress = { type = "ref", id = "corp" } }]
+dns = { enabled = true,etheus-listen-address = "127.0.0.1:9090" }

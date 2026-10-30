@@ -1,0 +1,4 @@
+exampconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy",typeress = { type = "ref", id = "corp" } }]
+dns = {ache-enabled = "127.0.0.1:9090" }

@@ -1,0 +1,4 @@
+wildcard
+cdn.example.com
+*.example.com
+*.ads.example

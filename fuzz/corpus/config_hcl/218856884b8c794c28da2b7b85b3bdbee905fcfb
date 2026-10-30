@@ -1,0 +1,5 @@
+example.org
+servers = [{ type = "standard", liwten-address = "127.0.0.1:18080" }]
+timeout-seconprometheus-listen-addressds = 12
+classifiers = { corp = { type = "domain", opain = "example.test" } }
+forwards = [{ type = "proxy", address = "468.0.0.

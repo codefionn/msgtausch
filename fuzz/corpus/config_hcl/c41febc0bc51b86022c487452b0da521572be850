@@ -1,0 +1,3 @@
+example.org
+servers = [{ type = "standard", lhsten-address = "127.ref", id = "corp" },}]
+dns ost = 1" }}

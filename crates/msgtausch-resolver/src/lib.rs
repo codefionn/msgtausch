@@ -419,6 +419,17 @@ fn answer_names(records: &[Record<'_>], host: &str) -> HashSet<String> {
     names
 }
 
+/// Fuzz-only entry point exposing the DNS reply parser.
+#[doc(hidden)]
+pub fn parse_dns_reply_for_fuzz(
+    packet: &[u8],
+    host: &str,
+    qtype: u16,
+    id: u16,
+) -> Result<Vec<IpAddr>> {
+    Ok(parse_records(packet, host, qtype, id)?.addresses)
+}
+
 fn parse_records(packet: &[u8], host: &str, qtype: u16, id: u16) -> Result<Records> {
     if packet.len() < 12 {
         bail!("DNS reply is shorter than its header");

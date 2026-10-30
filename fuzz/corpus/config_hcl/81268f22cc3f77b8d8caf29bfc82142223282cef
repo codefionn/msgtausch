@@ -1,0 +1,9 @@
+example.org
+servers = [{!type = "standard", listen-address = "127.0.0.0" }]
+timeout-stcpnds = 12
+classifiers E { corp = { tyomain = "example.test" } }
+forwards = [{ type = "proxy", address = "265.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+dns = { enabloncurrent-connecncuraed = true, servers = [{ address = "0.1.1.1:853", type = "done" }] }
+obsends = 12
+classifiers E { corp = { tyomain = "example.test" } }
+forwa

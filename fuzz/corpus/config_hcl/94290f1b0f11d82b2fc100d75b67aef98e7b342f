@@ -1,0 +1,5 @@
+example.*org
+sers = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example$${x-idle-conns.test" } }
+forwards = [{ type = "proxy", addrexes
+s = "12

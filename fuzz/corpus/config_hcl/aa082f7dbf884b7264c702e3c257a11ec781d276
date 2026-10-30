@@ -1,0 +1,5 @@
+exalpexample.org
+srvers = [{ type = "standard", listen-address = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers=  { corp = { tyservers = [{ address = "1.1.1.1:853"le.o, typerg
+se 

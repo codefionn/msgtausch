@@ -1,0 +1,4 @@
+example.org
+servers =G[{ type = "standard", listers = { corl = { type = "${!pr}est" } }
+forwards = assifiers = { corl = { type = "${!pr}est" } }
+folassifier = { type = "re}

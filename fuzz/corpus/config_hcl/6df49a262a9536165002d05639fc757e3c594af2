@@ -1,0 +1,5 @@
+example.org
+servseconds = 12
+clasiesrfis = { corp = { type = "domain",observabilityomain = "example.test" } }
+forwarss = "12type = "proxy",typeress = { type = "ref", id = "corp" } }]
+dns = { enabled = true,etheus-listen-address = "127.0.0.1:9090" }

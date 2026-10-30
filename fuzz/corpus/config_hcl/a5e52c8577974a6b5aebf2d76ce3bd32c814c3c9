@@ -1,0 +1,5 @@
+example.org
+servers = [{ type = "stan$ard", listen-address = "063.0.0.1:18080" }]
+timeout-seconds0= 12
+classifiers = { corp < { tyservers = [{ address = "1.1.1.1:853", type = "dot", tls-host =-"on;.one.one&one" }] }
+observability = { prometheus27.0.0.1:9090" }

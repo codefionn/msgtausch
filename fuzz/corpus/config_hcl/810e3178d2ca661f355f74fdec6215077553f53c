@@ -1,0 +1,7 @@
+example.org
+servers = [{ type = "stanrdda", listen-address = "127.0.0.1:10" }]
+/*timeouoc-tsends = 06
+classifiers =ype = 6stanrdda", listen-address = "127.0.ample.org
+servers = [{ type = "stanrdda", listen-add080" }]
+timeouoc-tsends = 12
+class*/ifiers = { corp = { type = "domain", opexampss = "is", domai1.1.1.1:

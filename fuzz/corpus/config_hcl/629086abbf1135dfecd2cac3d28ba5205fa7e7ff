@@ -1,0 +1,2 @@
+examp{ ty=="st}
+observability = { prometheuc-listen-address = "127.0.0.1:9090" }

@@ -1,0 +1,7 @@
+example.org
+servers = [{ type = "standard", listen-address = "127.0.0.1:180<0" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+88example.aex
+for888ref"ty

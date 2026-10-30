@@ -328,6 +328,28 @@ impl Config {
         }
     }
 
+    /// Fuzz-only entry point mirroring [`Config::load_file`] without filesystem
+    /// access: `format` is `"json"` or `"hcl"`.
+    #[doc(hidden)]
+    pub fn from_text_for_fuzz(
+        text: &str,
+        format: &str,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let value = match format {
+            "json" => serde_json::from_str(text)
+                .map_err(|error| ConfigError::Parse(format!("JSON: {error}")))?,
+            "hcl" => {
+                hcl::from_str(text).map_err(|error| ConfigError::Parse(format!("HCL: {error}")))?
+            }
+            other => return Err(ConfigError::UnsupportedFormat(other.to_owned())),
+        };
+        let mut config = Self::from_value(value, environment)?;
+        config.apply_environment(environment)?;
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Loads one file from defaults, then applies the supplied environment.
     pub fn load_file(
         path: impl AsRef<Path>,

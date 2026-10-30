@@ -1,0 +1,2 @@
+ex
+forwards = [{ type = "proxy", addressworker-threads = "127.0.0.1:8888", classifiernot-contain/max-littier-threads = "127.0.0.2:8888", classifiernot-contain/maxssworker-threads = "127.0.0.1:8888", classifiernot-contain/max-concurrent-ctls-hostrker-threads = "127.0.0.1:8888", classifiernot-contain/max-concurrent-connecti-hostrker-threads = "127.0.0.1:8888", classifiernot-contain/max-concurrent-connecthrer-threonnectier-threads = ";27.0.0.1:8888", c-coards = [{ type = "pro

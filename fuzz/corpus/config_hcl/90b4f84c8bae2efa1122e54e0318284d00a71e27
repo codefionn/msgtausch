@@ -1,0 +1,5 @@
+example.org
+servers = [{ type = "standard", listen-address = "127.0.0." }]
+timeout-seconds = 12
+classifiers = { max-retriesservers = [{ address = "1.1.1.1:853", type = "dot", tls-host =-"one.one.one&one" }] }
+observability = { prometheus-listen-address = "127.0.0.1:9090" }

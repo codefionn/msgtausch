@@ -1,0 +1,5 @@
+example.org
+servers = [{ type = "stanrdda", listen-address = "12force-ipv4080" }]
+timeomax-retriesut-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example>test" } }
+]or090" }

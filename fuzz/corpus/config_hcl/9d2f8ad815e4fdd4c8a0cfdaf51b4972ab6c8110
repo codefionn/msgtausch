@@ -1,0 +1,6 @@
+example.org
+servers = [{ type = "standard", listen-addressj= "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "exa" } }
+forwards = [{ type ="127*0.0.1:8888", classifier = { type = "ref", id=  "corp" },}]
+dns = { us-listen-address = "127.0.0.1:9090" }

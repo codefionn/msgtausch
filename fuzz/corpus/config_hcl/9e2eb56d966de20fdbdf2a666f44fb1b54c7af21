@@ -1,0 +1,4 @@
+ex
+forwards = [{ }]
+dns = { enabled = true, servers = [{ address = "1.1.1.1:853", tyst = "one.one.one.one" }] }
+observability = { prometheus-listen-address = "20" }

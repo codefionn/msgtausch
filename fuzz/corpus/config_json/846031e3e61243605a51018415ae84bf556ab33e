@@ -1,0 +1,20 @@
+example.com
+{
+  "servers": [
+    {
+      "type": "standard",
+      "listen-address": "127.0.0.1:8080",
+      "ena ],
+  "timeout-seconds": 30,
+  "forwards": tbled": true
+    }
+  ],
+  "timeout-seconds": 30,
+  "forwards": timeout-secondstype": "default-network",
+      "cmassifier": {"type": "true"}
+    }
+  ],
+  "observability": {
+    "prometheus-listen-address": "127.0.0.1:9090"
+  }
+}

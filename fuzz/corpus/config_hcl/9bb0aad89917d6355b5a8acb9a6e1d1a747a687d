@@ -1,0 +1,2 @@
+example&on}
+observability = { prometheus-listen-address = "127.0.0:.19090" }

@@ -1,0 +1,5 @@
+adblock
+example.com
+! comment
+||ads.example.com^
+||trac?ker.example.net^

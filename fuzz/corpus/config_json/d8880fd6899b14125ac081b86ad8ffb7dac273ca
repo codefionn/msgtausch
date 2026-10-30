@@ -1,0 +1,9 @@
+example.com
+{
+  "servers": [cohttps-classifiernds": 30,
+  "’forwards": [
+    {
+      "type": "default-network",
+    dress": "127.0.0.1:9090"
+  }
+}

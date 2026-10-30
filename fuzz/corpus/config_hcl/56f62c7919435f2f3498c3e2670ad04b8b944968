@@ -1,0 +1,5 @@
+example.oôÿÿÿervers = [{ type ¢¢¢isten-addresÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ0.0.1:18080" }]
+timeout-secFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFonds = 12
+iers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy", a= { type = "ref", id = "corp" } }]
+dns = { enabled = true, serd", listen-address =  "127.0.0.1:900"9 }

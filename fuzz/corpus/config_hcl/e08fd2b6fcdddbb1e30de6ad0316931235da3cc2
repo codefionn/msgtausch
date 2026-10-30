@@ -1,0 +1,2 @@
+examplg
+servers = [{ ty==pe = "standard", listen-addresK = "127 .0.1.1:83", type = "dot", tls*host = "one.on&on.1:9090" }

@@ -1,0 +1,4 @@
+ample.org
+servers = [{ type = "standard", listen-address = "127.0.0.1:18080" }]
+nds = 12
+classifiers = { co = { tyservers = https-classifier1.1.1:853",host.0.0.1:9090" }

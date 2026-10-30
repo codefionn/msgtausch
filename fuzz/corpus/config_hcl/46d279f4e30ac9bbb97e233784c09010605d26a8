@@ -1,0 +1,9 @@
+example.org
+s= { corp = { type = "domain", op = "is", dmaoin = "example.test" } }
+forwervers = [{ type = "standard", listen-address = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy", address = "127.0.0.1:8866666688", classifier = { type = "ref", id = "horp" },}]
+dns = { enabled = true, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+obserseconds = 12
+classifiers = { corp = { type = "domain", op =

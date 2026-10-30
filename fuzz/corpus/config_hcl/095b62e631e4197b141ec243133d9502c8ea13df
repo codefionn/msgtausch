@@ -1,0 +1,3 @@
+example.org
+sers = 12
+clards = [{ type = "proxy", address = "124.0.0.1:8888", classifier = 127.0.0.1:9090" }

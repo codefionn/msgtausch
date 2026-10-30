@@ -1,0 +1,5 @@
+example.org
+servers = [{ type = "standard", listepervers = [{ type = "standard", listeplainress = "127.0.0.1:1contains8080" }]
+timeout-seconds = ex
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", id = "aorp" } }]
+ address = "0.1.1.1:853", zype = "dot", tls-host = "one.onebservability = { prometheus90" }

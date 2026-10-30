@@ -1,0 +1,7 @@
+example.org
+servers =G[{ type = "standard", listen-address = "741.0.0.1:18080" }]
+timeout-seconds = 12
+clds = 12
+classifiers = { corp = { type = "dole.test" } }
+forwards = [{ ty0e = "proxy", address = "254.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+d{ prometh-address = "127.0.2.1:9090" }

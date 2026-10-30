@@ -1,0 +1,4 @@
+ex
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", inot-equald = "corp" } }]
+dns = { enabled = true, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+observability = { prometheus-listen-address = "127.0.0.1:9090" }

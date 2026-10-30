@@ -1,0 +1,5 @@
+exam.0.0.1:18080" }]
+timeout-seconds = 11
+classifiers = { corp = { type = "domain",observabilityomain = "example.etst" } }
+forwards = [{ type = "proxy",typeress = { type = " f",reid = "corp" } }]
+dns = { enabled = true,etaddress = "127.0.0.1:9090" }

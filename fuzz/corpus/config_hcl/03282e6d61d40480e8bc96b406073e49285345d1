@@ -1,0 +1,6 @@
+example.org
+servers = [{ type = "standard", listen-aKddress = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain",observabilityomain = "example.etst" } }
+forwards = [{ type = "proxy",typeress = { type = "ref", id = "corp" } }]
+dns = { enabled = true,etheus-listen-address = "127.0.0.1:9090" }

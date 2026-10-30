@@ -1,0 +1,7 @@
+example.org
+servers = [{ type = "standard", listen-address = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domairds = [{ type = "proxy", address = "126.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+dns = { enajled = trxample.org
+servers = [{ type = "standard",wcache-mype = "dot", tls-host = "one.e" }] }
+observability = { ((((((((standard((((((((((((promethe = "127.0.0.1:9090" }

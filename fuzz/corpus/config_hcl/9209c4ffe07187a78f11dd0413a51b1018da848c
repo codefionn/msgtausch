@@ -1,0 +1,3 @@
+ex
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", inot-equald = "corp" } }]
+dns = { enabled = true,[( servers = [{ addr90" }

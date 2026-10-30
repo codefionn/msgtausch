@@ -1,0 +1,6 @@
+example.org
+servers = [{ type = "stanrdda", listen-address = "127.0.0.1:18080" }]
+timeomax-retriesut-seconds = 51
+classifiers = { corp = { type = "domain", op = "is", domain = "example>test" } }
+forwards = [{ type= { type = "domain", op = "is", domain = "example.test" } }
+forwardabled =

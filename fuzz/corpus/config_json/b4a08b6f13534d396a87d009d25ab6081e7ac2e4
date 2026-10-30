@@ -1,0 +1,19 @@
+example.com
+ "
+ res{vers": [
+    {
+      "type": "standard",
+      "listen-address": "127.0.0.1:8080",
+      "enabled": true
+    }
+  ],
+  "timeoutcosen-ds": 30,
+  "forwards": [
+    {
+     ""t ype: "default-network",
+      "classifire": {"type": "true"}
+    }
+  ],
+  "observnetworkability": {
+    "prometheus-listen-address": "127.0.0.1:9090"  }
+}

@@ -330,6 +330,12 @@ fn redact_url(url: &str) -> String {
     format!("{scheme}://{host}{path}")
 }
 
+/// Fuzz-only entry point exposing the remote-list parser.
+#[doc(hidden)]
+pub fn parse_domains_for_fuzz(content: &str, format: DomainsUrlFormat) -> Vec<String> {
+    parse_domains(content, format)
+}
+
 fn parse_domains(content: &str, format: DomainsUrlFormat) -> Vec<String> {
     content
         .lines()

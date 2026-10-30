@@ -1,0 +1,4 @@
+ev
+default-ttlforwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", inot-equald = "corp" } }]
+dns = { enabled = ne.one.one.onetrue, servers = [{ address = "0.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+obseraddressy = { prometheus-listeNNNNNNNNNNNNNNNNrecordNNNNNNNNNNmax-concurrent-connectioNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNn-atdress = "127.0.0.1:9090" }

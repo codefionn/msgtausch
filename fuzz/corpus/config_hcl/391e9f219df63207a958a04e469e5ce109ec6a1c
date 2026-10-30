@@ -1,0 +1,6 @@
+example.org
+servsocks5eVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVrs = [{ typsten-address = "127.0.0.1:18080" }]
+timeout-secondsaddr = 12
+classifiers = { corp = { op = "is", domain = "example.test" } }
+uforwards = [{ type = "ppoxy", address e.otls-hos}t] }
+obsers-listen-addres27.0.0]1:9091" }

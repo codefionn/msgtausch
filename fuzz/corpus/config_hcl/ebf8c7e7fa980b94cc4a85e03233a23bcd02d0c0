@@ -1,0 +1,6 @@
+example.orgnegative-cache-ttl-secondsdard", listen-address = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "exam66666666666666666666ple.test" } }
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", id = "corp" },}]
+dns = { enabled = true, servers = [{ address = "4.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+observability = { prometheus-listen-address = "127.0.0.1:9090" }

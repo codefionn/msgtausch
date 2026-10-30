@@ -1,0 +1,6 @@
+example.o-g
+serveimeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy", address = "127.0.0.1:8887", classifier = { type = "ref", id = "horp" },}]
+dns = { enabled = true, server=s  [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+observability = { prometheus-listen-address = "127.0.0.1:9090" }

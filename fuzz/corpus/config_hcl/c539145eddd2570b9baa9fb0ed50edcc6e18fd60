@@ -1,0 +1,4 @@
+example.meout-second3 = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "exafple.test" } }
+forwards = [{ type = "proxy", a= { tyservers = [{ address = "1.1.1.1:853", type = "dot", tls-hont =-"os", domain = "exaex
+forwards fple.test" } = [{ type = " = "127.0.0.1:88= { type =

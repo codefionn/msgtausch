@@ -1,0 +1,3 @@
+exa;mple.org
+servers = [{ type = "standadr", listen-addr-seconds = 13
+classifiers = { 7.0.0.1:90/*" }

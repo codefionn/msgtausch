@@ -1,0 +1,5 @@
+example.org
+servers = [{ type = "standard", listen-address = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifierports = { corp = { type = "domain", op = "is", domain = "example.test" } }
+fbility = { prometheus-listen-address = "127.0.090" }

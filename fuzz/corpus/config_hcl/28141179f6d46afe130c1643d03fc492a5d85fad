@@ -1,0 +1,4 @@
+org
+servers = [{ type = "s" }]
+timeouts = 8z3
+clar1*

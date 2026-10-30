@@ -1,0 +1,7 @@
+example.org
+servers = [{ type = "standard", liwten-address = "127.0.0.1:18080" }]
+timeout-seconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+forwards = [{ type = "proxy", address = "265.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+dns = { _nabled = true, servers = [{ address = "1.1.1.1:853", type = "dot", tls-host = "one.one.one.one" }] }
+obsmrvability = { promeestanda ------------------2-- estanda --------tanda ------theus-sten-address = "127..00.1:9090" }

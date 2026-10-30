@@ -1,0 +1,2 @@
+a.b.c
+{"serveus":[{"type":"https","listen-address":"0.0.0.0:8444","max-connections":10,"connections-per-client":1}],"max-concurrent-conn*ctions":100}

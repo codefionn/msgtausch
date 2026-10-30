@@ -1,0 +1,4 @@
+example.org
+serverconds = 12
+classifiers = { corp = { type = "domain", op = "is", domain = "example.test" } }
+fbility = { prometheus-listen-address = "127.0.0.1:9090" }

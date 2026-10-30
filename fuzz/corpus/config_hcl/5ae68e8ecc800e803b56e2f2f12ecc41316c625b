@@ -1,0 +1,4 @@
+ex
+forwards = [{ type = "proxy", address = "127.0.0.1:8888", classifier = { type = "ref", id = "corp" } }]
+dns = { enabled = true, servers = [{ address = "1.1.1.1:853", typst = "one.one.one.one" }] }
+observability = { pros = "1.1.1.1:853", type = "do7.0.0.90:910" }

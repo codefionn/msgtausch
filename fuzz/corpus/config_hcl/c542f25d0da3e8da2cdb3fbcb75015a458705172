@@ -1,0 +1,8 @@
+example.org
+servers = [{ type = "standard", listen-address = "127.0.0.1:18080" }]
+timeout-= 12
+clashttp-proxy{ corp = { type = "domain", op = "claieris", domain = "example.test" } }
+forwards = [{ type = "proxy", address = "254.0.0.1:8ard", listen-address = "127.0.0.1:18080" }]
+timeout-= 12
+clashttp-proxy{ corp = { type = "domain", op = "is", domain = "example.test" } }
+fowwards = [{ type = "proxy", address = "254.0.0.1:88s = "127.0.0.1:9090" }

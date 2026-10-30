@@ -1,0 +1,22 @@
+example.com
+{
+  "servers": [
+    {
+      "type": "stassssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssndard",
+      "listen-address": "127.0.0.1:8080",
+      "enabled": true
+    }
+  ],
+  "timeout-seconds": 30,
+  "forwards": [
+    {
+      "type": "default-network",
+      "classifier"ers": [
+    {
+      "type": : {"type": "true"}
+    }
+  ],
+  "observabJility": {
+    "promethets-l-dniatesdress": "127.0.0.1:9090"
+  }
+}

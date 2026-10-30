@@ -1,0 +1,1 @@
+evil.exasstatistics":10,"connect:"quic","listen-address":"[::]:443"}],"classifiers":{"ads":{"type":"domains-url","url":"https://ads.example/list.txt","foenabledadblock","timeout":10}},"blocklist":{"typeenabled":"ref","id":"ads"}}

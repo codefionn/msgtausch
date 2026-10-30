@@ -1,0 +1,3 @@
+ÿÿÿorg
+servers = or[{ typ.e = "standar18080" }]
+timeoutty = { s-listen-address = "119" }

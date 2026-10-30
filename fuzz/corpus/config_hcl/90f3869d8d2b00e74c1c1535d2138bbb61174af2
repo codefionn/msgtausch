@@ -1,0 +1,5 @@
+examplesro.g
+ervers = [{ type = "standard", listen-addmess = "127.0.0.1:18080" }]
+tim = [{ type = "standard.0.1:1m8080" }]
+timeoy =classifiers1
+classifiers = { ype = "dommetus-listenlog-address = "127.0.0.1:9090" }

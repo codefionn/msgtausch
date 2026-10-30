@@ -1,0 +1,6 @@
+example.org
+servers = [{ type = "0.0.1:18080" }]
+timeout-seconds = 12
+classifiproxy { corp = { type = "domain", op = "is", domain = "example.test" } }
+ref", id = "corp" },}]
+dns one.one" }7.090" }
